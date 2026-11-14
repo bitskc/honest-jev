@@ -1,0 +1,35 @@
+{
+ "version": 1,
+ "id": "route-read-or-full",
+ "description": "Sweep the READ confidence threshold of the route-read-or-full example over a SYNTHETIC answer-vector corpus. Labels are invented to exercise the tooling (label_source derived): they say nothing about real accuracy.",
+ "target": {
+  "kind": "module",
+  "path": "../../server/src/decide/eval-target.mjs",
+  "export": "decide"
+ },
+ "corpus": "route-read-or-full.corpus.jsonl",
+ "decision": "/decision",
+ "harm": {
+  "cost": {
+   "full_agent": {
+    "read_only": 5
+   },
+   "read_only": {
+    "full_agent": 1
+   }
+  }
+ },
+ "sweep": [
+  {
+   "name": "read_min",
+   "values": [
+    0.8,
+    0.85,
+    0.9,
+    0.95
+   ],
+   "stricter": "high"
+  }
+ ],
+ "label_source_default": "derived"
+}

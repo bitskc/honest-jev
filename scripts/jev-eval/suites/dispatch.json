@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "id": "kit-dispatch",
+  "description": "kit_size_dispatch over evals/dispatch.jsonl. Every row needs a model answer, so offline all rows are NOT EVALUATED; use --dry-run to see the call count first.",
+  "target": { "kind": "builtin", "tool": "kit_size_dispatch" },
+  "corpus": "../../../evals/dispatch.jsonl",
+  "harm": { "cost": { "over_tiered": { "ok": 3 }, "ok": { "over_tiered": 2 } } },
+  "label_source_default": "derived"
+}

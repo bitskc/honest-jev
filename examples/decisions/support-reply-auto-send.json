@@ -1,0 +1,76 @@
+{
+  "id": "support-reply-auto-send",
+  "version": 1,
+  "description": "Is a drafted customer-support reply safe to send without a person reading it? Enterprise accounts always get a human with no model call; a reply is held when the tone is risky, reviewed when it makes a commitment, and auto-sent only when it is confidently a routine answer.",
+  "questions": {
+    "reply_kind": {
+      "type": "choice",
+      "instructions": "What kind of message is the drafted reply in `draft.text`?",
+      "criteria": {
+        "ANSWER": { "what": "Answers a how-to or status question with facts and no promise.", "examples": ["You can export your data from Settings, Export."] },
+        "APOLOGY": { "what": "Apologises for a problem or delay." },
+        "OFFER": { "what": "Offers or promises money, credit, a replacement, a deadline or a policy exception.", "examples": ["We will refund the last two invoices."] },
+        "OTHER": { "what": "Anything else." }
+      }
+    },
+    "contains_commitment": {
+      "type": "noul",
+      "instructions": "Does the draft in `draft.text` promise or imply anything the company must then deliver?",
+      "criteria": {
+        "true": { "what": "It commits to a refund, credit, replacement, date, legal position or exception." },
+        "false": { "what": "It only informs, or points to existing documentation." }
+      }
+    },
+    "tone_risk": {
+      "type": "noul",
+      "instructions": "Would a reasonable customer find the draft in `draft.text` dismissive, blaming, sarcastic or hostile?",
+      "criteria": {
+        "true": { "what": "Dismissive, blaming, sarcastic or hostile in places." },
+        "false": { "what": "Neutral or courteous throughout." }
+      }
+    }
+  },
+  "vocabulary": ["auto_send", "human_review", "hold"],
+  "grants": ["auto_send"],
+  "restrictive": ["hold"],
+  "baseline": "human_review",
+  "rules": [
+    {
+      "id": "R1-enterprise",
+      "when": { "fact": "customer_tier", "eq": "enterprise" },
+      "decision": "human_review",
+      "reason": "Enterprise accounts always get a person."
+    },
+    {
+      "id": "R2-risky-tone",
+      "when": { "noul": "tone_risk", "gte": 0.5, "missing_as": 1, "knob": "tone_hold" },
+      "decision": "hold",
+      "reason": "The draft may read as hostile or dismissive; do not send."
+    },
+    {
+      "id": "R3-commitment",
+      "when": {
+        "any": [
+          { "noul": "contains_commitment", "gte": 0.3, "missing_as": 1 },
+          { "choice": "reply_kind", "in": ["OFFER", "APOLOGY"], "missing_as": true }
+        ]
+      },
+      "decision": "human_review",
+      "reason": "The draft may make a commitment or concede fault; a person checks it."
+    },
+    {
+      "id": "R4-routine",
+      "when": {
+        "all": [
+          { "choice": "reply_kind", "is": "ANSWER", "min_confidence": 0.9, "missing_as": false, "knob": "answer_min" },
+          { "noul": "contains_commitment", "lt": 0.1, "missing_as": 1 },
+          { "noul": "tone_risk", "lt": 0.2, "missing_as": 1 }
+        ]
+      },
+      "decision": "auto_send",
+      "reason": "Confidently a routine answer with no commitment and no tone risk."
+    }
+  ],
+  "default": { "decision": "human_review", "reason": "Not clearly routine; a person checks it." },
+  "on_unavailable": { "decision": "human_review", "reason": "The model could not be consulted; a person checks it." }
+}

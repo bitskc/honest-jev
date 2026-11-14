@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Task|Agent",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.local/share/honest-jev/hooks/jev-dispatch-shadow.sh", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

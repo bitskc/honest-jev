@@ -1,0 +1,205 @@
+[
+ {
+  "name": "enterprise always goes to a person from facts alone",
+  "facts": {
+   "customer_tier": "enterprise"
+  },
+  "answers": {},
+  "expect": {
+   "decision": "human_review",
+   "rule_id": "R1-enterprise",
+   "decided_by": "prefilter"
+  }
+ },
+ {
+  "name": "routine answer auto-sends",
+  "facts": {
+   "customer_tier": "standard"
+  },
+  "answers": {
+   "reply_kind": {
+    "type": "choice",
+    "choice": "ANSWER",
+    "probabilities": {
+     "ANSWER": 0.96,
+     "APOLOGY": 0.01,
+     "OFFER": 0.01,
+     "OTHER": 0.02
+    },
+    "confidence": 0.96
+   },
+   "contains_commitment": {
+    "type": "noul",
+    "noul": 0.02
+   },
+   "tone_risk": {
+    "type": "noul",
+    "noul": 0.05
+   }
+  },
+  "expect": {
+   "decision": "auto_send",
+   "rule_id": "R4-routine",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "risky tone is held even when the rest is routine",
+  "facts": {
+   "customer_tier": "standard"
+  },
+  "answers": {
+   "reply_kind": {
+    "type": "choice",
+    "choice": "ANSWER",
+    "probabilities": {
+     "ANSWER": 0.96,
+     "APOLOGY": 0.01,
+     "OFFER": 0.01,
+     "OTHER": 0.02
+    },
+    "confidence": 0.96
+   },
+   "contains_commitment": {
+    "type": "noul",
+    "noul": 0.02
+   },
+   "tone_risk": {
+    "type": "noul",
+    "noul": 0.7
+   }
+  },
+  "expect": {
+   "decision": "hold",
+   "rule_id": "R2-risky-tone",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "commitment goes to review",
+  "facts": {
+   "customer_tier": "standard"
+  },
+  "answers": {
+   "reply_kind": {
+    "type": "choice",
+    "choice": "ANSWER",
+    "probabilities": {
+     "ANSWER": 0.9,
+     "APOLOGY": 0.02,
+     "OFFER": 0.06,
+     "OTHER": 0.02
+    },
+    "confidence": 0.9
+   },
+   "contains_commitment": {
+    "type": "noul",
+    "noul": 0.6
+   },
+   "tone_risk": {
+    "type": "noul",
+    "noul": 0.05
+   }
+  },
+  "expect": {
+   "decision": "human_review",
+   "rule_id": "R3-commitment",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "offer kind goes to review",
+  "facts": {
+   "customer_tier": "standard"
+  },
+  "answers": {
+   "reply_kind": {
+    "type": "choice",
+    "choice": "OFFER",
+    "probabilities": {
+     "ANSWER": 0.05,
+     "APOLOGY": 0.05,
+     "OFFER": 0.85,
+     "OTHER": 0.05
+    },
+    "confidence": 0.85
+   },
+   "contains_commitment": {
+    "type": "noul",
+    "noul": 0.05
+   },
+   "tone_risk": {
+    "type": "noul",
+    "noul": 0.05
+   }
+  },
+  "expect": {
+   "decision": "human_review",
+   "rule_id": "R3-commitment",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "unsure kind falls to default review",
+  "facts": {
+   "customer_tier": "standard"
+  },
+  "answers": {
+   "reply_kind": {
+    "type": "choice",
+    "choice": "ANSWER",
+    "probabilities": {
+     "ANSWER": 0.6,
+     "APOLOGY": 0.1,
+     "OFFER": 0.1,
+     "OTHER": 0.2
+    },
+    "confidence": 0.6
+   },
+   "contains_commitment": {
+    "type": "noul",
+    "noul": 0.05
+   },
+   "tone_risk": {
+    "type": "noul",
+    "noul": 0.05
+   }
+  },
+  "expect": {
+   "decision": "human_review",
+   "rule_id": null,
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "malformed tone answer counts as risky (missing_as 1) and holds",
+  "facts": {
+   "customer_tier": "standard"
+  },
+  "answers": {
+   "reply_kind": {
+    "type": "choice",
+    "choice": "ANSWER",
+    "probabilities": {
+     "ANSWER": 0.96,
+     "APOLOGY": 0.01,
+     "OFFER": 0.01,
+     "OTHER": 0.02
+    },
+    "confidence": 0.96
+   },
+   "contains_commitment": {
+    "type": "noul",
+    "noul": 0.02
+   },
+   "tone_risk": {
+    "type": "noul"
+   }
+  },
+  "expect": {
+   "decision": "hold",
+   "rule_id": "R2-risky-tone",
+   "decided_by": "jev"
+  }
+ }
+]

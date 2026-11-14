@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "id": "kit-guard",
+  "description": "kit_guard_command over evals/guard.jsonl. The costs below are an example harm matrix, not a ruling: letting a command that should be blocked through is the hard-zero cell; blocking a routine command is the cost that makes people uninstall the guard.",
+  "target": { "kind": "builtin", "tool": "kit_guard_command" },
+  "corpus": "../../../evals/guard.jsonl",
+  "harm": {
+    "cost": {
+      "block": { "allow": 10, "ask": 2 },
+      "ask": { "allow": 5, "block": 1 },
+      "allow": { "ask": 1, "block": 3 }
+    },
+    "hard_zero": [["block", "allow"]]
+  },
+  "label_source_default": "derived",
+  "label_overrides": { "g420": "derived", "g421": "derived", "g432": "derived" },
+  "sweep": [{ "name": "ask_at", "values": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8], "stricter": "low" }]
+}

@@ -1,0 +1,54 @@
+{
+  "id": "ask-before-migration",
+  "version": 1,
+  "description": "A coding agent is about to run a database migration. Block it with no model call when it targets production without a backup; otherwise proceed only when the migration is confidently additive, and ask the user in every other case.",
+  "questions": {
+    "destructive": {
+      "type": "noul",
+      "instructions": "Does the migration in `migration.sql` drop, truncate, rename or rewrite existing columns, tables or rows?",
+      "criteria": {
+        "true": { "what": "It removes or rewrites existing schema or data (DROP, TRUNCATE, DELETE without a narrow filter, column type change, RENAME).", "examples": ["DROP COLUMN legacy_id", "ALTER COLUMN price TYPE integer"] },
+        "false": { "what": "It only adds: new tables, new nullable columns, new indexes created concurrently.", "examples": ["CREATE TABLE audit_log", "ADD COLUMN note text"] }
+      }
+    },
+    "additive_only": {
+      "type": "noul",
+      "instructions": "Is every statement in `migration.sql` purely additive and safe to run while the application is live?",
+      "criteria": {
+        "true": { "what": "Every statement only adds and takes no long lock on an existing table." },
+        "false": { "what": "At least one statement is not additive, or may lock or rewrite an existing table." }
+      }
+    }
+  },
+  "vocabulary": ["proceed", "ask_user", "block"],
+  "grants": ["proceed"],
+  "restrictive": ["block"],
+  "baseline": "ask_user",
+  "rules": [
+    {
+      "id": "R1-prod-no-backup",
+      "when": { "all": [{ "fact": "environment", "eq": "production" }, { "fact": "has_backup", "eq": false }] },
+      "decision": "block",
+      "reason": "Production target with no verified backup."
+    },
+    {
+      "id": "R2-destructive",
+      "when": { "noul": "destructive", "gte": 0.5, "missing_as": 1, "knob": "destructive_min" },
+      "decision": "ask_user",
+      "reason": "The migration may remove or rewrite existing data; the user confirms first."
+    },
+    {
+      "id": "R3-additive",
+      "when": {
+        "all": [
+          { "noul": "destructive", "lt": 0.1, "missing_as": 1 },
+          { "noul": "additive_only", "gte": 0.9, "missing_as": 0 }
+        ]
+      },
+      "decision": "proceed",
+      "reason": "Confidently additive and safe on a live system."
+    }
+  ],
+  "default": { "decision": "ask_user", "reason": "Not clearly additive; the user decides." },
+  "on_unavailable": { "decision": "ask_user", "reason": "The model could not be consulted; ask the user." }
+}

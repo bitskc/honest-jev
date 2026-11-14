@@ -1,0 +1,125 @@
+[
+ {
+  "name": "production without backup is blocked from facts alone",
+  "facts": {
+   "environment": "production",
+   "has_backup": false
+  },
+  "answers": {},
+  "expect": {
+   "decision": "block",
+   "rule_id": "R1-prod-no-backup",
+   "decided_by": "prefilter"
+  }
+ },
+ {
+  "name": "production with backup still goes to the model",
+  "facts": {
+   "environment": "production",
+   "has_backup": true
+  },
+  "answers": {
+   "destructive": {
+    "type": "noul",
+    "noul": 0.02
+   },
+   "additive_only": {
+    "type": "noul",
+    "noul": 0.97
+   }
+  },
+  "expect": {
+   "decision": "proceed",
+   "rule_id": "R3-additive",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "destructive migration asks the user",
+  "facts": {
+   "environment": "staging",
+   "has_backup": false
+  },
+  "answers": {
+   "destructive": {
+    "type": "noul",
+    "noul": 0.8
+   },
+   "additive_only": {
+    "type": "noul",
+    "noul": 0.1
+   }
+  },
+  "expect": {
+   "decision": "ask_user",
+   "rule_id": "R2-destructive",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "middling scores fall to default (ask)",
+  "facts": {
+   "environment": "staging",
+   "has_backup": true
+  },
+  "answers": {
+   "destructive": {
+    "type": "noul",
+    "noul": 0.3
+   },
+   "additive_only": {
+    "type": "noul",
+    "noul": 0.6
+   }
+  },
+  "expect": {
+   "decision": "ask_user",
+   "rule_id": null,
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "malformed destructive answer counts as destructive (missing_as 1)",
+  "facts": {
+   "environment": "staging",
+   "has_backup": true
+  },
+  "answers": {
+   "destructive": {
+    "type": "noul",
+    "noul": "high"
+   },
+   "additive_only": {
+    "type": "noul",
+    "noul": 0.99
+   }
+  },
+  "expect": {
+   "decision": "ask_user",
+   "rule_id": "R2-destructive",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "noul outside 0..1 is invalid, not clamped",
+  "facts": {
+   "environment": "staging",
+   "has_backup": true
+  },
+  "answers": {
+   "destructive": {
+    "type": "noul",
+    "noul": 1.4
+   },
+   "additive_only": {
+    "type": "noul",
+    "noul": 0.99
+   }
+  },
+  "expect": {
+   "decision": "ask_user",
+   "rule_id": "R2-destructive",
+   "decided_by": "jev"
+  }
+ }
+]

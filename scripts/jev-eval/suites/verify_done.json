@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "id": "kit-verify-done",
+  "description": "kit_verify_done over evals/verify_done.jsonl. Rows that need a model answer are NOT EVALUATED offline.",
+  "target": { "kind": "builtin", "tool": "kit_verify_done" },
+  "corpus": "../../../evals/verify_done.jsonl",
+  "harm": { "cost": { "block": { "allow": 5 }, "allow": { "block": 2 } } },
+  "label_source_default": "derived",
+  "sweep": [{ "name": "threshold", "values": [0.6, 0.7, 0.75, 0.8, 0.9], "stricter": "low" }]
+}

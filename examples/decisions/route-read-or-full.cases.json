@@ -1,0 +1,164 @@
+[
+ {
+  "name": "open ask decides from facts, no answers needed",
+  "facts": {
+   "open_ask": true
+  },
+  "answers": {},
+  "expect": {
+   "decision": "full_agent",
+   "rule_id": "R1-open-ask",
+   "decided_by": "prefilter"
+  }
+ },
+ {
+  "name": "confident read",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {
+   "route_choice": {
+    "type": "choice",
+    "choice": "READ",
+    "probabilities": {
+     "READ": 0.95,
+     "WRITE": 0.03,
+     "BOTH": 0.02
+    },
+    "confidence": 0.95
+   }
+  },
+  "expect": {
+   "decision": "read_only",
+   "rule_id": "R2-confident-read",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "exactly at the threshold routes",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {
+   "route_choice": {
+    "type": "choice",
+    "choice": "READ",
+    "probabilities": {
+     "READ": 0.9,
+     "WRITE": 0.06,
+     "BOTH": 0.04
+    },
+    "confidence": 0.9
+   }
+  },
+  "expect": {
+   "decision": "read_only",
+   "rule_id": "R2-confident-read",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "just under the threshold goes to the full agent",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {
+   "route_choice": {
+    "type": "choice",
+    "choice": "READ",
+    "probabilities": {
+     "READ": 0.89,
+     "WRITE": 0.07,
+     "BOTH": 0.04
+    },
+    "confidence": 0.89
+   }
+  },
+  "expect": {
+   "decision": "full_agent",
+   "rule_id": null,
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "confidence defaults to the chosen label's probability",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {
+   "route_choice": {
+    "type": "choice",
+    "choice": "READ",
+    "probabilities": {
+     "READ": 0.92,
+     "WRITE": 0.05,
+     "BOTH": 0.03
+    }
+   }
+  },
+  "expect": {
+   "decision": "read_only",
+   "rule_id": "R2-confident-read",
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "write intent",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {
+   "route_choice": {
+    "type": "choice",
+    "choice": "WRITE",
+    "probabilities": {
+     "READ": 0.05,
+     "WRITE": 0.9,
+     "BOTH": 0.05
+    },
+    "confidence": 0.9
+   }
+  },
+  "expect": {
+   "decision": "full_agent",
+   "rule_id": null,
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "unknown label is invalid; missing_as false falls to default",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {
+   "route_choice": {
+    "type": "choice",
+    "choice": "MAYBE",
+    "probabilities": {
+     "READ": 0.9,
+     "WRITE": 0.05,
+     "BOTH": 0.05
+    },
+    "confidence": 0.9
+   }
+  },
+  "expect": {
+   "decision": "full_agent",
+   "rule_id": null,
+   "decided_by": "jev"
+  }
+ },
+ {
+  "name": "omitted answer is a failure (open: equals baseline)",
+  "facts": {
+   "open_ask": false
+  },
+  "answers": {},
+  "expect": {
+   "decision": "full_agent",
+   "rule_id": null,
+   "decided_by": "fail_open",
+   "fail_reason": "invalid_response"
+  }
+ }
+]

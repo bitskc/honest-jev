@@ -1,0 +1,62 @@
+{
+  "id": "pr-merge-gate",
+  "version": 1,
+  "description": "Always ask before a pull request is merged unless it has been gstack reviewed. Derived from the request: always ask me before any PR merge if it isn't gstack reviewed.",
+  "questions": {
+    "merges_pr": {
+      "type": "noul",
+      "instructions": {
+        "question": "Does the action in `action.text` merge, squash-merge, rebase-merge or enable auto-merge on a pull request?",
+        "context": "The action is a shell command or a tool call about to be run by a coding agent. Only a merge counts: opening, reviewing, commenting on or closing a pull request does not."
+      },
+      "criteria": {
+        "true": { "what": "It merges a pull request now or arms an automatic merge.", "examples": ["gh pr merge 12 --squash", "gh pr merge --auto 40"] },
+        "false": { "what": "It does anything else.", "examples": ["gh pr view 12", "gh pr create --fill", "git merge main"] }
+      }
+    }
+  },
+  "vocabulary": ["proceed", "ask_user"],
+  "grants": ["proceed"],
+  "restrictive": ["ask_user"],
+  "baseline": "proceed",
+  "rules": [
+    {
+      "id": "R1-unreviewed-merge",
+      "when": { "all": [{ "noul": "merges_pr", "gte": 0.5, "missing_as": 1 }, { "fact": "gstack_reviewed", "eq": false }] },
+      "decision": "ask_user",
+      "reason": "A pull request merge that has not been gstack reviewed: ask the user first."
+    },
+    {
+      "id": "R2-not-a-merge",
+      "when": { "noul": "merges_pr", "lt": 0.1, "missing_as": 1 },
+      "decision": "proceed",
+      "reason": "Not a pull request merge."
+    },
+    {
+      "id": "R3-reviewed-merge",
+      "when": { "all": [{ "noul": "merges_pr", "gte": 0.5, "missing_as": 1 }, { "fact": "gstack_reviewed", "eq": true }] },
+      "decision": "proceed",
+      "reason": "A merge, and it has been gstack reviewed."
+    }
+  ],
+  "default": { "decision": "ask_user", "reason": "Unclear whether this merges a pull request, or whether it was reviewed: ask." },
+  "on_unavailable": { "decision": "ask_user", "reason": "The model could not be consulted: ask the user." },
+  "trigger": {
+    "tool": "Bash",
+    "command": ["gh", "pr", "merge"],
+    "facts": {
+      "pr": { "source": "gh_pr_target" },
+      "gstack_reviewed": { "source": "gh_pr_review_marker", "marker": "gstack-review: pass", "timeout_ms": 1000, "target_from": "pr" }
+    },
+    "effect": { "ask_user": "ask" }
+  },
+  "examples": [
+    { "name": "unreviewed merge asks", "facts": { "gstack_reviewed": false }, "answers": { "merges_pr": { "type": "noul", "noul": 0.97 } }, "expect": { "decision": "ask_user", "rule_id": "R1-unreviewed-merge", "decided_by": "jev" } },
+    { "name": "not a merge proceeds", "facts": { "gstack_reviewed": false }, "answers": { "merges_pr": { "type": "noul", "noul": 0.02 } }, "expect": { "decision": "proceed", "rule_id": "R2-not-a-merge" } },
+    { "name": "reviewed merge proceeds", "facts": { "gstack_reviewed": true }, "answers": { "merges_pr": { "type": "noul", "noul": 0.95 } }, "expect": { "decision": "proceed", "rule_id": "R3-reviewed-merge" } },
+    { "name": "unclear action falls to the default and asks", "facts": { "gstack_reviewed": true }, "answers": { "merges_pr": { "type": "noul", "noul": 0.3 } }, "expect": { "decision": "ask_user", "rule_id": null, "decided_by": "jev" } },
+    { "name": "review status not supplied: a merge asks", "facts": {}, "answers": { "merges_pr": { "type": "noul", "noul": 0.95 } }, "expect": { "decision": "ask_user", "rule_id": null } },
+    { "name": "malformed answer counts as a merge (missing_as 1)", "facts": { "gstack_reviewed": false }, "answers": { "merges_pr": { "type": "noul", "noul": "high" } }, "expect": { "decision": "ask_user", "rule_id": "R1-unreviewed-merge" } },
+    { "name": "no answer from the model fails closed to asking", "facts": { "gstack_reviewed": false }, "answers": {}, "expect": { "decision": "ask_user", "rule_id": null, "decided_by": "fail_closed" } }
+  ]
+}

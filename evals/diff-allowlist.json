@@ -1,0 +1,509 @@
+{
+  "bases": {
+    "b36b91b": [
+      {
+        "id": "g582",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (`cd build` stays under the project); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g582@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (`cd build` stays under the project); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g583",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (pushd/popd returns to the project); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g583@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (pushd/popd returns to the project); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g587",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (cd src && cd .. returns to the project); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g587@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (cd src && cd .. returns to the project); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g589",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (a cd in a pipeline stage dies with its subshell, so the project stays the cwd); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g589@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "round 24 F4 deliberately stopped hard-blocking `chmod|chown -R` on a dot/glob operand whose effective cwd is a known project directory (a cd in a pipeline stage dies with its subshell, so the project stays the cwd); b36b91b blocked every dot/glob operand. The effective cwd is now tracked through cd/pushd/popd, so the allow is only reached when that directory is not /, home or a system tree (corpus label: allow)."
+      },
+      {
+        "id": "g595",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g595@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g596",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g596@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g597",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g597@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g598",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts.old holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g598@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: known_hosts.old holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g599",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: authorized_keys holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g599@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: authorized_keys holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g600",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: allowed_signers holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "id": "g600@proj",
+        "from": "block",
+        "to": "allow",
+        "justification": "#132: allowed_signers holds only public, non-secret data (server host keys / public keys / public signers), and `main` allowed it; the round-11 ~/.ssh directory class over-blocked it. `config`, private keys, globs and `known_hosts/../id_rsa` stay blocked (corpus g601-g606)."
+      },
+      {
+        "ids": [
+          "g857",
+          "g858"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 31 (#101 lesser P3, documented): `_PASS$` ended every case-insensitive pattern, so identifiers (`first_pass`, `compiler_pass`, `render_pass`) asked as if they were variable names. `_PASS` now names a secret only in capitals (`DB_PASS`); `grep -ri db_pass` still asks through the case-insensitive credential-name test.",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g859"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 31 (#124, documented): `curl --form-string 'f=@.env'` sends the text `f=@.env`; --form-string never reads a file, so the block was an over-block. `-F`/`--form` file references (including each file of a comma list and every -F, not only the first) still block (g860-g862).",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g864",
+          "g865"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 31 (#79, documented): `find ~/.ssh -print` and `find . -name .env` print names only, as `ls` does; they were hard blocks only because the path operand is a secret store. A find whose -exec/-ok body or a downstream consumer receives the matches still blocks (g866, g867)."
+      },
+      {
+        "ids": [
+          "g896"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 31 (#79): `find . -name .env || true` is a standalone listing (names only), like g865; `||` routes no output. Any pipe, command or process substitution, coproc, -exec or -files0-from keeps the block (g884-g895)."
+      },
+      {
+        "ids": [
+          "g982",
+          "g983",
+          "g984",
+          "g985",
+          "g986",
+          "g987",
+          "g991",
+          "g1050",
+          "g1051",
+          "g1052",
+          "g1090",
+          "g1091"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 33 (#67, documented): an option whose value is a file the program CONSUMES prints nothing: `node|bun|deno --env-file=.env`, `docker run --env-file .env`, `dotenv -e .env`, `gcloud ... --key-file=...`, and an rsync/tar `--exclude=.env` pattern (text that keeps a file OUT of a copy). `vercel env pull .env.local` WRITES the file. The container/dotenv/node forms are exempt only when nothing on the line can print the consumer's environment: no command after the image, `dotenv -e X -- CMD` with a build tool, `node|bun|deno` running a script file (g1050-g1052, g1090-g1091: a pipe OUT of the consumer, or a pipe into a container run without -i, is not a stdin source; a stdin source into node/bun/deno, or into an interactive container, blocks: g1075-g1089); `env`, `printenv`, `sh -c`, an interpreter, `-e/-p/eval/data:` print it and block (g1030-g1049). The same files named as an operand of a program that prints them, `docker compose ... config`, and a consumed file beside a command that prints the variable still block (g992-g996). Where the output goes does not change this."
+      },
+      {
+        "ids": [
+          "g988"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 33 (#67, documented): `git config KEY VALUE` SETS a value, so `core.sshCommand \"ssh -i ~/.ssh/deploy\"` is text; `git config KEY` and `--file`/`--list`/`--get` forms still read and still block."
+      },
+      {
+        "ids": [
+          "g990",
+          "g1069",
+          "g1070",
+          "g1071"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 33 (#67, documented): a GUI launcher (`code`, `subl`, `gedit`, `open -e`) hands the file to a window and prints nothing, so it is not a read when its output goes nowhere. Its output-routing wrappers (a pipe, a redirect, a substitution, a coproc) are NOT covered by this entry and keep the block (g1072-g1074). Terminal editors (vim, nvim, nano, emacs ...) stay readers, as on main (g989 and g1029 relabeled block), because the Bash tool has no terminal."
+      },
+      {
+        "ids": [
+          "g1166"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 34 (#188 function bodies, documented): `f() { stat .env; }; f` blocked on main only because `f()` was read as an unknown program that prints its operands; the function header is peeled and `stat` (metadata only) is judged, like the unwrapped `stat .env` (allow, g272)."
+      },
+      {
+        "ids": [
+          "g1199"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 35 (#188): `time` before an assignment is not the command: `time VAR=/tmp/x; rm -rf $VAR` blocked on main only because the segment opened with `time`, so the assignment was not seen and `$VAR` was unknown. The assignment is read now (a provably safe path), the same decision as without `time` (allow). A value of `/` or `~` still blocks."
+      }
+    ],
+    "main": [
+      {
+        "ids": [
+          "g294",
+          "g295",
+          "g297",
+          "g553",
+          "g554",
+          "g634",
+          "g637"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 12 (P2-E): main's `\\bcredentials\\b` matched any file named credentials.<ext>, so reading or staging source (credentials.ts, credentials.test.ts, credentials.service.ts, a credentials*.ts glob) hard-blocked. The matcher now fails only on a non-source extension (credentials.toml/.db/.csv/.xml/.json still block, rows g607-g641 and the #66 table). Corpus label allow, set before running."
+      },
+      {
+        "ids": [
+          "g296",
+          "g322"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 12 (P2-E): commit-message text (`git commit -m \\\"fix: credentials validation\\\"`, `-m .env`) is prose, not a path operand; main hard-blocked it. Staging an actual secret file is still R9 (`git add .git-credentials`, g607+). Corpus label allow."
+      },
+      {
+        "ids": [
+          "g298",
+          "g299",
+          "g300",
+          "g301",
+          "g310",
+          "g311",
+          "g313"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 12 (P2-E): the quoted pattern of a grep (`grep -rn \\\"e.key\\\" src`, `\\\".env\\\" docs`) names text to search for, not a secret path; main matched `.key`/`.env`/`.pem` inside it and hard-blocked. Reading the actual files and recursive greps of secret names stay block/ask (g282-g284, g356). Corpus label allow."
+      },
+      {
+        "ids": [
+          "g302",
+          "g303",
+          "g304"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 12 (P2-E): `$MAX_TOKENS`, `$PASSWORD_MIN_LENGTH`, `$TOKEN_COUNT` name a count or limit, not a secret value (a non-secret qualifier as the last component); main's substring name rule blocked them. `$SERVICE_ROLE`, `$DB_PASS`, `$PGPASSWORD`-class names still block. Corpus label allow."
+      },
+      {
+        "ids": [
+          "g677",
+          "g678",
+          "g679",
+          "g680"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 27 (review F3, documented): main's `\\bcredentials\\b` matched every path containing the word, so source, test, view and snapshot files (`src/credentials/index.ts`, `credentials.test.ts`, `views/credentials.html`, `__snapshots__/credentials.snap`) hard-blocked. They are code, the same round-12 class as credentials.ts. Directories named credentials, credentials.sh/.sql and every data extension still block (g642-g676). Corpus label allow, set before running."
+      },
+      {
+        "ids": [
+          "g701"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 31 (#79, documented): `find credentials/ -name x` and `find ~/.ssh -print` print names only, exactly what `ls credentials/` does (allowed since round 27); the old rule asked for / blocked a bare enumeration of a secret directory. A find whose -exec body or downstream consumer receives the matches still blocks (g867, g868) or asks (a credentials directory). The row is relabeled allow."
+      },
+      {
+        "ids": [
+          "g857",
+          "g858"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 31 (#101 lesser P3, documented): `_PASS$` ended every case-insensitive pattern, so identifiers (`first_pass`, `compiler_pass`, `render_pass`) asked as if they were variable names. `_PASS` now names a secret only in capitals (`DB_PASS`); `grep -ri db_pass` still asks through the case-insensitive credential-name test.",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g859"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 31 (#124, documented): `curl --form-string 'f=@.env'` sends the text `f=@.env`; --form-string never reads a file, so the block was an over-block. `-F`/`--form` file references (including each file of a comma list and every -F, not only the first) still block (g860-g862).",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g864",
+          "g865"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 31 (#79, documented): `find ~/.ssh -print` and `find . -name .env` print names only, as `ls` does; they were hard blocks only because the path operand is a secret store. A find whose -exec/-ok body or a downstream consumer receives the matches still blocks (g866, g867)."
+      },
+      {
+        "ids": [
+          "g896"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 31 (#79): `find . -name .env || true` is a standalone listing (names only), like g865; `||` routes no output. Any pipe, command or process substitution, coproc, -exec or -files0-from keeps the block (g884-g895)."
+      },
+      {
+        "ids": [
+          "g982",
+          "g983",
+          "g984",
+          "g985",
+          "g986",
+          "g987",
+          "g991",
+          "g1050",
+          "g1051",
+          "g1052",
+          "g1090",
+          "g1091"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 33 (#67, documented): an option whose value is a file the program CONSUMES prints nothing: `node|bun|deno --env-file=.env`, `docker run --env-file .env`, `dotenv -e .env`, `gcloud ... --key-file=...`, and an rsync/tar `--exclude=.env` pattern (text that keeps a file OUT of a copy). `vercel env pull .env.local` WRITES the file. The container/dotenv/node forms are exempt only when nothing on the line can print the consumer's environment: no command after the image, `dotenv -e X -- CMD` with a build tool, `node|bun|deno` running a script file (g1050-g1052, g1090-g1091: a pipe OUT of the consumer, or a pipe into a container run without -i, is not a stdin source; a stdin source into node/bun/deno, or into an interactive container, blocks: g1075-g1089); `env`, `printenv`, `sh -c`, an interpreter, `-e/-p/eval/data:` print it and block (g1030-g1049). The same files named as an operand of a program that prints them, `docker compose ... config`, and a consumed file beside a command that prints the variable still block (g992-g996). Where the output goes does not change this."
+      },
+      {
+        "ids": [
+          "g988"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 33 (#67, documented): `git config KEY VALUE` SETS a value, so `core.sshCommand \"ssh -i ~/.ssh/deploy\"` is text; `git config KEY` and `--file`/`--list`/`--get` forms still read and still block."
+      },
+      {
+        "ids": [
+          "g990",
+          "g1069",
+          "g1070",
+          "g1071"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 33 (#67, documented): a GUI launcher (`code`, `subl`, `gedit`, `open -e`) hands the file to a window and prints nothing, so it is not a read when its output goes nowhere. Its output-routing wrappers (a pipe, a redirect, a substitution, a coproc) are NOT covered by this entry and keep the block (g1072-g1074). Terminal editors (vim, nvim, nano, emacs ...) stay readers, as on main (g989 and g1029 relabeled block), because the Bash tool has no terminal."
+      },
+      {
+        "ids": [
+          "g272~func",
+          "g273~func",
+          "g274~func",
+          "g276~func",
+          "g277~func",
+          "g279~func",
+          "g293~func",
+          "g307~func",
+          "g308~func",
+          "g309~func",
+          "g319~func",
+          "g320~func",
+          "g321~func",
+          "g338~func",
+          "g339~func",
+          "g340~func",
+          "g372~func",
+          "g390~func",
+          "g391~func",
+          "g392~func",
+          "g578~func",
+          "g587~func",
+          "g635~func",
+          "g737~func",
+          "g738~func",
+          "g745~func",
+          "g757~func",
+          "g780~func",
+          "g848~func"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 34 (#188 function bodies, documented): `f() { CMD; }; f` read `f()` as an unknown program that prints its operands (default deny), so every operand of CMD was a read and a harmless CMD (`stat .env`, `ls ~/.ssh`, `find . -name '*.env'`, `git log --grep credentials`) blocked or asked. The function header is now peeled and CMD itself is judged, which is the decision of the unwrapped row (allow). A body that reads (`cat .env`, `rm -rf /`, `curl | sh`) still blocks or asks (their wrapped forms are closure rows)."
+      },
+      {
+        "ids": [
+          "g285~func",
+          "g291~func",
+          "g317~func",
+          "g318~func",
+          "g371~func",
+          "g405~func",
+          "g434~func",
+          "g436~func",
+          "g437~func",
+          "g459~func",
+          "g460~func",
+          "g461~func",
+          "g462~func",
+          "g463~func",
+          "g464~func",
+          "g465~func",
+          "g583~func",
+          "g703~func",
+          "g826~func",
+          "g827~func"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 34 (#188 function bodies, documented): `f() { CMD; }; f` read `f()` as an unknown program that prints its operands (default deny), so every operand of CMD was a read and a harmless CMD (`stat .env`, `ls ~/.ssh`, `find . -name '*.env'`, `git log --grep credentials`) blocked or asked. The function header is now peeled and CMD itself is judged, which is the decision of the unwrapped row (allow). A body that reads (`cat .env`, `rm -rf /`, `curl | sh`) still blocks or asks (their wrapped forms are closure rows)."
+      },
+      {
+        "ids": [
+          "g1166"
+        ],
+        "from": "block",
+        "to": "allow",
+        "wrapped": "all",
+        "justification": "Round 34 (#188 function bodies, documented): `f() { stat .env; }; f` blocked on main only because `f()` was read as an unknown program that prints its operands; the function header is peeled and `stat` (metadata only) is judged, like the unwrapped `stat .env` (allow, g272)."
+      },
+      {
+        "ids": [
+          "g832~for",
+          "g832~gpx",
+          "g832~grp",
+          "g832~if",
+          "g832~ifpx",
+          "g832~neg",
+          "g832~spx",
+          "g832~sub",
+          "g832~time",
+          "g832~whpx"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 35 (#188): `(v=HOME; echo ${!v})` and its keyword, group and loop forms asked on main only because the first segment opened with `(`/`{`/`then`/`do`/`!`/`time`, so `v=HOME` was not read as an assignment and `${!v}` stayed unknown. The assignment is read now; `HOME` is a harmless name, the same decision as the unwrapped row (allow). (Assignments to secret-looking names still block: g829, g830.)"
+      },
+      {
+        "ids": [
+          "b36~time",
+          "b37~time",
+          "g1199",
+          "g1199~and",
+          "g1199~asg",
+          "g1199~bg",
+          "g1199~cd",
+          "g1199~heredoc",
+          "g1199~neg",
+          "g1199~nl",
+          "g1199~note",
+          "g1199~or",
+          "g1199~pamp",
+          "g1199~param",
+          "g1199~pcat",
+          "g1199~pcurl",
+          "g1199~pwhile",
+          "g1199~pxargs",
+          "g1199~quote",
+          "g1199~semi",
+          "g1199~time"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 35 (#188): `time` before an assignment is not the command: `time VAR=/tmp/x; rm -rf $VAR` blocked on main only because the segment opened with `time`, so the assignment was not seen and `$VAR` was unknown. The assignment is read now (a provably safe path), the same decision as without `time` (allow). A value of `/` or `~` still blocks."
+      },
+      {
+        "ids": [
+          "g980~heredoc",
+          "g980~neg",
+          "g980~procsub",
+          "g980~time"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 35 (#188): a prefix assignment behind `!` or `time` (`! VAR=/tmp/x rm -rf $VAR`), or inside a heredoc or process-substitution body of its own, was hidden on main by the leading word or the missing body scope; it is read now and the decision equals the unwrapped row (allow). An assignment inside a subshell, group, branch, loop or function never proves a variable safe (it can only make one unsafe), so those forms keep their main decision."
+      }
+    ]
+  },
+  "closure": [
+    {
+      "ids": [
+        "g130"
+      ],
+      "wrappers": [
+        "bashc",
+        "bcpx",
+        "eval",
+        "evpx",
+        "scpx",
+        "shc"
+      ],
+      "issue": "#188",
+      "justification": "Nesting past the documented `-c` cap: the plain row (3 shell wrappers) asks, and one more wrapper puts the payload beyond the 3 unwrap layers, which the guard documents as invisible (SKILL.md, README, `kit.test.mjs` 'round 4 documented limit'). Making the cap ask instead of allow is a design decision for the owner (see the #188 comment); until then it is exempt."
+    }
+  ]
+}

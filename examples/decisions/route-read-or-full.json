@@ -1,0 +1,48 @@
+{
+  "id": "route-read-or-full",
+  "version": 1,
+  "description": "Route an inbound message to a read-only agent only when the model is confident the sender just wants information back. An example routing gate: READ at >= 0.9 routes, anything else goes to the full agent. The 0.9 is an example value, not a recommendation; calibrate your own.",
+  "questions": {
+    "route_choice": {
+      "type": "choice",
+      "instructions": {
+        "question": "What does the sender of `message.text` want done with it?",
+        "thread_rule": "When `message.is_thread_reply` is true, read `thread.parent` first: a short reply usually answers what the parent asked."
+      },
+      "criteria": {
+        "READ": {
+          "what": "Asks for information or output to come back: a question, or a request to show, list, look up or send something.",
+          "not_for": "A report of work done, a status update, or a note to keep, however casually it is phrased.",
+          "examples": ["what is the status of order 1042", "send me this week's open tickets"]
+        },
+        "WRITE": {
+          "what": "Supplies something to record or change: a status, a note, a completed task, a record to open or close.",
+          "not_for": "A message whose only purpose is to get information back.",
+          "examples": ["order 1042 shipped this morning", "close ticket 77, resolved"]
+        },
+        "BOTH": {
+          "what": "Does both in one message: reports or changes something and also asks for something back.",
+          "examples": ["shipped 1042, what is still open?"]
+        }
+      }
+    }
+  },
+  "vocabulary": ["read_only", "full_agent"],
+  "baseline": "full_agent",
+  "rules": [
+    {
+      "id": "R1-open-ask",
+      "when": { "fact": "open_ask", "eq": true },
+      "decision": "full_agent",
+      "reason": "A question from the assistant is still open, so this message may be its answer."
+    },
+    {
+      "id": "R2-confident-read",
+      "when": { "choice": "route_choice", "is": "READ", "min_confidence": 0.9, "missing_as": false, "knob": "read_min" },
+      "decision": "read_only",
+      "reason": "The model is confident the sender only wants information back."
+    }
+  ],
+  "default": { "decision": "full_agent", "reason": "Not confidently read-only; the full agent handles it." },
+  "on_unavailable": { "decision": "full_agent", "reason": "No answer from the model; the full agent handles it, as it would with no gate." }
+}
