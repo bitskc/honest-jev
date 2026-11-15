@@ -45,6 +45,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*__jev_classify|jev_classify",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-classify-redact.js\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [

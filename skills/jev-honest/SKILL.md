@@ -77,6 +77,16 @@ User-authored standing checks, injected at every level except off as a `## Rules
 
 **When a rule fires**, answer it in the same message, verbatim shape: `<id>: YES — <evidence>` or `<id>: NO — <what is missing>; not presenting <outcome>`. Never substitute a guess or a self-check for the evidence a rule actually asks for. Worked example — rule `{"id": "migration-prod-safe", "when": "describing a database migration as safe", "ask": "Was it run against a copy of prod data?", "evidence": "the command and its output"}` fires while you're about to say a migration is ready to ship: `migration-prod-safe: NO — never run against a copy of prod data, only read by eye; not presenting this as safe to ship.`
 
+
+## Upstream redact-or-refuse (strict and all levels)
+
+`jev_classify` is an upstream tool with **no** server-side `redact()` of its own (unlike `kit_guard_command` / `kit_verify_done`). The Stop gate builds classify items through the same `redact()` as `hooks/jev-redact.js` before calling. Skill-initiated classify calls must do the same:
+
+1. **Redact** any EVIDENCE that could contain secrets (tokens, `.env` tails, connection strings, key material) before it enters a classify item — use the same patterns as the Stop gate / never paste raw secret-bearing output.
+2. **Refuse** otherwise: if evidence cannot be shown without secrets, drop the item and treat the claim as **not verified** (do not call classify with the raw text).
+
+At **strict**, this is mandatory on every substantive reply. Prefer the Stop gate (`JEV_STOP_GATE=honest|both`, or automatic at strict) so redaction is enforced in code rather than relying on prose alone.
+
 ## Boundaries
 
 Honest Jev governs what you claim, not what you build or how you talk. It never replaces tests, `kit_verify_done`, or a code review; it stops the sentence that outruns them. This skill is prose-only: nothing forces the `jev_classify` / `kit_verify_done` calls above to actually happen. `hooks/jev-stop-verify.js` is an opt-in `Stop` hook (`JEV_STOP_GATE=honest|verify|both`, or automatic at **strict**) that makes those same calls itself from the real transcript if you don't — see the README's "Stop gate" section.

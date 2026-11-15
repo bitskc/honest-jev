@@ -86,7 +86,8 @@ test("F3 (P4): programs that cannot print file contents ask about a credentials 
     const r = await g(c);
     assert.equal(r.decision, "ask", c);
   }
-  // #79: a find nothing reads prints names, like ls
-  for (const c of ["ls credentials/", "find credentials/ -name x", "git status credentials/", "git ls-files credentials/", "du -sh credentials/", "wc -l credentials/id", "stat credentials/id"]) assert.equal((await g(c)).decision, "allow", c);
+  // #79 / Q6: find naming a credentials dir asks (metadata); other non-readers stay allow
+  for (const c of ["find credentials/ -name x"]) assert.equal((await g(c)).decision, "ask", c);
+  for (const c of ["ls credentials/", "git status credentials/", "git ls-files credentials/", "du -sh credentials/", "wc -l credentials/id", "stat credentials/id"]) assert.equal((await g(c)).decision, "allow", c);
   for (const c of ["cat credentials/id", "head credentials/id", "grep -rn x credentials/", "git add credentials/", "git commit -am x credentials/id"]) assert.equal((await g(c)).decision, "block", c);
 });

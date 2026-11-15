@@ -113,6 +113,8 @@ const SECRET_VAR_NAME_RE = new RegExp([
   // a connection string carries the password (DATABASE_URL=postgres://user:pass@host/db, REDIS_URL, MONGODB_URI, SENTRY_DSN) (#77);
   // API_URL, BASE_URL and CACHE_URL name an endpoint, not a credential
   "|.*(?:^|_)(?:DATABASE|DB|REDIS|MONGO(?:DB)?|POSTGRES(?:QL)?|MYSQL|AMQP|BROKER|SENTRY)_(?:URL|URI|DSN)$",
+  // well-known vendor API key names (OPENAI_KEY, ANTHROPIC_API_KEY, …) — Q6 naming scope
+  "|.*(?:^|_)(?:OPENAI|ANTHROPIC|GROQ|GEMINI|COHERE|HUGGINGFACE|HF|MISTRAL|PERPLEXITY|TOGETHER|FIREWORKS|DEEPSEEK)_(?:API_)?KEY$",
   ")",
 ].join(""), "i");
 export const R1_SUGGESTION =
@@ -1406,6 +1408,41 @@ function stdinScriptFindings(ctx) {
 // follow the output through those shapes. Only a find that stands alone prints names (#79).
 const FIND_READ_OPTS = new Set([...FIND_EXEC_OPTS, "-files0-from"]);
 const OUTPUT_ROUTING_RE = /(?<!\|)\|(?!\|)|\|&|\$\(|`|<\(|>\(|\bcoproc\b/;
+
+// Q6: read-only tools whose unresolved credentials* globs were over-asks (#130). Shape matches (credentials.json) still block.
+const CREDENTIALS_GLOB_READONLY_PROGS = new Set(["sort", "uniq", "wc", "ls", "file", "stat", "basename", "dirname", "realpath", "readlink"]);
+const GIT_READONLY_GLOB_SUBS = new Set(["diff", "log", "show", "blame", "status", "ls-files", "check-ignore", "rev-list", "shortlog", "grep"]);
+function isCredentialsGlobReadonly(prog, args) {
+  if (CREDENTIALS_GLOB_READONLY_PROGS.has(prog)) return true;
+  if (prog !== "git") return false;
+  const i = gitSubIndex(args);
+  return i >= 0 && GIT_READONLY_GLOB_SUBS.has(args[i]);
+}
+// Literal -name/-iname/-path/-ipath value that names a secret store (metadata verb; find prints the name only).
+const FIND_NAME_OPTS = new Set(["-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename"]);
+function findMetadataSecretName(args, home) {
+  for (let i = 0; i < args.length; i++) {
+    if (!FIND_NAME_OPTS.has(args[i])) continue;
+    const v = args[i + 1];
+    if (!v || GLOB_CHAR_RE.test(v)) continue; // globs stay on the existing fed-reader path
+    if (secretShapeIn([v], home, true)) return v;
+  }
+  return null;
+}
+// --env-file / --kubeconfig (and = forms) whose value is a secret store: metadata touch, ask (Q6).
+function metadataSecretOptionValue(args, home) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    let v = null;
+    if (a === "--env-file" || a === "--kubeconfig" || a === "--key-file") v = args[i + 1];
+    else if (a.startsWith("--env-file=")) v = a.slice(11);
+    else if (a.startsWith("--kubeconfig=")) v = a.slice(13);
+    else if (a.startsWith("--key-file=")) v = a.slice(11);
+    if (v && secretShapeIn([v], home, true)) return v;
+  }
+  return null;
+}
+
 function findReads(ctx, args) {
   if (args.some((a) => FIND_READ_OPTS.has(a) || a.startsWith("-files0-from="))) return true;
   return [ctx.command, ...ctx.unwrappedScripts, ...ctx.inputScripts.map((b) => b.body)].some((t) => OUTPUT_ROUTING_RE.test(t));
@@ -1446,6 +1483,22 @@ function ruleSecret(ctx) {
     // find prints names only, but `-exec cat {}` and `find ... | xargs cat` hand the matched files to a content
     // program, so find's own operands are checked on the bare segment.
     const [bareProg, bareArgs] = programOf(seg);
+    // Q6: sourcing a secrets file loads values into the shell; ask (was allow; R1_SUGGESTION still names the safer form).
+    if ((bareProg === "source" || bareProg === ".") && bareArgs[0]) {
+      const src = secretShapeIn([bareArgs[0]], home, true);
+      if (src) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg} ${src}\` loads a secret store into the shell environment; confirm it is intended`, suggestion: R1_SUGGESTION };
+    }
+    // Q6 metadata verbs: kubectl --kubeconfig, and docker/podman *compose* --env-file → ask.
+    // Plain `docker run --env-file` stays on the consumer exemption (prints nothing unless the command dumps env).
+    {
+      const isCompose = bareProg === "docker-compose" || bareProg === "podman-compose"
+        || ((bareProg === "docker" || bareProg === "podman" || bareProg === "nerdctl") && bareArgs.includes("compose"));
+      const isKubectl = bareProg === "kubectl";
+      if (isKubectl || isCompose) {
+        const metaOpt = metadataSecretOptionValue(bareArgs, home);
+        if (metaOpt) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg}\` references secret store \`${metaOpt}\` via a config/env-file option (metadata); confirm it is intended`, suggestion: R1_SUGGESTION };
+      }
+    }
     if (bareProg === "xargs") {
       const f = xargsArgFile(bareArgs);
       const hit = f !== null && secretShapeIn([f], home);
@@ -1455,8 +1508,9 @@ function ruleSecret(ctx) {
       // find prints names only, but a consumer reads what it matches (`find ... | xargs cat`, `for f in $(find ...)`).
       // A secret store named as a path operand blocks; a secret-looking glob that feeds a consumer asks.
       if (bareProg === "find") {
-        // Plain enumeration (`find ~/.ssh -print`, `-name`, `-type f`, `-ls`) prints names, as `ls ~/.ssh` does, and allows (#79).
-        // It is a read only when an -exec/-ok body or a downstream consumer receives what it matched.
+        // Plain enumeration (`find ~/.ssh -print`, `-name`, `-type f`, `-ls`) prints names, as `ls ~/.ssh` does (#79).
+        // Q6: naming a secret store as a path or literal -name is a metadata verb → ask (still allow non-secret finds).
+        // It is a content read only when an -exec/-ok body or a downstream consumer receives what it matched.
         fed ??= consumerFedListings(ctx);
         const reads = findReads(ctx, bareArgs) || fed.has(listingKey(seg));
         const hit = reads && secretShapeIn(pathArgs("find", bareArgs), home, true);
@@ -1464,6 +1518,12 @@ function ruleSecret(ctx) {
         // a credentials directory alone: find prints names, so it asks (main allowed it); `cat credentials/id` and `git add credentials/` still block
         const dirOnly = reads && secretShapeIn(pathArgs("find", bareArgs), home);
         if (dirOnly) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`find\` on a credentials directory (${dirOnly}) hands what it matches to a reader`, suggestion: R1_SUGGESTION };
+        if (!reads) {
+          const metaPath = secretShapeIn(pathArgs("find", bareArgs), home); // include credentials/ dirs (Q6 metadata)
+          const metaName = findMetadataSecretName(bareArgs, home);
+          const meta = metaPath || metaName;
+          if (meta) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`find\` names a secret store (${meta}) without reading its contents (metadata); confirm it is intended`, suggestion: R1_SUGGESTION };
+        }
       }
       fed ??= consumerFedListings(ctx);
       const glob = fed.has(listingKey(seg)) && secretShapeIn(bareArgs, home);
@@ -1509,7 +1569,10 @@ function ruleSecret(ctx) {
       store = { hit: store.hit, severity: "soft", why: "names a credentials directory and may print what is in it" };
     }
     if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` on a secret store (${store.hit}) would print its contents`, suggestion: R1_SUGGESTION };
-    if (store) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion: R1_SUGGESTION };
+    // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
+    if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))) {
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion: R1_SUGGESTION };
+    }
     if (READERS.has(prog)) {
       const amb = ambiguousPathIn(pathArgs(prog, args));
       if (amb && !ambiguous) ambiguous = { rule: "R1-secret-exposure", severity: "ambiguous", jev: "secret", reason: `\`${prog}\` on a path that may hold secrets (${amb})`, suggestion: R1_SUGGESTION, target: amb };

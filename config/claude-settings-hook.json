@@ -4,21 +4,33 @@
       {
         "matcher": "startup|resume|clear|compact",
         "hooks": [
-          { "type": "command", "command": "node \"$HOME/.local/share/honest-jev/hooks/honest/jev-honest-activate.js\"; exit 0", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "node \"$HOME/.local/share/honest-jev/hooks/honest/jev-honest-activate.js\"; exit 0",
+            "timeout": 5
+          }
         ]
       }
     ],
     "SubagentStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$HOME/.local/share/honest-jev/hooks/honest/jev-honest-subagent.js\"; exit 0", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "node \"$HOME/.local/share/honest-jev/hooks/honest/jev-honest-subagent.js\"; exit 0",
+            "timeout": 5
+          }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$HOME/.local/share/honest-jev/hooks/honest/jev-honest-mode-tracker.js\"; exit 0", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "node \"$HOME/.local/share/honest-jev/hooks/honest/jev-honest-mode-tracker.js\"; exit 0",
+            "timeout": 5
+          }
         ]
       }
     ],
@@ -26,14 +38,32 @@
       {
         "matcher": "Bash|Read|NotebookRead|Grep",
         "hooks": [
-          { "type": "command", "command": "$HOME/.local/share/honest-jev/hooks/jev-guard-hook.sh", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "$HOME/.local/share/honest-jev/hooks/jev-guard-hook.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__jev_classify|jev_classify",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-classify-redact.js\"",
+            "timeout": 5
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"$HOME/.local/share/honest-jev/hooks/jev-stop-verify.js\"", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"$HOME/.local/share/honest-jev/hooks/jev-stop-verify.js\"",
+            "timeout": 10
+          }
         ]
       }
     ]
