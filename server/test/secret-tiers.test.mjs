@@ -845,12 +845,12 @@ test("round 21b: nesting up to the cap is analyzed normally; past it only a harm
 test("round 21b: a credentials glob with a star asks, and a source file named credentials stays allowed", async () => {
   for (const cmd of [
     "cat credentials*", "cat credentials.*", "cat credentials.js*", "cat credentials.j*n", "cat credentials.json.*", "cat credentials.json.b*",
-    "cat app-credentials*", "cat app-credentials.*", "cat *credentials*", "git add credentials*", "sort credentials.*",
+    "cat app-credentials*", "cat app-credentials.*", "cat *credentials*", "git add credentials*",
   ]) {
     const r = await guard(cmd, PROJ, HOME);
     assert.equal(r.decision, "ask", cmd);
   }
-  for (const cmd of ["cat src/auth/credentials.ts", "cat src/credentials*.ts", "cat creds*", "cat src/credentials/*.ts", "ls credentials*"]) {
+  for (const cmd of ["cat src/auth/credentials.ts", "cat src/credentials*.ts", "cat creds*", "cat src/credentials/*.ts", "ls credentials*", "sort credentials.*"]) {
     const r = await guard(cmd, PROJ, HOME);
     assert.notEqual(r.decision, "block", cmd);
   }

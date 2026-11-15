@@ -27,8 +27,8 @@ test("#126 #128: a substitution at a command position is read; one that is an as
   assert.deepEqual(substitutedSegments("x=1; $(cat a)"), ["cat a"]);
   assert.deepEqual(substitutedSegments("$( (cat a) )"), ["(cat a)"]);
 });
-test("#122: sourcing a secrets file stays allowed (it is the form the guard's own suggestion recommends and prints nothing)", async () => {
-  await expectAll(["source .env", ". ./.env", "set -a; . ./.env; set +a"], "allow");
+test("#122 / Q6: sourcing a secrets file asks (loads secrets into the shell; R1_SUGGESTION still names the safer form after confirm)", async () => {
+  await expectAll(["source .env", ". ./.env", "set -a; . ./.env; set +a"], "ask");
 });
 test("#74 #78: xargs -a and cp onto a printing device are secret reads", async () => {
   await expectAll(["xargs -a .env cat", "xargs --arg-file=.env cat", "xargs -a.env cat", "xargs -n1 -a .env echo", "xargs -n 1 -a .env echo", "xargs -I {} -a .env echo {}", "xargs -P 4 -n 2 --arg-file .env echo", "cp .env /dev/stdout", "cp ~/.ssh/id_rsa /dev/stderr", "rsync .env /dev/fd/1", "install .env /dev/tty", "cp .env /proc/self/fd/1"], "block");
