@@ -298,6 +298,29 @@ The report is deliberately stingy. "Decided without a model call" is descriptive
 
 The Worker adds the same record as a last `record` field on each `kit_*` result and writes one `jev.decision` log line per call to Workers Logs (rule id, decision, timestamp and any caller-supplied `host` and id-shaped `correlation_id` are then stored at the platform; set the Worker env `JEV_DECISION_LOG=off` to turn the line off). Optional Worker env `JEV_PRICE_PER_INPUT_TOKEN_USD` / `JEV_PRICE_PER_OUTPUT_TOKEN_USD` price tokens when the upstream sends no cost. Dispatch sizing is skill-driven, so its decisions are invisible to the ledger by default; **opt in** to a shadow-only hook that records what `kit_size_dispatch` would say on every sub-agent spawn and never blocks, by merging `config/claude-dispatch-shadow-hook.json`. Each spawn sends the sub-agent's `description` (up to 2 KB) and `prompt` (up to 12 KB) to Jev, and onward upstream when Jev is configured, so the prompt text leaves the host on every spawn; the sub-agent tool name `Task|Agent` is unverified on live sessions. Tests: `bash tests/test-ledger.sh`; try it end to end offline with `bash tests/smoke-ledger.sh`.
 
+
+## Roadmap
+
+Near-term tracker (scrubbed from the private archive, not 1:1):
+
+1. [#1 guard: command forms the prefilter cannot see](https://github.com/bitskc/honest-jev/issues/1)
+2. [#2 guard: false asks and over-blocks](https://github.com/bitskc/honest-jev/issues/2)
+3. [#3 guard: fail-open on timeout](https://github.com/bitskc/honest-jev/issues/3)
+4. [#4 redaction: remaining credential forms](https://github.com/bitskc/honest-jev/issues/4)
+5. [#5 stop-gate: missed edits](https://github.com/bitskc/honest-jev/issues/5)
+6. [#6 stop-gate: checks and claim window](https://github.com/bitskc/honest-jev/issues/6)
+7. [#7 Honest Jev runtime trust/paths/strict](https://github.com/bitskc/honest-jev/issues/7)
+8. [#8 policy-hook edge cases](https://github.com/bitskc/honest-jev/issues/8)
+9. [#9 install/update/deploy](https://github.com/bitskc/honest-jev/issues/9)
+10. [#10 docs: tool count](https://github.com/bitskc/honest-jev/issues/10)
+11. [#11 evals corpus hygiene](https://github.com/bitskc/honest-jev/issues/11)
+12. [#12 owner decisions](https://github.com/bitskc/honest-jev/issues/12)
+
+Next product steps: live worker redeploy + `--doctor` smoke; outcome-linked ledger reporting; first real-corpus calibration for a host adapter via reviewed PR.
+
+Locked at launch (see #12 / #7): conservative guard policy and strict-mode redact-or-refuse land in near-term PRs, not the initial commit.
+
+
 ## Attribution and licence
 
 MIT, © 2026 bitskc / Andy Hayes — [`LICENSE`](LICENSE). Built on jkudish/jev-mcp, jonathanavis96/jev-kit, valentynkit/jev-belay, valentynkit/jev-commit and leepokai/jev-guard (all MIT; texts in [`licenses/`](licenses/), details in [`NOTICE.md`](NOTICE.md)). The upstream `jev-mcp` build is generated at deploy time, not redistributed. Plugin shape (session/prompt/subagent hooks + level-filtered skill injection + statusline flag) follows [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail).
