@@ -532,6 +532,10 @@ function* secretCandidates(tokens, home) {
       // `.env.example/../.env` reads `.env`: a path is judged by what it resolves to (#81), as well as by how it is spelled
       const resolved = /\/\.\.?(?:\/|$)|\/\//.test(c) ? normalizePath(c) : c;
       if (resolved !== c && !isSafePath(resolved)) yield [tok, expand(resolved, home)];
+      // macOS (APFS/HFS+ default) and Windows filesystems are case-insensitive: `cat .ENV`, `cat ~/.SSH/config` and
+      // `cat ID_RSA` open the same file the lowercase spelling names, so the folded spelling is judged as well.
+      const folded = resolved.toLowerCase();
+      if (folded !== resolved && !isSafePath(folded)) yield [tok, expand(folded, home)];
       if (isSafePath(c)) continue;
       yield [tok, expand(c, home)];
     }
@@ -1123,7 +1127,7 @@ function interpScriptSecretRead(prog, args, home) {
 function interpBodySecretRead(payload, home) {
   for (const m of payload.matchAll(STRING_LITERAL_RE)) {
     const lit = m[1] ?? m[2] ?? "";
-    if (lit && SECRET_PATH_RES.some((r) => r.test(expand(lit, home)))) return lit;
+    if (lit && SECRET_PATH_RES.some((r) => r.test(expand(lit, home)) || r.test(expand(lit.toLowerCase(), home)))) return lit;
   }
   return null;
 }
@@ -1451,9 +1455,10 @@ function ruleSecret(ctx) {
   const { tool, home } = ctx;
   if (tool === "Read" || tool === "NotebookRead") {
     const fp = ctx.filePath || "";
-    if (fp && !isSafePath(fp)) {
+    if (fp && !isSafePath(fp) && !isSafePath(fp.toLowerCase())) {
       const p = expand(fp, home);
-      if (SECRET_PATH_RES.some((r) => r.test(p))) {
+      // case-insensitive filesystems (macOS, Windows): `.ENV` and `~/.SSH/id_rsa` are the stores their lowercase spelling names
+      if (SECRET_PATH_RES.some((r) => r.test(p) || r.test(p.toLowerCase()))) {
         return { rule: "R1-secret-exposure", severity: "block", reason: `Read of a secret store (${fp}): its contents would land in the transcript`, suggestion: R1_SUGGESTION };
       }
       if (AMBIGUOUS_SECRET_TOKENS.some((t) => p.toLowerCase().includes(t))) {
