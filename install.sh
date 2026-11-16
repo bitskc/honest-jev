@@ -3,9 +3,9 @@
 #   ./install.sh                # install for every agent whose config dir exists, else both
 #   ./install.sh --omp | --claude | --both
 #   ./install.sh --project DIR  # project scope: DIR/.omp/skills and DIR/.claude/skills instead of ~
-#   ./install.sh --wire         # ALSO merge the MCP entry (+ guard hook) into the agent config. Backs up first. Token-free
-#                               # (writes ${JEV_MCP_URL}/${JEV_MCP_TOKEN} references only).
-#   ./install.sh --no-hook      # with --wire: skip the guard hook
+#   ./install.sh --wire         # ALSO merge the MCP entry + full hook set (Honest Jev + guard + redact + Stop) into the
+#                               # agent config. Backs up first. Token-free (writes ${JEV_MCP_URL}/${JEV_MCP_TOKEN} references only).
+#   ./install.sh --no-hook      # with --wire: skip all hooks
 #   ./install.sh --save-env     # write JEV_MCP_URL/JEV_MCP_TOKEN from the CURRENT environment to ~/.config/jev/env (0600)
 #   ./install.sh --doctor       # check env, /health, auth and tool count (EXPECTED_TOOLS below). Never prints the token.
 #   ./install.sh --yes          # accepted for scripted use; the installer never prompts
@@ -186,10 +186,15 @@ if os.path.exists(path):
     if kind == "claude-hook":
         hk = d.get("hooks", {})
         if not isinstance(hk, dict): sys.exit(f"refusing to edit {path}: hooks is not a JSON object; merge by hand")
-        pre = hk.get("PreToolUse", [])
-        if not isinstance(pre, list): sys.exit(f"refusing to edit {path}: hooks.PreToolUse is not a JSON array; merge by hand")
-        if not all(isinstance(e, dict) and isinstance(e.get("hooks", []), list) and all(isinstance(h, dict) for h in e.get("hooks", [])) for e in pre):
-            sys.exit(f"refusing to edit {path}: hooks.PreToolUse entries must be objects holding a list of hook objects; merge by hand")
+        # every event the template will write into must already be a proper list-of-entries if present
+        tpl_events = json.load(open(tpl_path)).get("hooks", {})
+        if not isinstance(tpl_events, dict): sys.exit(f"{tpl_path}: hooks is not a JSON object")
+        for ev in tpl_events:
+            arr = hk.get(ev, [])
+            if ev in hk and not isinstance(arr, list):
+                sys.exit(f"refusing to edit {path}: hooks.{ev} is not a JSON array; merge by hand")
+            if not all(isinstance(e, dict) and isinstance(e.get("hooks", []), list) and all(isinstance(h, dict) for h in e.get("hooks", [])) for e in arr):
+                sys.exit(f"refusing to edit {path}: hooks.{ev} entries must be objects holding a list of hook objects; merge by hand")
 before = json.dumps(d, sort_keys=True)
 if kind == "paths-any": d = migrate_any(d)
 elif kind == "paths-claude": migrate_hooks(d)
@@ -197,19 +202,36 @@ elif kind == "mcp":
     d.setdefault("mcpServers", {})["jev"] = {"type": "http", "url": "${JEV_MCP_URL}",
         "headers": {"Authorization": "Bearer ${JEV_MCP_TOKEN}"}}
 else:
-    migrate_hooks(d)  # first, so an old-path guard entry is recognised as ours below and is not added a second time
-    # guard entry is taken from the shipped template, so its matcher and command cannot drift from it
+    migrate_hooks(d)  # first, so an old-path entry is recognised as ours below and is not added a second time
+    # full hook set from the shipped template (Honest Jev levels + guard + classify redact + Stop).
+    # Commands are matched after expanding $HOME/${HOME}/~ so a prior settings-file merge that left
+    # "$HOME/..." and a prior --wire that wrote the absolute path are the same entry (no duplicate).
     tpl = json.load(open(tpl_path))
-    guard = [e for e in tpl["hooks"]["PreToolUse"] if any("jev-guard-hook.sh" in h.get("command", "") for h in e["hooks"])]
-    if len(guard) != 1: sys.exit(f"{tpl_path}: expected exactly one jev-guard-hook.sh PreToolUse entry")
-    entry = guard[0]
-    for h in entry["hooks"]: h["command"] = h["command"].replace("$HOME", home)
-    arr = d.setdefault("hooks", {}).setdefault("PreToolUse", [])
-    cmds = {h["command"] for h in entry["hooks"]}
-    mine = [e for e in arr if any(h.get("command") in cmds for h in e.get("hooks", []))]
-    if mine:
-        for e in mine: e["matcher"] = entry["matcher"]  # refresh stale matcher (e.g. old Bash|Read); never duplicate
-    else: arr.append(entry)
+    def expand(cmd):
+        return cmd.replace("${HOME}", home).replace("$HOME", home)
+    def norm(cmd):
+        return expand(cmd).replace("~", home) if isinstance(cmd, str) else cmd
+    hooks = d.setdefault("hooks", {})
+    for ev, entries in tpl.get("hooks", {}).items():
+        if not isinstance(entries, list): sys.exit(f"{tpl_path}: hooks.{ev} is not a JSON array")
+        arr = hooks.setdefault(ev, [])
+        for raw in entries:
+            entry = json.loads(json.dumps(raw))  # deep copy so expand does not mutate the template on disk
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                sys.exit(f"{tpl_path}: hooks.{ev} entry is not an object with a hooks list")
+            for h in entry["hooks"]:
+                if isinstance(h.get("command"), str): h["command"] = expand(h["command"])
+            wanted = {norm(h.get("command")) for h in entry["hooks"] if isinstance(h.get("command"), str)}
+            mine = [e for e in arr if wanted & {norm(h.get("command")) for h in e.get("hooks", []) if isinstance(h, dict)}]
+            if mine:
+                for e in mine:
+                    if "matcher" in entry: e["matcher"] = entry["matcher"]
+                    by = {norm(h["command"]): h for h in entry["hooks"] if isinstance(h.get("command"), str)}
+                    for h in e.get("hooks", []):
+                        n = norm(h.get("command"))
+                        if n in by: h.clear(); h.update(by[n])
+            else:
+                arr.append(entry)
 # unchanged content: leave the file, its formatting and its backups alone.
 # paths-* passes are silent when nothing moved (the later mcp/claude-hook pass reports the real status for the same file).
 if os.path.exists(path) and json.dumps(d, sort_keys=True) == before:
@@ -246,7 +268,7 @@ if [ "$wire" = 1 ]; then
     for f in settings.json config.json; do merge_json "$ocfg/$f" paths-any; done  # old install-dir paths in omp's own JSON config
     merge_json "$ocfg/mcp.json" paths-any
     merge_json "$ocfg/mcp.json" mcp; hd="$ocfg/hooks/pre"
-    [ "$hook" = 1 ] && { mkdir -p "$hd"; cp "$share/hooks/omp/jev-guard.ts" "$hd/jev-guard.ts"; echo "hook  -> $hd/jev-guard.ts"; }
+    [ "$hook" = 1 ] && { mkdir -p "$hd"; cp "$share/hooks/omp/jev-guard.ts" "$hd/jev-guard.ts"; cp "$share/hooks/omp/jev-honest.ts" "$hd/jev-honest.ts"; echo "hook  -> $hd/jev-guard.ts + jev-honest.ts"; }
   fi
   if [ "$target" = claude ] || [ "$target" = both ]; then
     # user scope: top-level mcpServers in $claude_json (Claude Code expands ${VAR} there); project scope: DIR/.mcp.json
@@ -269,9 +291,7 @@ Next (nothing below was done for you; re-run with --wire to do steps 2-3 automat
  2. Add the MCP server: see config/omp-mcp.json (-> ~/.omp/agent/mcp.json or .omp/mcp.json)
     or config/claude-mcp.json (-> .mcp.json), or:
       claude mcp add --transport http jev "\$JEV_MCP_URL" --header "Authorization: Bearer \$JEV_MCP_TOKEN"
- 3. Hooks (Honest Jev levels + statusline badge, and the guard):
-      Claude Code -> easiest: install as a plugin instead (/plugin marketplace add bitskc/honest-jev), hooks wire themselves;
-                     manual: merge config/claude-settings-hook.json into ~/.claude/settings.json
-      omp         -> cp $share/hooks/omp/jev-honest.ts $share/hooks/omp/jev-guard.ts ~/.omp/agent/hooks/pre/
+ 3. Hooks (Honest Jev levels + guard + classify redact + Stop): re-run with --wire, or for Claude Code install the plugin
+      (/plugin marketplace add bitskc/honest-jev). Statusline badge is still manual for settings-file installs; see README.
  4. Restart the agent (omp: /reload-plugins, then /mcp list, /mcp test jev), then: /honest-jev standard
 MSG

@@ -191,10 +191,10 @@ Skills, `/honest-jev:honest-jev` (type `honest-jev <level>` plain text from any 
 git clone https://github.com/bitskc/honest-jev && ./honest-jev/install.sh --both   # or --omp | --claude
 ```
 
-`install.sh` copies skills to `~/.omp/agent/skills/` and/or `~/.claude/skills/`, hooks to `~/.local/share/honest-jev/hooks/`, and `jev-call` + `jev-update` to `~/.local/bin/`. It never edits config and never touches a token; it prints what to wire next:
+`install.sh` copies skills to `~/.omp/agent/skills/` and/or `~/.claude/skills/`, hooks to `~/.local/share/honest-jev/hooks/`, and `jev-call` + `jev-update` to `~/.local/bin/`. Without flags it never edits config and never touches a token. Re-run with `--wire` to merge the MCP entry and the full hook set (backs up first; token-free `${VAR}` references only):
 
-- **omp**: `cp ~/.local/share/honest-jev/hooks/omp/jev-honest.ts ~/.omp/agent/hooks/pre/` (and `jev-guard.ts`). The honest hook registers `/honest-jev`, injects the level before each turn and sets the badge through omp's own status line.
-- **Claude Code, manual**: merge `config/claude-settings-hook.json` into `~/.claude/settings.json` — this now includes the opt-in `Stop` entry too (off until you set `JEV_STOP_GATE`/`stopGate`). The file has no `statusLine` key on purpose, so a shallow merge can't clobber one you already have (ponytail's included); to add the Honest Jev badge, compose it by hand: `{"type": "command", "command": "<your existing command, if any>; bash \"$HOME/.local/share/honest-jev/hooks/jev-honest-statusline.sh\""}`.
+- **omp**: writes `~/.omp/agent/mcp.json` and copies `jev-honest.ts` + `jev-guard.ts` into `~/.omp/agent/hooks/pre/`. The honest hook registers `/honest-jev`, injects the level before each turn and sets the badge through omp's own status line.
+- **Claude Code**: merges `config/claude-settings-hook.json` into `~/.claude/settings.json` — SessionStart / SubagentStart / UserPromptSubmit level hooks, the guard, the `jev_classify` redact PreToolUse hook, and the opt-in Stop gate (off until you set `JEV_STOP_GATE`/`stopGate`). The file has no `statusLine` key on purpose, so a shallow merge can't clobber one you already have (ponytail's included); to add the Honest Jev badge, compose it by hand: `{"type": "command", "command": "<your existing command, if any>; bash \"$HOME/.local/share/honest-jev/hooks/jev-honest-statusline.sh\""}`. `--no-hook` skips every hook and leaves only the MCP entry.
 
 Either way you need a deployed worker first: [Deploy your own server](#deploy-your-own-server).
 

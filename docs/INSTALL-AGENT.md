@@ -1,6 +1,6 @@
 # Install honest-jev (agent runbook)
 
-You are a coding agent. A user gave you this repo URL. Follow this file top to bottom to connect them to a **Jev MCP server** and install the **skills + guard hook** for the host you run in. Do not skip the verification section.
+You are a coding agent. A user gave you this repo URL. Follow this file top to bottom to connect them to a **Jev MCP server** and install the **skills + full hook set** (Honest Jev levels, guard, classify redact, Stop) for the host you run in. Do not skip the verification section.
 
 ## Rules (read first)
 1. **Never** commit, print, log or echo `JEV_MCP_TOKEN`, `MCP_BEARER_TOKEN`, `AI_GATEWAY_API_KEY` or any API key. Don't put them in command arguments you will repeat, in chat, in git, or in config files. Config files hold only `${JEV_MCP_URL}` / `${JEV_MCP_TOKEN}` references. Real values live in `~/.config/jev/env` (mode 0600) or the host's secret store.
@@ -79,16 +79,16 @@ From the repo root:
 ./install.sh --claude --wire     # Claude Code
 ./install.sh --both --wire       # both
 ./install.sh --claude --wire --project /path/to/repo   # project scope instead of user scope
-./install.sh --omp --wire --no-hook                    # skip the guard hook
+./install.sh --omp --wire --no-hook                    # skip all hooks (MCP only)
 ```
 Without `--wire` it only copies files (skills, hooks, `~/.local/bin/jev-call`) and prints manual steps. Make sure `~/.local/bin` is on `PATH`.
 
 What `--wire` writes (no secrets, only `${VAR}` references):
 
-| Host | MCP entry | Skills | Hook |
+| Host | MCP entry | Skills | Hooks |
 |---|---|---|---|
-| omp | `~/.omp/agent/mcp.json` (project: `.omp/mcp.json`) | `~/.omp/agent/skills/` | `~/.omp/agent/hooks/pre/jev-guard.ts` |
-| Claude Code | `~/.claude.json` top-level `mcpServers` (project: `.mcp.json`) | `~/.claude/skills/` | `PreToolUse` entry in `~/.claude/settings.json` |
+| omp | `~/.omp/agent/mcp.json` (project: `.omp/mcp.json`) | `~/.omp/agent/skills/` | `~/.omp/agent/hooks/pre/jev-guard.ts` + `jev-honest.ts` |
+| Claude Code | `~/.claude.json` top-level `mcpServers` (project: `.mcp.json`) | `~/.claude/skills/` | full set from `config/claude-settings-hook.json` into `~/.claude/settings.json` (levels + guard + classify redact + Stop) |
 
 If a config file isn't plain JSON, the installer refuses to touch it; merge `config/*.json` by hand.
 
@@ -100,13 +100,13 @@ If a config file isn't plain JSON, the installer refuses to touch it; merge `con
   { "mcpServers": { "jev": { "type": "http", "url": "${JEV_MCP_URL}", "headers": { "Authorization": "Bearer ${JEV_MCP_TOKEN}" } } } }
   ```
 - Reload: `/mcp reload`, `/reload-plugins`, then `/mcp list`, `/mcp test jev`.
-- The omp hook fails closed on a throwing handler, so `jev-guard.ts` swallows its own errors. It was not run inside omp when written; if it misbehaves, delete `~/.omp/agent/hooks/pre/jev-guard.ts`.
-- **gstack coexists.** gstack runs fine in omp, and its `careful` / `freeze` regex checks stay the fast path. The Jev hook only adds a second opinion; don't remove or reorder gstack's hooks.
+- The omp hooks fail closed on a throwing handler, so `jev-guard.ts` / `jev-honest.ts` swallow their own errors. They were not run inside omp when written; if either misbehaves, delete that file from `~/.omp/agent/hooks/pre/`.
+- **gstack coexists.** gstack runs fine in omp, and its `careful` / `freeze` regex checks stay the fast path. The Jev hooks only add a second opinion; don't remove or reorder gstack's hooks.
 
 ### 4b. Claude Code
 - Equivalent CLI (stores the *expanded* token in `~/.claude.json`, so prefer `--wire`, which stores references): `claude mcp add --transport http jev "$JEV_MCP_URL" --header "Authorization: Bearer $JEV_MCP_TOKEN"`.
 - Tools show up as `mcp__jev__<tool>`. Restart Claude Code after wiring; verify with `/mcp`.
-- Hook: `PreToolUse` on `Bash|Read` runs `~/.local/share/honest-jev/hooks/jev-guard-hook.sh`; it fails open. `JEV_GUARD_MODE=shadow` logs only.
+- Hooks from `--wire`: SessionStart / SubagentStart / UserPromptSubmit (Honest Jev levels), `PreToolUse` on `Bash|Read|NotebookRead|Grep` (`jev-guard-hook.sh`, fails open; `JEV_GUARD_MODE=shadow` logs only), `PreToolUse` on `jev_classify` (`jev-classify-redact.js`), and Stop (`jev-stop-verify.js`, off until `JEV_STOP_GATE`/`stopGate` is set).
 
 ### 4c. Codex, Cursor and everything else (manual, generic)
 1. **Skills**: `./install.sh` already copied them to `~/.omp/agent/skills` / `~/.claude/skills`. Copy `skills/*/` (each a `SKILL.md`) to the host's skills directory if it has one (Codex: `~/.codex/skills/`; check the host's docs), or paste the `description` + body into its rules file (`.cursor/rules/`, `AGENTS.md`, ...).

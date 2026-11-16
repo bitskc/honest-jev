@@ -284,16 +284,21 @@ HOME=$argH ARGV_LOG="$argLog" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN="$
 ok "$([ -s "$argLog" ] && echo called)" called "doctor: curl stub invoked (test is not vacuous)"
 ok "$(grep -c "$argTok" "$argLog" || true)" 0 "doctor: bearer token never appears in curl argv"
 
-# ── --wire (claude): guard entry comes from the shipped template; dedupe; --no-hook ─
+# ── --wire (claude): full hook set from the shipped template; dedupe; --no-hook ─
 gH="$tmp/guardhome"; mkdir -p "$gH"
 HOME=$gH bash "$root/install.sh" --claude --wire >/dev/null 2>&1
 HOME=$gH bash "$root/install.sh" --claude --wire >/dev/null 2>&1
 gs="$gH/.claude/settings.json"
-ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];print(len(p), p[0]["matcher"], p[0]["hooks"][0]["command"])' "$gs")" "1 Bash|Read|NotebookRead|Grep $gH/.local/share/honest-jev/hooks/jev-guard-hook.sh" "claude --wire: one guard entry after two runs; matcher and command from template, \$HOME resolved"
-ok "$(python3 -c 'import json,sys;print(sorted(json.load(open(sys.argv[1]))["hooks"]))' "$gs")" "['PreToolUse']" "claude --wire: only the guard PreToolUse is wired (no honest hooks)"
+ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];print(len(p), p[0]["matcher"], p[0]["hooks"][0]["command"], p[1]["matcher"], "jev-classify-redact.js" in p[1]["hooks"][0]["command"])' "$gs")" "2 Bash|Read|NotebookRead|Grep $gH/.local/share/honest-jev/hooks/jev-guard-hook.sh mcp__.*__jev_classify|jev_classify True" "claude --wire: guard + redact PreToolUse after two runs; \$HOME resolved; no duplicate"
+ok "$(python3 -c 'import json,sys;print(sorted(json.load(open(sys.argv[1]))["hooks"]))' "$gs")" "['PreToolUse', 'SessionStart', 'Stop', 'SubagentStart', 'UserPromptSubmit']" "claude --wire: full Honest Jev hook set (levels + guard + redact + Stop)"
+# \$HOME form already present must not duplicate when --wire expands to absolute
+dupH="$tmp/duphome"; mkdir -p "$dupH/.claude"
+python3 -c 'import json,os,sys; h=sys.argv[1]; t=json.load(open("config/claude-settings-hook.json")); json.dump(t, open(os.path.join(h,".claude/settings.json"),"w"), indent=2); open(os.path.join(h,".claude/settings.json"),"a").write("\n")' "$dupH"
+HOME=$dupH bash "$root/install.sh" --claude --wire >/dev/null 2>&1
+ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];print(len(p), sum(1 for e in p for h in e["hooks"] if "jev-guard-hook.sh" in h["command"]), all("$HOME" not in h["command"] for e in p for h in e["hooks"]))' "$dupH/.claude/settings.json")" "2 1 True" "claude --wire: \$HOME template form deduped against expanded path; commands expanded"
 nH="$tmp/nohookhome"; mkdir -p "$nH"
 HOME=$nH bash "$root/install.sh" --claude --wire --no-hook >/dev/null 2>&1
-ok "$([ -e "$nH/.claude/settings.json" ] && echo yes || echo no)" no "--no-hook: guard entry skipped (settings.json not written)"
+ok "$([ -e "$nH/.claude/settings.json" ] && echo yes || echo no)" no "--no-hook: all hooks skipped (settings.json not written)"
 
 # ── --wire: stale guard matcher refreshed in place; user hooks untouched; no duplicate ─
 mH="$tmp/matcherhome"; mkdir -p "$mH/.claude"
@@ -309,7 +314,7 @@ JSON
 HOME=$mH bash "$root/install.sh" --claude --wire >/dev/null 2>&1
 HOME=$mH bash "$root/install.sh" --claude --wire >/dev/null 2>&1
 ms="$mH/.claude/settings.json"
-ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];w={"matcher":"Write","hooks":[{"type":"command","command":"/usr/local/bin/my-write-hook.sh","timeout":3}]};s=[{"hooks":[{"type":"command","command":"/usr/local/bin/my-start.sh"}]}];print(len(p), [e["matcher"] for e in p], p[0]==w, d["hooks"]["SessionStart"]==s)' "$ms")" "2 ['Write', 'Bash|Read|NotebookRead|Grep'] True True" "claude --wire: stale guard matcher refreshed in place, no duplicate, user hooks untouched"
+ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];w={"matcher":"Write","hooks":[{"type":"command","command":"/usr/local/bin/my-write-hook.sh","timeout":3}]};ss=d["hooks"]["SessionStart"];print(len(p), [e.get("matcher") for e in p], p[0]==w, ss[0]=={"hooks":[{"type":"command","command":"/usr/local/bin/my-start.sh"}]}, any("jev-honest-activate.js" in h.get("command","") for e in ss for h in e.get("hooks",[])), len([e for e in p if any("jev-guard-hook.sh" in h.get("command","") for h in e.get("hooks",[]))]))' "$ms")" "3 ['Write', 'Bash|Read|NotebookRead|Grep', 'mcp__.*__jev_classify|jev_classify'] True True True 1" "claude --wire: stale guard matcher refreshed, redact added, user hooks untouched, no duplicate"
 
 # ── install-dir rename: old ~/.local/share/jev-agent-skills -> honest-jev ───────
 # Seeds an old-layout install + Claude settings that still point at the old path; asserts the
@@ -334,7 +339,7 @@ ok "$([ -L "$migH/.local/share/jev-agent-skills" ] && readlink "$migH/.local/sha
 ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];print(p[1]["hooks"][0]["command"])' "$migH/.claude/settings.json")" "$migH/.local/share/honest-jev/hooks/jev-guard-hook.sh" "migrate --wire: old-path guard command rewritten"
 ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["hooks"]["PreToolUse"][0]["hooks"][0]["command"], d["hooks"]["SessionStart"][0]["hooks"][0]["command"])' "$migH/.claude/settings.json")" "/usr/local/bin/my-write-hook.sh /usr/local/bin/my-start.sh" "migrate --wire: user hooks untouched"
 HOME=$migH bash "$root/install.sh" --claude --wire >/dev/null 2>&1
-ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];print(len(p), p[1]["hooks"][0]["command"])' "$migH/.claude/settings.json")" "2 $migH/.local/share/honest-jev/hooks/jev-guard-hook.sh" "migrate: second --wire is idempotent (no duplicate, path stays new)"
+ok "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d["hooks"]["PreToolUse"];g=[e for e in p if any("jev-guard-hook.sh" in h.get("command","") for h in e.get("hooks",[]))];print(len(p), len(g), g[0]["hooks"][0]["command"])' "$migH/.claude/settings.json")" "3 1 $migH/.local/share/honest-jev/hooks/jev-guard-hook.sh" "migrate: second --wire is idempotent (Write+guard+redact, path stays new)"
 # both dirs already exist: leave old alone, keep using new
 bothH="$tmp/bothhome"; mkdir -p "$bothH/.local/share/jev-agent-skills/hooks" "$bothH/.local/share/honest-jev/hooks" "$bothH/.claude"
 printf 'old-only\n' > "$bothH/.local/share/jev-agent-skills/installed-ref"
@@ -373,6 +378,11 @@ ok "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero "merge_json: non-object PreToolU
 ok "$(grep -c 'PreToolUse entries must be objects' "$tmp/hk.err")" 1 "merge_json: non-object PreToolUse entry gives a message"
 ok "$(grep -c 'Traceback' "$tmp/hk.err" || true)" 0 "merge_json: non-object PreToolUse entry gives no traceback"
 ok "$(cat "$hk/.claude/settings.json")" '{"hooks": {"PreToolUse": [1]}}' "merge_json: refused hooks file left untouched"
+printf '{"hooks": {"SessionStart": {}}}\n' > "$hk/.claude/settings.json"
+HOME=$hk bash "$root/install.sh" --claude --wire >/dev/null 2>"$tmp/hk.err"; rc=$?
+ok "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero "merge_json: non-array SessionStart refused with nonzero exit"
+ok "$(grep -c 'SessionStart is not a JSON array' "$tmp/hk.err")" 1 "merge_json: non-array SessionStart gives a message"
+ok "$(ls -A "$hk/.claude" | grep -c 'jev-bak' || true)" 0 "merge_json: refused SessionStart file gets no backup"
 
 # ── no-op rerun: unchanged files get no backup and no rewrite ───────────────────
 nH="$tmp/noophome"; mkdir -p "$nH"
@@ -387,12 +397,12 @@ ok "$(cmp -s "$nH/.claude.json" "$tmp/noop-mcp1" && cmp -s "$nH/.claude/settings
 cH="$tmp/cfghome"; cC="$tmp/cfgdir-claude"; mkdir -p "$cH"
 HOME=$cH CLAUDE_CONFIG_DIR=$cC bash "$root/install.sh" --claude --wire >/dev/null 2>&1
 ok "$(python3 -c 'import json,sys; print("jev" in json.load(open(sys.argv[1]))["mcpServers"])' "$cC/.claude.json")" True "CLAUDE_CONFIG_DIR: MCP entry in \$CLAUDE_CONFIG_DIR/.claude.json"
-ok "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]))' "$cC/settings.json")" 1 "CLAUDE_CONFIG_DIR: guard hook in \$CLAUDE_CONFIG_DIR/settings.json"
+ok "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]))' "$cC/settings.json")" 2 "CLAUDE_CONFIG_DIR: guard + redact hooks in \$CLAUDE_CONFIG_DIR/settings.json"
 ok "$([ -d "$cC/skills/jev-classify" ] && echo yes)" yes "CLAUDE_CONFIG_DIR: skills copied to \$CLAUDE_CONFIG_DIR/skills"
 ok "$(if [ -e "$cH/.claude.json" ] || [ -e "$cH/.claude" ]; then echo leaked; else echo clean; fi)" clean "CLAUDE_CONFIG_DIR: nothing written to the default ~/.claude"
 pH="$tmp/ompdhome"; pP="$tmp/omp-agent"; mkdir -p "$pH"
 HOME=$pH PI_CODING_AGENT_DIR=$pP bash "$root/install.sh" --omp --wire >/dev/null 2>&1
-ok "$([ -f "$pP/mcp.json" ] && [ -f "$pP/hooks/pre/jev-guard.ts" ] && [ -d "$pP/skills/jev-classify" ] && echo yes)" yes "PI_CODING_AGENT_DIR: mcp.json, guard hook and skills in the override dir"
+ok "$([ -f "$pP/mcp.json" ] && [ -f "$pP/hooks/pre/jev-guard.ts" ] && [ -f "$pP/hooks/pre/jev-honest.ts" ] && [ -d "$pP/skills/jev-classify" ] && echo yes)" yes "PI_CODING_AGENT_DIR: mcp.json, guard+honest hooks and skills in the override dir"
 ok "$(if [ -e "$pH/.omp/agent/mcp.json" ] || [ -e "$pH/.omp/agent/skills" ]; then echo leaked; else echo clean; fi)" clean "PI_CODING_AGENT_DIR: nothing written to the default ~/.omp/agent"
 
 # ── --doctor: MCP handshake order, tool count, exit codes; flags that must run alone ─
