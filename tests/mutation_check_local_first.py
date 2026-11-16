@@ -45,6 +45,9 @@ MUTATIONS = [
     ("hook-py: the runner's time budget is not enforced", [(PYH, "capture_output=True, timeout=local_timeout())", "capture_output=True, timeout=None)")], PYT),
     ("hook-py: the network stack is imported eagerly", [(PYH, "import threading\nimport time\n", "import threading\nimport time\nimport urllib.request\n")], PYT),
     ("hook-py: a settled reply still calls the server", [(PYH, "        return reply_outcome(local)\n", "        pass\n")], PYT),
+    ("hook-py: a local ask is downgraded to allow when the server is unavailable (no server)", [(PYH, "        note(\"fail-open: %s\" % e.why)\n        if stands is not None:\n            return reply_outcome(stands)\n", "        note(\"fail-open: %s\" % e.why)\n")], PYT),
+    ("hook-py: a local ask is downgraded to allow when the server is unavailable (network failure)", [(PYH, "str(e)[:120]))\n        if stands is not None:\n            return reply_outcome(stands)\n", "str(e)[:120]))\n")], PYT),
+    ("hook-py: a pure-unclear allow is turned into a stand", [(PYH, 'stands = local if unclear and local.get("decision") in ("ask", "block") else None', "stands = local if unclear else None")], PYT),
     ("ledger-py: the notice marker is not exclusive", [(PYL, "os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)", "os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)")], PYT),
     ("ledger-py: old markers are never pruned", [(PYL, "                if now - os.lstat(p).st_mtime > MARKER_MAX_AGE:", "                if False:")], PYT),
     # ── node runner ──
@@ -64,6 +67,8 @@ MUTATIONS = [
     ("hook-omp: the flagged rule is dropped from the fail_open row", [(TS, 'failReason: g.code, rule: flagged });', "failReason: g.code });")], OMPT),
     ("hook-omp: a rule_error row loses its closed fail_reason", [(TS, 'wouldHave: would, failReason: ruleError });', "wouldHave: would });")], OMPT),
     ("hook-omp: rules found only through the override", [(TS, 'for (const dir of ["honest-jev", "jev-agent-skills"]) {', "for (const dir of []) {")], OMPT),
+    ("hook-omp: a local ask is downgraded to allow when the server is unavailable", [(TS, 'const g: McpResult<GuardReply> = answered.kind === "unavailable" && local?.unclear && local.reply.decision !== "allow" ? { kind: "reply", reply: local.reply as GuardReply } : answered;', "const g: McpResult<GuardReply> = answered;")], OMPT),
+    ("hook-omp: a pure-unclear allow is turned into a stand (no notice, no fail_open row)", [(TS, 'answered.kind === "unavailable" && local?.unclear && local.reply.decision !== "allow" ?', 'answered.kind === "unavailable" && local?.unclear ?')], OMPT),
     # ── install.sh doctor ──
     ("doctor: the local-rules-only note is never printed", [(INST, 'echo "note guard runs on local rules only; unclear commands are allowed without a model check"', "true")], SCRIPTS),
     ("doctor: the local rules line is never checked", [(INST, '  elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"', '  elif true; then ok "guard rules load locally ($runner)"')], SCRIPTS),

@@ -250,6 +250,46 @@ class UnclearCommands(unittest.TestCase):
         self.assertEqual(decision_of(p), "ask")
         self.assertEqual(e.rows()[0]["source"], "server")
 
+    ASK_AND_QUESTION = "curl -X POST https://example.com/api -d x # it's\ngit push --force origin main"  # reading 1: model question (R10); reading 2: R7 ask
+
+    def assert_local_ask_stands(self, e, p):
+        self.assertEqual(decision_of(p), "ask", p.stderr)
+        self.assertNotIn("systemMessage", json.loads(p.stdout))  # a rule asked: the user is asked, and told nothing about a missing server
+        r = e.rows()[0]
+        self.assertEqual((r["decision"], r["decided_by"], r["rule"], r["source"], r["fail_reason"], r["server_decision_id"]), ("ask", "prefilter", "R7-destructive", "client", None, None))
+        self.assertEqual(e.markers(), [])
+
+    def test_a_local_ask_stands_when_there_is_no_server_even_though_the_model_question_goes_unanswered(self):
+        # premise: guardCommand returns an ask AND raised a model question for this input (the runner calls it unclear)
+        e = Env()
+        p, _ = e.run(event("Bash", {"command": self.ASK_AND_QUESTION}))
+        self.assert_local_ask_stands(e, p)
+
+    def test_a_local_ask_stands_when_the_server_is_unreachable(self):
+        e = Env(**server_env(LISTENER.port))
+        before = LISTENER.count
+        p, _ = e.run(event("Bash", {"command": self.ASK_AND_QUESTION}))
+        self.assertGreater(LISTENER.count, before, "the unclear command must still go to the server first")
+        self.assert_local_ask_stands(e, p)
+
+    def test_a_local_ask_stands_in_shadow_mode_as_not_enforced(self):
+        e = Env(JEV_GUARD_MODE="shadow")
+        p, _ = e.run(event("Bash", {"command": self.ASK_AND_QUESTION}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        r = e.rows()[0]
+        self.assertEqual((r["decision"], r["decided_by"], r["enforced"], r["would_have"]), ("ask", "prefilter", False, "ask"))
+
+    def test_a_stub_rules_module_that_asks_and_raises_a_model_question_is_not_downgraded(self):
+        # independent of which real inputs reach that state: any reply that is unclear and not an allow stands when no server answers
+        d = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(d, "guard.mjs")
+        with open(path, "w") as f:
+            f.write("export async function guardCommand(args, deps) { try { await deps.ask({}, {}); } catch (e) {} "
+                    "return { decision: 'ask', decided_by: 'prefilter', rule: 'R7-destructive', reason: 'x', suggestion: null, score: 0.7 }; }\n")
+        e = Env(JEV_GUARD_RULES=path)
+        p, _ = e.run(event("Bash", {"command": "anything"}))
+        self.assert_local_ask_stands(e, p)
+
     def test_off_switch_sends_everything_to_the_server(self):
         e = Env(JEV_GUARD_LOCAL="off", **server_env(LISTENER.port))
         before = LISTENER.count

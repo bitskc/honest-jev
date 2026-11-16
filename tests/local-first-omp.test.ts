@@ -172,6 +172,53 @@ test("a model question raised only by the masked reading is unclear: it is sent"
   expect(calls.length).toBe(1);
 });
 
+// reading 1 raises a model question (R10), reading 2 is a hard ask (R7): the verdict is an ask AND the question was raised, so "unclear"
+const ASK_AND_QUESTION = "curl -X POST https://example.com/api -d x # it's\ngit push --force origin main";
+
+test("premise: guardCommand can return an ask while a model question was raised, and the local verdict calls it unclear", async () => {
+  env();
+  const v = await mod.localGuard({ tool: "Bash", command: ASK_AND_QUESTION, cwd: "/home/u/p", home: "/home/u" });
+  expect([v?.reply.decision, v?.reply.decided_by, v?.reply.rule, v?.unclear]).toEqual(["ask", "prefilter", "R7-destructive", true]);
+});
+
+test("a local ask stands when no server is configured: the user is asked, nothing is said about the server, the row is the local ask", async () => {
+  env({ JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined });
+  notes.length = 0;
+  const v = await hook().call(bash(ASK_AND_QUESTION));
+  expect(v?.block).toBe(true); // ask with no UI blocks
+  expect(v?.reason).toContain("R7-destructive");
+  expect(notes).toEqual([]);
+  expect(rows()[0]).toMatchObject({ decision: "ask", decided_by: "prefilter", rule: "R7-destructive", source: "client", fail_reason: null, server_decision_id: null });
+});
+
+test("a local ask stands when the server is unreachable (the unclear command is still sent first)", async () => {
+  env();
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => { calls.push({ url: "", body: { params: { name: "", arguments: {} } } }); throw new Error("connect ECONNREFUSED"); }) as typeof fetch;
+  try {
+    const v = await hook().call(bash(ASK_AND_QUESTION));
+    expect(calls.length).toBe(1);
+    expect(v?.block).toBe(true);
+    expect(rows()[0]).toMatchObject({ decision: "ask", decided_by: "prefilter", rule: "R7-destructive", source: "client", fail_reason: null });
+  } finally { globalThis.fetch = real; }
+});
+
+test("a local ask stands in shadow mode as not enforced", async () => {
+  env({ JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined, JEV_GUARD_MODE: "shadow" });
+  expect(await hook().call(bash(ASK_AND_QUESTION))).toBeUndefined();
+  expect(rows()[0]).toMatchObject({ decision: "ask", decided_by: "prefilter", enforced: false, would_have: "ask" });
+});
+
+test("a stub rules module that asks and raises a model question is not downgraded (independent of which real inputs reach that state)", async () => {
+  const p = join(mkdtempSync(join(dir, "r-")), "guard.mjs");
+  writeFileSync(p, "export async function guardCommand(args, deps) { try { await deps.ask({}, {}); } catch (e) {} return { decision: 'ask', decided_by: 'prefilter', rule: 'R7-destructive', reason: 'x', suggestion: null, score: 0.7 }; }\n");
+  env({ JEV_GUARD_RULES: p, JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined });
+  const v = await hook().call(bash("anything"));
+  expect(v?.block).toBe(true);
+  expect(notes).toEqual([]);
+  expect(rows()[0]).toMatchObject({ decision: "ask", decided_by: "prefilter", source: "client" });
+});
+
 test("guardRulesPath: override is the only candidate; else the install tree, then the pre-rename dir", () => {
   const has = (...ok: string[]) => (p: string) => ok.includes(p);
   const tree = (name: string) => `/h/.local/share/${name}/jev-policy/server/src/kit/guard.mjs`;

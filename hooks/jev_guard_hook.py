@@ -318,12 +318,17 @@ def guard_outcome(args):
         return reply_outcome(local)
     # What the ledger row of a command that goes on without a decision can still say: which rule flagged it (a rule id, never text).
     hint = {"rule": local.get("rule")} if unclear and isinstance(local.get("rule"), str) else None
+    # `unclear` can hold while the local reply is already an ask (a rule asked on one reading, the model question came from the other):
+    # if the server then cannot be consulted, that ask is the decision. Never an allow only because nobody answered the model question.
+    stands = local if unclear and local.get("decision") in ("ask", "block") else None
     try:
         signal.signal(signal.SIGALRM, _alarm)
         signal.setitimer(signal.ITIMER_REAL, TIMEOUT + 0.5)
         r = call_guard(args)
     except GuardFailOpen as e:
         note("fail-open: %s" % e.why)
+        if stands is not None:
+            return reply_outcome(stands)
         notice = LOCAL_NOTICE if unclear and e.code == "client_config" and first_unclear_in_session() else None
         return Outcome("allow", reply=hint, row=dict(decision="allow", decided_by="fail_open", fail_reason=e.code, enforced=True), notice=notice)
     except (ServerRejected, RedirectRefused) as e:  # server reachable but refused/redirected the call: ask, never allow silently
@@ -334,6 +339,8 @@ def guard_outcome(args):
                        row=dict(decision="ask", decided_by="fail_closed", fail_reason="client_rejected"))
     except Exception as e:  # timeout, DNS, HTTP error, bad JSON ... all fail open
         note("fail-open: %s: %s" % (type(e).__name__, str(e)[:120]))
+        if stands is not None:
+            return reply_outcome(stands)
         return Outcome("allow", reply=hint, row=dict(decision="allow", decided_by="fail_open", fail_reason=_ledger.fail_reason_for(e) if _ledger else "client_network", enforced=True))
     finally:
         try:

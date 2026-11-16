@@ -589,10 +589,14 @@ export default function jevGuard(pi: ExtensionAPI) {
         ? policyDecide(String(args.command), policyCwd, tStart, (reply, o) => led(tStart, reply, o), (m) => pi.logger?.warn?.(m)).catch(() => null)
         : Promise.resolve(null);
       const settled = local !== null && !local.unclear && (local.reply.decided_by === "prefilter" || local.reply.decided_by === "fail_closed");
-      const [g, pol] = await Promise.all([
+      const [answered, pol] = await Promise.all([
         settled ? Promise.resolve<McpResult<GuardReply>>({ kind: "reply", reply: local!.reply as GuardReply }) : mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()),
         pending,
       ]);
+      // `unclear` can hold while the local reply is already an ask (a rule asked on one reading, the model question came from the other):
+      // if the server cannot be consulted, that ask is the decision, through the same branch a settled local reply takes. Never an
+      // allow only because nobody answered the model question.
+      const g: McpResult<GuardReply> = answered.kind === "unavailable" && local?.unclear && local.reply.decision !== "allow" ? { kind: "reply", reply: local.reply as GuardReply } : answered;
 
       // the guard's own effect and reason (rows and shadow notes exactly as before)
       let ge: Effect = "allow", gWhy = "", gRow: string | null = null;
