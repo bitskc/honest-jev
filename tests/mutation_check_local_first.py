@@ -91,6 +91,10 @@ MUTATIONS = [
     # ── install.sh doctor ──
     ("doctor: the local-rules-only note is never printed", [(INST, 'echo "note guard runs on local rules only; unclear commands are allowed without a model check"', "true")], SCRIPTS),
     ("doctor: the local rules line is never checked", [(INST, '  elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"', '  elif true; then ok "guard rules load locally ($runner)"')], SCRIPTS),
+    ("doctor: the 'local rules only' note is printed although the rules do not load", [(INST, '  elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only', '  elif true; then echo "note guard runs on local rules only')], SCRIPTS),
+    ("doctor: no note when the rules do not load and a server is configured", [(INST, '[ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"', "true")], SCRIPTS),
+    ("doctor: no note when neither the rules nor a server work", [(INST, '  else echo "note the guard is not checking commands: the local rules do not load and no server is configured"; fi', "  else :; fi")], SCRIPTS),
+    ("doctor: a passing rules check is never recorded", [(INST, 'ok "guard rules load locally ($rp)"; rules_ok=1', 'ok "guard rules load locally ($rp)"')], SCRIPTS),
 ]
 
 

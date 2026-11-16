@@ -58,12 +58,17 @@ if [ "$doctor" = 1 ]; then
   # of the guard that needs no server.
   runner="$HOME/.local/share/honest-jev/hooks/jev-guard-local.mjs"; [ -f "$runner" ] || runner="$here/hooks/jev-guard-local.mjs"
   rt=$(command -v node || command -v bun || true)
+  rules_ok=0
   if [ -z "$rt" ]; then bad "guard rules do not load locally: no node or bun on PATH"
-  elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"
+  elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"; rules_ok=1
   else bad "guard rules do not load locally (runner: $runner)"; fi
   [ -n "${JEV_MCP_URL:-}" ] && ok "JEV_MCP_URL set" || bad "JEV_MCP_URL not set"
   [ -n "${JEV_MCP_TOKEN:-}" ] && ok "JEV_MCP_TOKEN set" || bad "JEV_MCP_TOKEN not set"
-  [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] || echo "note guard runs on local rules only; unclear commands are allowed without a model check"
+  # what the guard is doing right now depends on BOTH: whether the local rules load, and whether a server is configured
+  if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; then
+    [ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"
+  elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only; unclear commands are allowed without a model check"
+  else echo "note the guard is not checking commands: the local rules do not load and no server is configured"; fi
   if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; then
     base="${JEV_MCP_URL%/mcp}"
     [ "$(curl -s -m 10 "$base/health" || true)" = ok ] && ok "/health" || bad "/health did not return ok"

@@ -271,8 +271,20 @@ doc_broken=$(HOME=$brokenH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH
 ok "$(printf '%s\n' "$doc_broken" | head -1)" "FAIL guard rules do not load locally (runner: $brokenH/.local/share/honest-jev/hooks/jev-guard-local.mjs)" "doctor: an installed runner that fails -> FAIL line"
 ok "$rc" 1 "doctor: the local rules not loading -> exit 1"
 nonode="$tmp/nonode"; mkdir -p "$nonode"; for t in bash env dirname cat head sed grep tr mktemp rm mkdir python3 curl; do p=$(command -v "$t") && ln -sf "$p" "$nonode/$t"; done
-doc_nonode=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$nonode" "$nonode/bash" "$root/install.sh" --doctor 2>/dev/null | head -1)
+doc_nonode_full=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$nonode" "$nonode/bash" "$root/install.sh" --doctor 2>/dev/null)
+doc_nonode=$(printf '%s\n' "$doc_nonode_full" | head -1)
 ok "$doc_nonode" "FAIL guard rules do not load locally: no node or bun on PATH" "doctor: no node or bun -> FAIL line"
+# the `note` line says what the guard is doing right now, so it depends on BOTH the rules check and whether a server is configured
+notes_of() { printf '%s\n' "$1" | grep '^note ' || true; }
+n_local="note guard runs on local rules only; unclear commands are allowed without a model check"
+n_none="note the guard is not checking commands: the local rules do not load and no server is configured"
+n_srv="note the local rules do not load; every command is sent to the server"
+ok "$(notes_of "$doc_full")" "$n_local" "doctor: rules load + no server -> the local-rules-only note, and no other note"
+ok "$(notes_of "$doc_broken")" "$n_none" "doctor: rules do not load + no server -> says the guard is not checking commands (not 'local rules only')"
+doc_broken_srv=$(HOME=$brokenH JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=t PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(notes_of "$doc_broken_srv")" "$n_srv" "doctor: rules do not load + server configured -> every command is sent to the server"
+ok "$(notes_of "$doc_set")" "" "doctor: rules load + server configured -> no note"
+ok "$(notes_of "$doc_nonode_full")" "$n_srv" "doctor: no node or bun (rules cannot load) + a server configured (this home's env file has one) -> every command is sent to the server"
 
 # ── merge_json: first backup kept, atomic write, non-JSON left alone ─────────────
 mj="$tmp/mjhome"; mkdir -p "$mj/.claude"; printf '{"keep":1}\n' > "$mj/.claude.json"
