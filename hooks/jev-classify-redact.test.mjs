@@ -50,3 +50,28 @@ test("nothing to redact: prints nothing", () => {
 test("non-classify tools print nothing", () => {
   assert.equal(run({ tool_name: "Bash", tool_input: { command: "ls" } }), "");
 });
+
+test("an item whose text is empty or whitespace only is removed; the other item is unchanged and systemMessage reports 1 dropped", () => {
+  const out = JSON.parse(run({
+    tool_name: "jev_classify",
+    tool_input: { items: [{ id: "c1", text: "   " }, { id: "c2", text: "CLAIM: plain" }] },
+  }));
+  const items = out.hookSpecificOutput.updatedInput.items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0].id, "c2");
+  assert.equal(items[0].text, "CLAIM: plain");
+  assert.equal(out.systemMessage, "honest-jev: dropped 1 jev_classify item(s) after redact-or-refuse");
+});
+
+test("a secret-only item is kept with its text replaced by the redaction marker and produces no systemMessage", () => {
+  const out = JSON.parse(run({
+    tool_name: "jev_classify",
+    tool_input: { items: [{ id: "c1", text: SECRET }, { id: "c2", text: "CLAIM: plain" }] },
+  }));
+  const items = out.hookSpecificOutput.updatedInput.items;
+  assert.equal(items.length, 2);
+  assert.equal(items[0].id, "c1");
+  assert.equal(items[0].text, "<redacted>");
+  assert.equal(items[1].text, "CLAIM: plain");
+  assert.equal(out.systemMessage, undefined);
+});
