@@ -2633,11 +2633,42 @@ function* destructiveMatches(ctx) {
       }
     }
   }
+  const sqlDrop = sqlDropViaStdin(ctx.command);
+  if (sqlDrop) yield m(`\`DROP ${sqlDrop.kind}\` fed to \`${sqlDrop.client}\` on stdin deletes data irreversibly`);
   const shellPipe = detectShellPipe(ctx);
   if (shellPipe) yield m(`\`${shellPipe.first} ... | ${shellPipe.target}\` runs a downloaded script unread`);
 
 }
 
+const sqlClientIn = (text) => {
+  for (const seg of splitSegments(text)) {
+    const [p] = resolveCommand(seg);
+    if (p !== null && SQL_CLIENTS.has(p)) return p;
+  }
+  return null;
+};
+/** A DROP DATABASE/SCHEMA/TABLE a SQL client reads on stdin rather than in its own argv: a heredoc (`psql <<EOF`) or
+ *  here-string body on the client's line, or an earlier stage of a pipeline that ends in the client (`echo 'DROP TABLE x' | psql`).
+ *  The in-argv form (`psql -c 'DROP TABLE x'`) is the per-segment check above. Returns {client, kind} or null. */
+function sqlDropViaStdin(command) {
+  if (!command || !/drop/i.test(command)) return null;
+  for (const f of stdinFeeds(command)) {
+    const mm = SQL_DROP_RE.exec(f.body);
+    const client = mm && sqlClientIn(stripHeredocs(f.line));
+    if (client) return { client, kind: mm[1].toUpperCase() };
+  }
+  for (const pipeline of splitPipelines(stripHeredocs(command))) {
+    for (let j = 1; j < pipeline.length; j++) {
+      const [p] = resolveCommand(pipeline[j]);
+      if (p === null || !SQL_CLIENTS.has(p)) continue;
+      for (let i = 0; i < j; i++) {
+        const mm = SQL_DROP_RE.exec(pipeline[i]);
+        if (mm) return { client: p, kind: mm[1].toUpperCase() };
+      }
+    }
+  }
+  return null;
+}
 function ruleDestructive(ctx) {
   // The strictest match wins: an ask raised by an earlier segment (`rm -rf .git`) must not hide a block raised by a later one (`dd of=/dev/sda`).
   let first = null;
