@@ -502,8 +502,8 @@
         "scpx",
         "shc"
       ],
-      "issue": "#188",
-      "justification": "Nesting past the documented `-c` cap: the plain row (3 shell wrappers) asks, and one more wrapper puts the payload beyond the 3 unwrap layers, which the guard documents as invisible (SKILL.md, README, `kit.test.mjs` 'round 4 documented limit'). Making the cap ask instead of allow is a design decision for the owner (see the #188 comment); until then it is exempt."
+      "issue": "#1",
+      "justification": "Nesting past the documented `-c` cap: the plain row (3 shell wrappers) asks, and one more wrapper puts the payload beyond the 3 unwrap layers, which the guard documents as invisible (SKILL.md, README, `kit.test.mjs` 'round 4 documented limit'). Making the cap ask instead of allow is a design decision for the owner (tracked in #1); until then it is exempt."
     }
   ]
 }
