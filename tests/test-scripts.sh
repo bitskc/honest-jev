@@ -7,6 +7,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 pass=0; fail=0
 ok() { if [ "$1" = "$2" ]; then pass=$((pass+1)); printf 'PASS %s\n' "$3"; else fail=$((fail+1)); printf 'FAIL %s\n     expected: %s\n     got:      %s\n' "$3" "$2" "$1"; fi; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+export JEV_LEDGER="$tmp/ledger.jsonl"  # every hook and script below writes its decision rows here, never the user's real log
 
 # ── statusline badge ────────────────────────────────────────────────────────────
 sl="$root/hooks/jev-honest-statusline.sh"
