@@ -2457,6 +2457,50 @@ function findDeleteReach(args, home, cwds) {
   if (!filtered && !roots.every((r) => r10IsTemp(r.startsWith("~") ? (home || "") + r.slice(1) : r))) return "with no name or type filter deletes everything under its roots";
   return null;
 }
+// git push's options that take a separate value (`-o ci.skip`, `--repo origin`): the value is not a refspec or a flag.
+const GIT_PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
+/** What a `git push` argv (after `push`) does to remote refs. `force` / `mirror` hold the spelling that triggered it.
+ *  Git accepts bundled short flags (`-fu`, `-uf`, `-qf`), a `+` refspec (`+main`, `+HEAD:main`, `'+refs/heads/*:...'`) forces
+ *  that one ref, and `--mirror` / `--prune` force-update or delete remote refs. A bundled `-d` (`-ud`) deletes. */
+function gitPushFlags(args) {
+  const out = { force: null, mirror: null, delete: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = rdUnquote(args[i]);
+    if (a === "--") { for (const r of args.slice(i + 1)) if (rdUnquote(r).startsWith("+")) out.force ??= rdUnquote(r); break; }
+    if (GIT_PUSH_VALUE_OPTS.has(a)) { i++; continue; }
+    if (a === "--force" || a === "--force-if-includes") { out.force ??= a; continue; }
+    if (a === "--mirror" || a === "--prune") { out.mirror ??= a; continue; }
+    if (a.startsWith("--")) continue;
+    if (a.startsWith("-") && a.length > 1) {
+      for (const ch of a.slice(1)) {
+        if (ch === "o") break; // -o takes the rest of the word (or the next word) as its value
+        if (ch === "f") out.force ??= a;
+        if (ch === "d") out.delete = true;
+      }
+      if (a === "-o") i++;
+      continue;
+    }
+    if (a.startsWith("+")) out.force ??= a;
+  }
+  return out;
+}
+/** `git branch -D`, a bundle holding D (`-Dv`) or both d and f (`-df`, `-fd`), or delete with force spelled out. */
+function gitBranchForceDelete(args) {
+  let del = false;
+  let force = false;
+  for (const raw of args) {
+    const a = rdUnquote(raw);
+    if (a === "--") break;
+    if (a === "--delete") del = true;
+    else if (a === "--force") force = true;
+    else if (/^-[A-Za-z]+$/.test(a)) {
+      if (a.includes("D")) return true;
+      if (a.includes("d")) del = true;
+      if (a.includes("f")) force = true;
+    }
+  }
+  return del && force;
+}
 function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
   const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
@@ -2473,14 +2517,16 @@ function* destructiveMatches(ctx) {
       if (!args.length) continue;
       const sub = args[0];
       const joined = " " + args.join(" ");
-      if (sub === "push" && /(^|\s)(--force|-f)(\s|$)/.test(joined)) yield m("`git push --force` overwrites published history");
+      const push = sub === "push" ? gitPushFlags(args.slice(1)) : null;
+      if (push && push.force) yield m(`\`git push ${push.force}\` overwrites published history`);
+      if (push && push.mirror) yield m(`\`git push ${push.mirror}\` force-updates and deletes remote refs to match the local repository`);
       if (sub === "reset" && args.includes("--hard")) yield m("`git reset --hard` discards uncommitted work irreversibly");
-      if (sub === "branch" && args.some((a) => a === "-D" || (a === "--delete" && args.includes("--force")))) yield m("`git branch -D` force-deletes a branch");
+      if (sub === "branch" && gitBranchForceDelete(args.slice(1))) yield m("`git branch -D` force-deletes a branch");
       if (sub === "clean" && args.some((a) => a.startsWith("-") && a.includes("f"))) yield m("`git clean -f` deletes untracked files irreversibly");
       if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${sub}\` rewrites history`);
       // push --delete/-d/:ref and --force-with-lease mutate published refs; update-ref -d deletes a ref
       // in place -- same "hard to reverse" tier as the existing push --force/branch -D asks.
-      if (sub === "push" && (/(^|\s)(--delete|-d)(\s|$)/.test(joined) || /--force-with-lease/.test(joined) ||
+      if (sub === "push" && (/(^|\s)(--delete|-d)(\s|$)/.test(joined) || push.delete || /--force-with-lease/.test(joined) ||
           args.slice(1).some((a) => a.startsWith(":")))) {
         yield m("\`git push\` deleting or lease-forcing published refs rewrites shared history");
       }
