@@ -1447,6 +1447,66 @@ function findReads(ctx, args) {
   if (args.some((a) => FIND_READ_OPTS.has(a) || a.startsWith("-files0-from="))) return true;
   return [ctx.command, ...ctx.unwrappedScripts, ...ctx.inputScripts.map((b) => b.body)].some((t) => OUTPUT_ROUTING_RE.test(t));
 }
+// Secret-manager and keychain CLIs whose job is to print a stored secret to stdout. Asking (not blocking) matches how
+// `op read` / `gh auth token` already land, and keeps the capture form (`X=$(vault kv get -field=t kv/app) cmd`, which
+// prints nothing) on the assignment exemption every other reader gets.
+const SECRET_CLI_VALUE_OPTS = new Set(["--profile", "--region", "--output", "-o", "--query", "--project", "--account", "--vault",
+  "--subscription", "--config", "--namespace", "-n", "--context", "-format", "-address", "-namespace", "-mount", "--keychain", "-k"]);
+const PASS_NON_PRINTING = new Set(["ls", "list", "find", "search", "grep", "insert", "add", "edit", "generate", "rm", "remove", "delete",
+  "mv", "rename", "cp", "copy", "git", "init", "help", "version", "otp-uri", "otp-insert"]);
+/** `{why}` when this argv prints a secret held by a secret manager, keychain or credential helper, else null. */
+export function secretCliPrint(prog, args) {
+  const a = args.map(rdUnquote);
+  const pos = cleanPositionals(a, SECRET_CLI_VALUE_OPTS);
+  const has = (...flags) => a.some((t) => flags.includes(t) || flags.some((f) => f.startsWith("--") && t.startsWith(f + "=")));
+  switch (prog) {
+    case "pass": case "gopass": {
+      if (has("-c", "--clip", "-q", "--qr")) return null; // clipboard / QR only: nothing printed
+      if (!pos.length || PASS_NON_PRINTING.has(pos[0])) return null;
+      return `\`${prog} ${pos.slice(0, 2).join(" ")}\` prints a stored password`; // `show`, `otp`, or a bare entry name (pass's default is show)
+    }
+    case "vault":
+      if ((pos[0] === "kv" && pos[1] === "get") || pos[0] === "read") return `\`vault ${pos.slice(0, pos[0] === "kv" ? 2 : 1).join(" ")}\` prints a stored secret`;
+      return null;
+    case "aws":
+      if (pos[0] === "secretsmanager" && pos[1] === "get-secret-value") return "`aws secretsmanager get-secret-value` prints a secret value";
+      if (pos[0] === "ssm" && /^get-parameters?(?:-by-path)?$/.test(pos[1] || "") && has("--with-decryption")) return `\`aws ssm ${pos[1]} --with-decryption\` prints decrypted parameters`;
+      return null;
+    case "gcloud":
+      if (pos[0] === "secrets" && pos[1] === "versions" && pos[2] === "access") return "`gcloud secrets versions access` prints a secret value";
+      return null;
+    case "az":
+      if (pos[0] === "keyvault" && pos[1] === "secret" && (pos[2] === "show" || pos[2] === "download")) return `\`az keyvault secret ${pos[2]}\` prints a secret value`;
+      return null;
+    case "security":
+      if (/^find-(?:generic|internet)-password$/.test(pos[0] || "") && a.some((t) => /^-[A-Za-z]*[wg]/.test(t))) return `\`security ${pos[0]} -w/-g\` prints a keychain password`;
+      if (pos[0] === "dump-keychain" && a.some((t) => /^-[A-Za-z]*d/.test(t))) return "`security dump-keychain -d` prints every keychain secret";
+      return null;
+    case "gpg": case "gpg2":
+      if (has("--export-secret-keys", "--export-secret-subkeys", "--export-secret-key")) return "`gpg --export-secret-keys` exports private key material";
+      return null;
+    case "git":
+      if (pos[0] === "credential" && pos[1] === "fill") return "`git credential fill` prints the stored password for a host";
+      return null;
+    case "op":
+      if (pos[0] === "read" || (pos[0] === "item" && pos[1] === "get" && has("--reveal"))) return `\`op ${pos.slice(0, pos[0] === "read" ? 1 : 2).join(" ")}\` prints a 1Password secret`;
+      return null;
+    case "bw":
+      if (pos[0] === "get" && ["password", "item", "totp", "notes"].includes(pos[1])) return `\`bw get ${pos[1]}\` prints a Bitwarden secret`;
+      return null;
+    case "lpass":
+      if (pos[0] === "show") return "`lpass show` prints a LastPass secret";
+      return null;
+    case "doppler":
+      if (pos[0] === "secrets" && (pos[1] === undefined || pos[1] === "get" || pos[1] === "download")) return `\`doppler secrets${pos[1] ? " " + pos[1] : ""}\` prints secret values`;
+      return null;
+    case "kubectl":
+      if (pos[0] === "get" && /^secrets?$|^secrets?\//.test(pos[1] || "") && a.some((t) => /^(?:-o|--output)(?:=|$)|^-o\S/.test(t))) return "`kubectl get secret -o ...` prints the secret's data";
+      return null;
+    default:
+      return null;
+  }
+}
 function ruleSecret(ctx) {
   const { tool, home } = ctx;
   if (tool === "Read" || tool === "NotebookRead") {
@@ -1483,6 +1543,11 @@ function ruleSecret(ctx) {
     // find prints names only, but `-exec cat {}` and `find ... | xargs cat` hand the matched files to a content
     // program, so find's own operands are checked on the bare segment.
     const [bareProg, bareArgs] = programOf(seg);
+    {
+      const [cliProg, cliArgs] = resolveCommand(seg);
+      const why = cliProg && secretCliPrint(cliProg, cliArgs);
+      if (why) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `${why}: it would land in the transcript; confirm it is intended`, suggestion: R1_SUGGESTION };
+    }
     // Q6: sourcing a secrets file loads values into the shell; ask (was allow; R1_SUGGESTION still names the safer form).
     if ((bareProg === "source" || bareProg === ".") && bareArgs[0]) {
       const src = secretShapeIn([bareArgs[0]], home, true);
