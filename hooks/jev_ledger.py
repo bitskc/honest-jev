@@ -33,6 +33,7 @@ DECIDED_BY = ("prefilter", "jev", "fail_open", "fail_closed", "policy")
 FAIL_REASONS = (
     "no_upstream", "upstream_error", "timeout", "invalid_response", "oversize",
     "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error",
+    "local_rules_unavailable",  # the hook's local rules did not run (and no server answered): see hooks/jev_guard_hook.py
 )
 COST_SOURCES = ("upstream", "configured", "unknown")
 

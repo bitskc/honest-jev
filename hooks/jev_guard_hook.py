@@ -256,8 +256,10 @@ def run_local(args):
     """Run the deterministic rules in one node process (hooks/jev-guard-local.mjs; the args travel on its stdin only).
     Returns guardCommand's reply (a dict, with `unclear`), or None when the rules did not run: switched off, no JavaScript runtime,
     the runner or the rules not found, a crash, the time budget, output that is not a reply. None means: take the server path."""
+    _CTX["local_why"] = None  # None = the rules ran, or were switched off (the user chose server-only)
     if not local_enabled():
         return None
+    _CTX["local_why"] = "failed"  # until proven otherwise below: "timeout" for the time budget, None once a usable reply is in hand
     runtime = policy_runtime()
     runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jev-guard-local.mjs")
     if not runtime or not os.path.isfile(runner):
@@ -266,6 +268,7 @@ def run_local(args):
     try:
         r = subprocess.run([runtime, runner], input=json.dumps(args).encode(), capture_output=True, timeout=local_timeout())
     except subprocess.TimeoutExpired:
+        _CTX["local_why"] = "timeout"
         note("local rules: out of time")
         return None
     except Exception as e:
@@ -282,6 +285,7 @@ def run_local(args):
     if not isinstance(reply, dict) or reply.get("decision") not in ("allow", "ask", "block") or reply.get("decided_by") not in ("prefilter", "fail_closed", "fail_open"):
         note("local rules: unusable reply")
         return None
+    _CTX["local_why"] = None
     return reply
 
 
@@ -290,11 +294,31 @@ def local_unclear(local):
     return local is not None and (local.get("unclear") is True or local.get("decided_by") == "fail_open")
 
 
+def _session_key():
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(_CTX.get("session") or ""))[:64] or ("ppid%d" % os.getppid())
+
+
 def first_unclear_in_session():
     """True once per session (marker in the ledger's private state dir, keyed by the hook's session_id)."""
     try:
-        sid = re.sub(r"[^A-Za-z0-9_-]", "", str(_CTX.get("session") or ""))[:64] or ("ppid%d" % os.getppid())
+        sid = _session_key()
         return bool(_ledger is not None and _ledger.mark_once("notice-" + sid))
+    except Exception:
+        return False
+
+
+LOCAL_DOWN_NOTICE = ("Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
+                     "so commands are not being checked. Run install.sh --doctor for details.")
+
+
+def local_down_notice(why):
+    """Whether to say, now, that the local rules could not run (once per session, its own marker). A hard failure (no runtime, no runner
+    or rules, a crash, output that is not a reply) is said at once. A time-budget miss alone is one slow command, and the next command is
+    checked again, so it only counts: the notice goes out on the SECOND miss in a session (a host too slow for the budget misses every time)."""
+    try:
+        if why == "timeout" and _ledger is not None and _ledger.mark_once("notice-slow-" + _session_key()):
+            return False
+        return bool(_ledger is not None and _ledger.mark_once("notice-down-" + _session_key()))
     except Exception:
         return False
 
@@ -329,6 +353,11 @@ def guard_outcome(args):
         note("fail-open: %s" % e.why)
         if stands is not None:
             return reply_outcome(stands)
+        if local is None and _CTX.get("local_why") and e.code == "client_config":
+            # the local step was on and did not run, and there is no server either: nothing checked this command. Its own closed reason, so the
+            # log tells it from "unclear, no server" (those rows have a reply from the rules; these have none).
+            notice = LOCAL_DOWN_NOTICE if local_down_notice(_CTX["local_why"]) else None
+            return Outcome("allow", row=dict(decision="allow", decided_by="fail_open", fail_reason="local_rules_unavailable", enforced=True), notice=notice)
         notice = LOCAL_NOTICE if unclear and e.code == "client_config" and first_unclear_in_session() else None
         return Outcome("allow", reply=hint, row=dict(decision="allow", decided_by="fail_open", fail_reason=e.code, enforced=True), notice=notice)
     except (ServerRejected, RedirectRefused) as e:  # server reachable but refused/redirected the call: ask, never allow silently

@@ -46,6 +46,7 @@ const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT)
 // else the pre-rename install dir. The module is imported once per path and cached. JEV_GUARD_LOCAL=off skips all of this.
 // Not preemptable: a rule run is synchronous CPU in this process (measured at most about 0.25 s on the 1,241-row corpus).
 export const LOCAL_NOTICE = "Honest Jev guard: local rules are on, but no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN). This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
+export const LOCAL_DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
 
 export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
   const custom = (env.JEV_GUARD_RULES ?? "").trim();
@@ -70,25 +71,27 @@ function loadRules(path: string): Promise<GuardFn | null> {
 }
 
 export type LocalVerdict = { reply: Record<string, unknown>; unclear: boolean };
+/** The rules were enabled and did not run (not found, would not load, threw, answered nonsense). In process there is no time budget to miss. */
+export type LocalNotRun = { notRun: true };
 /**
- * Judge `args` with the local rules. null = the rules did not run (switched off, not found, would not load, threw): the caller
- * takes the server path unchanged. `unclear` = the rules would have asked a model and no rule blocked; `ask` is never answered,
- * it only records the question (reading `decided_by: "fail_open"` alone misses a question raised only by guardCommand's second,
- * comment-masked reading). Never throws.
+ * Judge `args` with the local rules. null = switched off (JEV_GUARD_LOCAL=off: the user chose server-only). `{ notRun: true }` = enabled
+ * but did not run: the caller takes the server path unchanged, and says so if no server answers either. `unclear` = the rules would have
+ * asked a model and no rule blocked; `ask` is never answered, it only records the question (reading `decided_by: "fail_open"` alone
+ * misses a question raised only by guardCommand's second, comment-masked reading). Never throws.
  */
-export async function localGuard(args: Record<string, unknown>): Promise<LocalVerdict | null> {
+export async function localGuard(args: Record<string, unknown>): Promise<LocalVerdict | LocalNotRun | null> {
+  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;
   try {
-    if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;
     const path = guardRulesPath();
-    if (!path) return null;
+    if (!path) return { notRun: true };
     const guardCommand = await loadRules(path);
-    if (!guardCommand) return null;
+    if (!guardCommand) return { notRun: true };
     let consulted = 0;
     const reply = await guardCommand({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
     const by = reply.decided_by;
-    if (!["allow", "ask", "block"].includes(String(reply.decision)) || !["prefilter", "fail_closed", "fail_open"].includes(String(by))) return null;
+    if (!["allow", "ask", "block"].includes(String(reply.decision)) || !["prefilter", "fail_closed", "fail_open"].includes(String(by))) return { notRun: true };
     return { reply, unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block") };
-  } catch { return null; }
+  } catch { return { notRun: true }; }
 }
 
 // Server-side input caps (server/src/kit/tools.mjs): over these the schema rejects the call, and a rejection must
@@ -109,6 +112,7 @@ export const DECIDED_BY = ["prefilter", "jev", "fail_open", "fail_closed", "poli
 export const FAIL_REASONS = [
   "no_upstream", "upstream_error", "timeout", "invalid_response", "oversize",
   "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error",
+  "local_rules_unavailable", // the hook's local rules did not run (and no server answered)
 ] as const;
 const WORD = /^[a-z][a-z_]{0,31}$/, RULE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/, TOOL = /^[a-z][a-z0-9_]{0,31}$/;
 const TIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/, HOST = /^[a-z0-9][a-z0-9._-]{0,31}$/;
@@ -527,6 +531,7 @@ type Verdict = { block: true; reason: string } | undefined;
 
 export default function jevGuard(pi: ExtensionAPI) {
   let noticed = false; // the "no server configured" notice goes out once per session, kept in memory
+  let downNoticed = false; // so does the "local rules could not run and no server" notice, with its own flag
   // `rowId` is the ledger row for this ask (or null). omp hands us the user's answer, so the outcome is host-observed:
   // approved, denied, or no_ui when nobody could be asked. Ledger writes are deferred with setImmediate: the verdict
   // is returned before any ledger I/O, so a slow filesystem cannot delay the decision. Writes keep FIFO order (the
@@ -551,7 +556,7 @@ export default function jevGuard(pi: ExtensionAPI) {
   };
 
   // a new session may be told once again that the guard has no server
-  pi.on("session_start", async () => { noticed = false; });
+  pi.on("session_start", async () => { noticed = false; downNoticed = false; });
 
   pi.on("tool_call", async (event: ToolCallEvent, ctx: ToolCallCtx): Promise<Verdict> => {
     try {
@@ -581,7 +586,9 @@ export default function jevGuard(pi: ExtensionAPI) {
       }
       const at = askAt();
       if (at !== undefined) args.ask_at = at;
-      const local = await localGuard(args); // a command the rules settle never reaches mcpCall
+      const localRaw = await localGuard(args); // a command the rules settle never reaches mcpCall
+      const local = localRaw !== null && "reply" in localRaw ? localRaw : null;
+      const localNotRun = localRaw !== null && !("reply" in localRaw); // enabled, and it did not run
       // The policy path runs concurrently with the guard call. It is opt-in: without a `"trigger"` in the user layer
       // nothing starts. policyDecide never rejects, so a policy failure cannot take the guard's answer down with it.
       const policyCwd = ctx.cwd ?? process.cwd();
@@ -603,10 +610,15 @@ export default function jevGuard(pi: ExtensionAPI) {
       if (g.kind === "unavailable") {
         // fail open. A command the local rules flagged keeps the rule id on its row (an id, never text).
         const flagged = local?.unclear && typeof local.reply.rule === "string" ? local.reply.rule : undefined;
-        led(t0, undefined, { decision: "allow", decidedBy: "fail_open", failReason: g.code, rule: flagged });
-        if (local?.unclear && g.code === "client_config" && !noticed) { // once per session, for the user: fixed words, never the model
-          noticed = true;
-          try { if (typeof ctx.ui?.notify === "function") ctx.ui.notify(LOCAL_NOTICE, "warning"); else pi.logger?.warn?.(LOCAL_NOTICE); } catch { /* a notice never changes a decision */ }
+        // the local step was on and did not run, and there is no server either: nothing checked this command. Its own closed reason, so the log
+        // tells it from "unclear, no server" (those rows come with a reply from the rules; these have none).
+        const nothingRan = localNotRun && g.code === "client_config";
+        led(t0, undefined, { decision: "allow", decidedBy: "fail_open", failReason: nothingRan ? "local_rules_unavailable" : g.code, rule: flagged });
+        // once per session each, for the user: fixed words, never the model
+        const say = nothingRan ? (downNoticed ? null : LOCAL_DOWN_NOTICE) : local?.unclear && g.code === "client_config" && !noticed ? LOCAL_NOTICE : null;
+        if (say !== null) {
+          if (nothingRan) downNoticed = true; else noticed = true;
+          try { if (typeof ctx.ui?.notify === "function") ctx.ui.notify(say, "warning"); else pi.logger?.warn?.(say); } catch { /* a notice never changes a decision */ }
         }
       } else if (g.kind === "rejected") {
         gRow = led(t0, undefined, { decision: "ask", decidedBy: "fail_closed", failReason: "client_rejected", enforced: !shadow(), wouldHave: shadow() ? "ask" : null });

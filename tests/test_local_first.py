@@ -361,6 +361,110 @@ class LocalRunnerFallsThroughToTheServer(unittest.TestCase):
         self.assertEqual((r["decided_by"], r["fail_reason"], r["source"]), ("fail_closed", "rule_error", "client"))
 
 
+DOWN_NOTICE = ("Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
+               "so commands are not being checked. Run install.sh --doctor for details.")
+
+
+class LocalRulesDidNotRun(unittest.TestCase):
+    """The local step is on, produced no reply, and no server is configured: nothing checked the command. It says so, once per session,
+    and the row has its own closed reason (local_rules_unavailable), never the plain client_config of 'unclear, no server'."""
+
+    def rules_module(self, body):
+        d = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(d, "guard.mjs")
+        with open(path, "w") as f:
+            f.write(body)
+        return path
+
+    def assert_marked_row(self, r):
+        self.assertEqual((r["decision"], r["decided_by"], r["fail_reason"], r["source"], r["rule"], r["enforced"]),
+                         ("allow", "fail_open", "local_rules_unavailable", "client", None, True))
+
+    def hard_failure_envs(self):
+        crash = self.rules_module("export async function guardCommand() { throw new Error('boom'); }\n")
+        junk = self.rules_module("export async function guardCommand() { return { decision: 'banana', decided_by: 'prefilter' }; }\n")
+        no_node = tempfile.mkdtemp(dir=TMP)
+        for tool in ("bash", "python3", "dirname"):
+            os.symlink(shutil.which(tool), os.path.join(no_node, tool))
+        return [("rules not found", Env(JEV_GUARD_RULES="/nonexistent/guard.mjs")), ("runner crash", Env(JEV_GUARD_RULES=crash)),
+                ("bad output", Env(JEV_GUARD_RULES=junk)), ("node missing", Env(PATH=no_node))]
+
+    def test_every_hard_failure_says_so_at_once_and_once_per_session(self):
+        for name, e in self.hard_failure_envs():
+            p, _ = e.run(event("Bash", {"command": "ls"}, session="s-A"))
+            out = json.loads(p.stdout)
+            self.assertEqual((p.returncode, decision_of(p), out.get("systemMessage")), (0, "none", DOWN_NOTICE), name)
+            self.assertNotIn("hookSpecificOutput", out, name)
+            p2, _ = e.run(event("Bash", {"command": "cat .env"}, session="s-A"))  # unchecked, so allowed: that is what the notice says
+            self.assertEqual((decision_of(p2), p2.stdout), ("none", ""), name)
+            p3, _ = e.run(event("Bash", {"command": "ls"}, session="s-B"))
+            self.assertEqual(message_of(p3), DOWN_NOTICE, name)  # a new session hears it once more
+            rows = e.rows()
+            self.assertEqual(len(rows), 3, name)
+            for r in rows:
+                self.assert_marked_row(r)
+            self.assertEqual(e.markers(), ["notice-down-s-A", "notice-down-s-B"], name)
+
+    def test_the_row_differs_from_unclear_no_server_even_when_that_row_has_no_rule(self):
+        # an unclear row with no rule to name (the masked reading) and a "rules did not run" row look alike except for the reason
+        e1 = Env()
+        e1.run(event("Bash", {"command": COMMENT_QUOTE_UNCLEAR}))
+        e2 = Env(JEV_GUARD_RULES="/nonexistent/guard.mjs")
+        e2.run(event("Bash", {"command": COMMENT_QUOTE_UNCLEAR}))
+        a, b = e1.rows()[0], e2.rows()[0]
+        self.assertEqual((a["decided_by"], a["fail_reason"], a["rule"]), ("fail_open", "client_config", None))
+        self.assertEqual((b["decided_by"], b["fail_reason"], b["rule"]), ("fail_open", "local_rules_unavailable", None))
+
+    def test_with_a_server_configured_it_is_the_server_path_and_no_notice(self):
+        e = Env(JEV_GUARD_RULES="/nonexistent/guard.mjs", **server_env(stub()))
+        p, _ = e.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual(decision_of(p), "deny")
+        self.assertNotIn("systemMessage", p.stdout)
+        self.assertEqual(e.rows()[0]["source"], "server")
+        self.assertEqual(e.markers(), [])
+        e2 = Env(JEV_GUARD_RULES="/nonexistent/guard.mjs", **server_env(LISTENER.port))  # a server that cannot be reached
+        before = LISTENER.count
+        p, _ = e2.run(event("Bash", {"command": "ls"}))
+        self.assertGreater(LISTENER.count, before)
+        self.assertEqual(p.stdout, "")
+        r = e2.rows()[0]
+        self.assertEqual(r["decided_by"], "fail_open")
+        self.assertNotEqual(r["fail_reason"], "local_rules_unavailable")
+        self.assertEqual(e2.markers(), [])
+
+    def test_off_switch_with_no_server_is_the_users_choice_and_says_nothing(self):
+        e = Env(JEV_GUARD_LOCAL="off", JEV_GUARD_RULES="/nonexistent/guard.mjs")
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual(p.stdout, "")
+        r = e.rows()[0]
+        self.assertEqual((r["decided_by"], r["fail_reason"]), ("fail_open", "client_config"))
+        self.assertEqual(e.markers(), [])
+
+    def test_rules_that_ran_are_never_reported_as_not_run(self):
+        e = Env()  # the real rules, no server: a settled command and an unclear one
+        e.run(event("Bash", {"command": "ls"}))
+        e.run(event("Bash", {"command": UNCLEAR}))
+        self.assertEqual([(r["decided_by"], r["fail_reason"]) for r in e.rows()], [("prefilter", None), ("fail_open", "client_config")])
+        self.assertEqual([m for m in e.markers() if m.startswith(("notice-down-", "notice-slow-"))], [])
+
+    def test_a_time_budget_miss_counts_and_the_notice_goes_out_on_the_second_miss_in_a_session(self):
+        slow = self.rules_module("export async function guardCommand() { await new Promise((r) => setTimeout(r, 20000)); }\n")
+        e = Env(JEV_GUARD_RULES=slow, JEV_GUARD_LOCAL_TIMEOUT="0.2")
+        p1, _ = e.run(event("Bash", {"command": "ls"}, session="s-A"))
+        self.assertEqual(p1.stdout, "", "one slow command is not 'commands are not being checked'")
+        p2, _ = e.run(event("Bash", {"command": "ls"}, session="s-A"))
+        self.assertEqual(message_of(p2), DOWN_NOTICE)
+        p3, _ = e.run(event("Bash", {"command": "ls"}, session="s-A"))
+        self.assertEqual(p3.stdout, "")
+        p4, _ = e.run(event("Bash", {"command": "ls"}, session="s-B"))  # a new session starts counting again
+        self.assertEqual(p4.stdout, "")
+        rows = e.rows()
+        self.assertEqual(len(rows), 4)
+        for r in rows:  # every miss is marked in the log, whether or not it was said
+            self.assert_marked_row(r)
+        self.assertEqual(e.markers(), ["notice-down-s-A", "notice-slow-s-A", "notice-slow-s-B"])
+
+
 class NoticeMarker(unittest.TestCase):
     def test_mark_once(self):
         state = tempfile.mkdtemp(dir=TMP)

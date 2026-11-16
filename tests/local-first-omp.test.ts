@@ -247,3 +247,79 @@ test("parity: every row of evals/guard.jsonl, local verdict == direct guardComma
   expect(diffs).toEqual([]);
   expect(unclear).toBeLessThan(rowsIn.length / 10);
 });
+
+// ── the local rules could not run (enabled, no reply) and no server answers ──────────────────────────────────────────────────
+const DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
+const badRules = (src: string) => { const p = join(mkdtempSync(join(dir, "r-")), "guard.mjs"); writeFileSync(p, src); return p; };
+const NO_SERVER = { JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined };
+
+test("rules that could not run and no server: allowed, said once per session, and every row is marked local_rules_unavailable", async () => {
+  expect(mod.LOCAL_DOWN_NOTICE).toBe(DOWN_NOTICE);
+  for (const rules of ["/nonexistent/guard.mjs", badRules("export const x = 1;\n"), badRules("export async function guardCommand() { throw new Error('boom'); }\n"),
+    badRules("export async function guardCommand() { return { decision: 'banana', decided_by: 'prefilter' }; }\n")]) {
+    env({ JEV_GUARD_RULES: rules, ...NO_SERVER });
+    notes.length = 0;
+    writeFileSync(LEDGER, "");
+    const h = hook();
+    expect(await h.call(bash("ls"))).toBeUndefined();
+    expect(await h.call(bash("cat .env"))).toBeUndefined(); // unchecked, so allowed: that is what the notice says
+    expect(notes, rules).toEqual([DOWN_NOTICE]);
+    await h.startSession();
+    await h.call(bash("ls"));
+    expect(notes.length, rules).toBe(2); // a new session hears it once more
+    expect(calls.length).toBe(0);
+    const r = rows();
+    expect(r.length).toBe(3);
+    for (const x of r) expect([x.decision, x.decided_by, x.fail_reason, x.source, x.rule, x.enforced]).toEqual(["allow", "fail_open", "local_rules_unavailable", "client", null, true]);
+  }
+  notes.length = 0;
+});
+
+test("the marked row differs from 'unclear, no server' even when that row has no rule", async () => {
+  env({ JEV_GUARD_RULES: "/nonexistent/guard.mjs", ...NO_SERVER });
+  await hook().call(bash("# don't\nnpm publish"));
+  const down = rows()[0];
+  env({ ...NO_SERVER }); // the real rules
+  writeFileSync(LEDGER, "");
+  await hook().call(bash("# don't\nnpm publish")); // unclear through the masked reading only: no rule to name
+  const unclear = rows()[0];
+  expect([down.fail_reason, down.rule]).toEqual(["local_rules_unavailable", null]);
+  expect([unclear.fail_reason, unclear.rule]).toEqual(["client_config", null]);
+  notes.length = 0;
+});
+
+test("rules that could not run with a server configured: the server path, no notice, no marked row", async () => {
+  env({ JEV_GUARD_RULES: "/nonexistent/guard.mjs" });
+  notes.length = 0;
+  await hook().call(bash("cat .env"));
+  expect(calls.length).toBe(1);
+  expect(notes).toEqual([]);
+  expect(rows()[0].decided_by).toBe("jev");
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error("connect ECONNREFUSED"); }) as typeof fetch; // a server that cannot be reached
+  try {
+    writeFileSync(LEDGER, "");
+    expect(await hook().call(bash("ls"))).toBeUndefined();
+    expect(notes).toEqual([]);
+    expect(rows()[0]).toMatchObject({ decided_by: "fail_open", fail_reason: "client_network" });
+  } finally { globalThis.fetch = real; }
+});
+
+test("JEV_GUARD_LOCAL=off with no server is the user's choice: no notice, the plain client_config row", async () => {
+  env({ JEV_GUARD_LOCAL: "off", JEV_GUARD_RULES: "/nonexistent/guard.mjs", ...NO_SERVER });
+  notes.length = 0;
+  expect(await hook().call(bash("ls"))).toBeUndefined();
+  expect(notes).toEqual([]);
+  expect(rows()[0]).toMatchObject({ decided_by: "fail_open", fail_reason: "client_config", rule: null });
+});
+
+test("rules that ran are never reported as not run", async () => {
+  env({ ...NO_SERVER });
+  notes.length = 0;
+  const h = hook();
+  await h.call(bash("ls"));
+  await h.call(bash(UNCLEAR));
+  expect(rows().map((x) => [x.decided_by, x.fail_reason])).toEqual([["prefilter", null], ["fail_open", "client_config"]]);
+  expect(notes).toEqual([mod.LOCAL_NOTICE]); // the unclear notice only
+  notes.length = 0;
+});
