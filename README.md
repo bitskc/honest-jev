@@ -1,9 +1,13 @@
 # honest-jev
 
 <p align="center">
-  <img src="docs/honest-jev-128.png" width="128" alt="Honest Jev — pixel-art Abe Lincoln"/>
+  <a href="https://honestjev.com"><img src="docs/honest-jev-sprite-192.png" width="192" height="288" alt="Honest Jev, the pixel-art Abe Lincoln mascot in a top hat"/></a>
+  <br><br>
+  <b>Honest Jev: cheap, calibrated judgment calls for any AI agent.</b>
   <br>
-  <b>The decision layer your coding agent is missing.</b>
+  Works with any MCP client. Batteries included for coding agents (Claude Code, omp).
+  <br><br>
+  🌐 <a href="https://honestjev.com"><b>honestjev.com</b></a> · 🎮 <a href="https://honestjev.com">Play <i>Jev's Honest Run</i></a> · ⭐ <a href="https://github.com/bitskc/honest-jev">Star this repo</a>
 </p>
 
 ## Give this to your agent
@@ -28,6 +32,14 @@ Coding agents are good at writing code and bad at three judgment calls they make
 - *"Is what I'm about to say actually backed by what I did?"* — **Honest Jev** classifies each claim as verified / hedged / unverifiable / misrepresented before you send it.
 
 One Cloudflare Worker (your account, your Jev key, your bearer token), 16 MCP tools, 10 skills, 5 hooks.
+
+## 🎮 Jev's Honest Run
+
+<p align="center">
+  <a href="https://honestjev.com"><img src="docs/jevs-honest-run.png" width="640" alt="Jev's Honest Run: Jev jumps past a +50 VERIFIED bonus and a row of gold stars over a brick floor"/></a>
+</p>
+
+Honest Abe got a side-scroller. **[Jev's Honest Run](https://honestjev.com)** is an NES-style platformer on honestjev.com where the tool's ideas are the level design: jump the risky commands, grab the verified stars and dodge the fibs. Multiple worlds, boss fights and a global leaderboard are on the way, and so is a **Ninja Gaiden-style mode** for players who think 8-bit should hurt a little. Post a score, then ⭐ **[star the repo](https://github.com/bitskc/honest-jev)** so Jev keeps running.
 
 `jev-call` below is installed to `~/.local/bin/jev-call` by `install.sh`; from a bare checkout use `scripts/jev-call.sh` instead.
 
