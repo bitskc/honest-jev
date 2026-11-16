@@ -27,30 +27,30 @@ function isClassify(name) {
   try { raw = await readStdin(); } catch { process.exit(0); }
   let input;
   try { input = JSON.parse(raw || '{}'); } catch { process.exit(0); }
-  if (!isClassify(toolName(input))) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
-    process.exit(0);
-  }
+  if (!isClassify(toolName(input))) process.exit(0);
   const args = input.tool_input || input.arguments || input.input || {};
   const items = Array.isArray(args.items) ? args.items : null;
-  if (!items) {
-    process.stdout.write(JSON.stringify({ decision: 'allow' }));
-    process.exit(0);
-  }
+  if (!items) process.exit(0);
   let dropped = 0;
+  let redacted = false;
   const next = [];
   for (const it of items) {
     if (!it || typeof it !== 'object') continue;
-    const text = redact(String(it.text || ''));
+    const original = String(it.text || '');
+    const text = redact(original);
+    if (text !== original) redacted = true;
     // Refuse empty/secret-stripped-only evidence: if redact emptied a non-empty claim body, drop as not verified.
     if (!text.trim()) { dropped++; continue; }
-    next.push({ ...it, text });
+    next.push(text === original ? it : { ...it, text });
   }
-  const outArgs = { ...args, items: next };
-  // Claude Code PreToolUse updatedInput shape
+  // Nothing redacted or dropped: print nothing so Claude Code runs the call unchanged.
+  if (!redacted && !dropped && next.length === items.length) process.exit(0);
+  // Claude Code PreToolUse contract: updatedInput lives under hookSpecificOutput. No permissionDecision, so the permission flow is unchanged.
   const payload = {
-    decision: 'allow',
-    updatedInput: outArgs,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      updatedInput: { ...args, items: next },
+    },
   };
   if (dropped) payload.systemMessage = `honest-jev: dropped ${dropped} jev_classify item(s) after redact-or-refuse`;
   process.stdout.write(JSON.stringify(payload));
