@@ -50,8 +50,10 @@ fi
 # server/build-vendor.sh; registerTool count at that commit) + 3 fixed kit_* tools (KIT_TOOL_NAMES in server/src/kit/tools.mjs) + kit_decide (server/src/decide/tool.mjs).
 EXPECTED_TOOLS=16
 if [ "$doctor" = 1 ]; then
-  [ -n "${JEV_MCP_URL:-}" ] || JEV_MCP_URL=$(env_get "$envfile" JEV_MCP_URL || true)
-  [ -n "${JEV_MCP_TOKEN:-}" ] || JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true)
+  # The hooks read these two values from the process environment only. Remember which came only from the env file, so the doctor says so.
+  url_file_only=0; tok_file_only=0
+  if [ -z "${JEV_MCP_URL:-}" ]; then JEV_MCP_URL=$(env_get "$envfile" JEV_MCP_URL || true); if [ -n "$JEV_MCP_URL" ]; then url_file_only=1; fi; fi
+  if [ -z "${JEV_MCP_TOKEN:-}" ]; then JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true); if [ -n "$JEV_MCP_TOKEN" ]; then tok_file_only=1; fi; fi
   # shellcheck disable=SC2015
   fail=0; ok() { echo "ok   $*"; }; bad() { echo "FAIL $*"; fail=1; }
   # the guard's local rules (hooks/jev-guard-local.mjs): the installed copy first, else this checkout. First line on purpose: it is the part
@@ -62,8 +64,15 @@ if [ "$doctor" = 1 ]; then
   if [ -z "$rt" ]; then bad "guard rules do not load locally: no node or bun on PATH"
   elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"; rules_ok=1
   else bad "guard rules do not load locally (runner: $runner)"; fi
-  [ -n "${JEV_MCP_URL:-}" ] && ok "JEV_MCP_URL set" || bad "JEV_MCP_URL not set"
-  [ -n "${JEV_MCP_TOKEN:-}" ] && ok "JEV_MCP_TOKEN set" || bad "JEV_MCP_TOKEN not set"
+  if [ -z "${JEV_MCP_URL:-}" ]; then bad "JEV_MCP_URL not set"
+  elif [ "$url_file_only" = 1 ]; then ok "JEV_MCP_URL set (from $envfile only)"
+  else ok "JEV_MCP_URL set"; fi
+  if [ -z "${JEV_MCP_TOKEN:-}" ]; then bad "JEV_MCP_TOKEN not set"
+  elif [ "$tok_file_only" = 1 ]; then ok "JEV_MCP_TOKEN set (from $envfile only)"
+  else ok "JEV_MCP_TOKEN set"; fi
+  if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then
+    echo "note the hooks read JEV_MCP_URL / JEV_MCP_TOKEN from the agent's environment, not from this file; start the agent from a shell that loads it (set -a; . $envfile; set +a) or the guard will not reach the server"
+  fi
   # what the guard is doing right now depends on BOTH: whether the local rules load, and whether a server is configured
   if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; then
     [ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"

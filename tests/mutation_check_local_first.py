@@ -94,6 +94,10 @@ MUTATIONS = [
     ("doctor: the 'local rules only' note is printed although the rules do not load", [(INST, '  elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only', '  elif true; then echo "note guard runs on local rules only')], SCRIPTS),
     ("doctor: no note when the rules do not load and a server is configured", [(INST, '[ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"', "true")], SCRIPTS),
     ("doctor: no note when neither the rules nor a server work", [(INST, '  else echo "note the guard is not checking commands: the local rules do not load and no server is configured"; fi', "  else :; fi")], SCRIPTS),
+    ("doctor: the 'from file only' marker is never set", [(INST, 'if [ -n "$JEV_MCP_URL" ]; then url_file_only=1; fi', 'true'), (INST, 'if [ -n "$JEV_MCP_TOKEN" ]; then tok_file_only=1; fi', 'true')], SCRIPTS),
+    ("doctor: the token line never says it came from the file", [(INST, 'elif [ "$tok_file_only" = 1 ]; then ok "JEV_MCP_TOKEN set (from $envfile only)"', 'elif false; then ok "JEV_MCP_TOKEN set"')], SCRIPTS),
+    ("doctor: the file-only note is printed for the URL alone", [(INST, 'if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then', 'if [ "$url_file_only" = 1 ]; then')], SCRIPTS),
+    ("doctor: the file-only note is printed even when both values come from the environment", [(INST, 'if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then', 'if true; then')], SCRIPTS),
     ("doctor: a passing rules check is never recorded", [(INST, 'ok "guard rules load locally ($rp)"; rules_ok=1', 'ok "guard rules load locally ($rp)"')], SCRIPTS),
 ]
 

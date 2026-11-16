@@ -123,7 +123,7 @@ Load the env first (`set -a; . ~/.config/jev/env; set +a`), then:
 ```sh
 ./install.sh --doctor
 ```
-Expected: every line `ok`, ending with `tools/list = 16 tools`. It checks env vars, `/health`, that an unauthenticated call is rejected with 401, and the tool count; it never prints the token.
+Expected: every line `ok`, ending with `tools/list = 16 tools`. It checks env vars, `/health`, that an unauthenticated call is rejected with 401, and the tool count; it never prints the token. A value found only in `~/.config/jev/env` is shown as `ok   JEV_MCP_URL set (from <path> only)`, followed by a `note` that the hooks read these two variables from the agent's environment, not from the file: start the agent from a shell that loaded it, or the guard will not reach the server.
 
 Then in the host (after restart/reload):
 1. List MCP tools (omp: `/mcp test jev`; Claude Code: `/mcp`). Expect **16**: 12 `jev_*` + `kit_guard_command`, `kit_size_dispatch`, `kit_verify_done`, `kit_decide`.
@@ -147,7 +147,7 @@ Finish with a short report to the user: host(s) detected, option used (A/B), fil
 | `npm run vendor` fails | Needs `git`, network, Node >= 22. `JEV_MCP_SRC=/path/to/jev-mcp npm run vendor` uses a local checkout. |
 | Jev tools fail, guard still works | No `AI_GATEWAY_API_KEY`/`TYPESAFE_API_KEY` on the Worker (the guard's deterministic rules need none; the hooks run them locally anyway). Set one with `wrangler secret put`. |
 | Hook blocks or slows every command | `JEV_GUARD_MODE=shadow` to log only; or remove the hook entry. The server path fails open on timeout (2 s). `JEV_GUARD_LOCAL=off` makes the hook send every call to the server instead of settling rule-decided commands locally. |
-| "local rules are on, but no server is configured" | The hook only reads `JEV_MCP_URL` / `JEV_MCP_TOKEN` from the agent's own environment (not from `~/.config/jev/env`): export both **before launching** the agent. Commands the rules settle are still judged locally; only the unclear ones (uploads, publishes, DB writes, ...) go unjudged until a server is reachable. `./install.sh --doctor` shows whether the local rules load and whether a server is configured. |
+| "local rules are on, but no server is configured" | The hook only reads `JEV_MCP_URL` / `JEV_MCP_TOKEN` from the agent's own environment (not from `~/.config/jev/env`): export both **before launching** the agent. Commands the rules settle are still judged locally; only the unclear ones (uploads, publishes, DB writes, ...) go unjudged until a server is reachable. `./install.sh --doctor` shows whether the local rules load, whether a server is configured, and whether each value came from the environment or only from the env file (the hooks do not see the file). |
 | "the local rules could not run and no server is configured" | Nothing checked the commands: both the local rules and the server are off. Run `./install.sh --doctor`: `FAIL guard rules do not load locally` means no `node`/`bun` on the agent's PATH, or the rules were not installed (re-run `./install.sh`). Decision-log rows for this state have `fail_reason: local_rules_unavailable`. Fix the rules, or configure a server (export `JEV_MCP_URL` / `JEV_MCP_TOKEN` before launching the agent); `JEV_GUARD_LOCAL=off` is the choice to use only the server and says nothing. |
 | Skills not showing | Restart the agent or `/reload-plugins` (omp); check the skills dir for your host in Step 3. |
 | `refusing to edit ...: not plain JSON` | The file has comments or trailing commas. Merge `config/*.json` by hand. |

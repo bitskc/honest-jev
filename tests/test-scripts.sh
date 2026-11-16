@@ -253,7 +253,8 @@ ok "$([ -e "$pwn" ] && echo yes || echo no)" no "save-env: sourcing the env file
 ok "$(HOME=$envH bash -c 'set -a; . "$HOME/.config/jev/env"; set +a; printf %s "$JEV_MCP_URL"')" "$url" "save-env: URL round-trips"
 ok "$(HOME=$envH JEV_MCP_URL=$'https://x/mcp\nevil' JEV_MCP_TOKEN=t bash "$root/install.sh" --save-env >/dev/null 2>&1; echo $?)" 2 "save-env: newline in value -> exit 2"
 d=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | sed -n 2,3p)
-ok "$d" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set')" "doctor: reads both keys from env file"
+ef="$envH/.config/jev/env"
+ok "$d" "$(printf 'ok   JEV_MCP_URL set (from %s only)\nok   JEV_MCP_TOKEN set (from %s only)' "$ef" "$ef")" "doctor: reads both keys from env file and says they came from the file only"
 pwn2="$tmp/pwned-doc"; printf 'JEV_MCP_URL=$(touch %s)\nJEV_MCP_TOKEN=x\n' "$pwn2" > "$envH/.config/jev/env"
 d2=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | sed -n 2p)
 ok "$([ -e "$pwn2" ] && echo yes || echo no)" no "doctor: unquoted \$(...) in env file never executed"
@@ -279,12 +280,30 @@ notes_of() { printf '%s\n' "$1" | grep '^note ' || true; }
 n_local="note guard runs on local rules only; unclear commands are allowed without a model check"
 n_none="note the guard is not checking commands: the local rules do not load and no server is configured"
 n_srv="note the local rules do not load; every command is sent to the server"
+n_file="note the hooks read JEV_MCP_URL / JEV_MCP_TOKEN from the agent's environment, not from this file; start the agent from a shell that loads it (set -a; . $envH/.config/jev/env; set +a) or the guard will not reach the server"
 ok "$(notes_of "$doc_full")" "$n_local" "doctor: rules load + no server -> the local-rules-only note, and no other note"
 ok "$(notes_of "$doc_broken")" "$n_none" "doctor: rules do not load + no server -> says the guard is not checking commands (not 'local rules only')"
 doc_broken_srv=$(HOME=$brokenH JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=t PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
 ok "$(notes_of "$doc_broken_srv")" "$n_srv" "doctor: rules do not load + server configured -> every command is sent to the server"
-ok "$(notes_of "$doc_set")" "" "doctor: rules load + server configured -> no note"
-ok "$(notes_of "$doc_nonode_full")" "$n_srv" "doctor: no node or bun (rules cannot load) + a server configured (this home's env file has one) -> every command is sent to the server"
+ok "$(notes_of "$doc_set")" "$n_file" "doctor: rules load + server configured only in the env file -> only the 'hooks read the environment' note"
+ok "$(printf '%s\n' "$doc_set" | grep -c '^ok   JEV_MCP_URL set (from .* only)$')" 1 "doctor: both from the file -> URL line has the suffix"
+ok "$(printf '%s\n' "$doc_set" | grep -c '^ok   JEV_MCP_TOKEN set (from .* only)$')" 1 "doctor: both from the file -> token line has the suffix"
+ok "$(printf '%s\n' "$doc_set" | grep -c 'hooks read JEV_MCP_URL')" 1 "doctor: both from the file -> the note appears once"
+secH="$tmp/sechome"; mkdir -p "$secH/.config/jev"; printf "JEV_MCP_URL='https://sec.example/mcp'\nJEV_MCP_TOKEN='s3cr3t-T0K-9f1x'\n" > "$secH/.config/jev/env"
+doc_sec=$(HOME=$secH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>&1)
+ok "$(printf '%s\n' "$doc_sec" | grep -c 's3cr3t-T0K-9f1x\|sec.example')" 0 "doctor: neither value from the file is printed"
+# the process environment wins over the file, with no suffix and no note
+doc_env=$(HOME=$envH JEV_MCP_URL=https://env.example/mcp JEV_MCP_TOKEN=envtok PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_env" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set')" "doctor: both from the environment -> lines unchanged, no suffix"
+ok "$(notes_of "$doc_env")" "" "doctor: both from the environment -> no note"
+# one from each: only the file-sourced one is marked, and the note appears once
+doc_urlenv=$(HOME=$envH env -u JEV_MCP_TOKEN JEV_MCP_URL=https://env.example/mcp PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_urlenv" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set (from %s only)' "$ef")" "doctor: URL from the environment, token from the file -> only the token is marked"
+ok "$(notes_of "$doc_urlenv")" "$n_file" "doctor: URL from the environment, token from the file -> the note once"
+doc_tokenv=$(HOME=$envH env -u JEV_MCP_URL JEV_MCP_TOKEN=envtok PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_tokenv" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok   JEV_MCP_URL set (from %s only)\nok   JEV_MCP_TOKEN set' "$ef")" "doctor: URL from the file, token from the environment -> only the URL is marked"
+ok "$(notes_of "$doc_tokenv")" "$n_file" "doctor: URL from the file, token from the environment -> the note once"
+ok "$(notes_of "$doc_nonode_full")" "$(printf '%s\n%s' "$n_file" "$n_srv")" "doctor: no node or bun (rules cannot load) + a server configured (this home's env file has one) -> every command is sent to the server, and the file-only note"
 
 # ── merge_json: first backup kept, atomic write, non-JSON left alone ─────────────
 mj="$tmp/mjhome"; mkdir -p "$mj/.claude"; printf '{"keep":1}\n' > "$mj/.claude.json"
