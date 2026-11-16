@@ -35,8 +35,8 @@ function rulesCandidates(env) {
   ];
 }
 
-// V8 compile cache for the 5,000 lines of rules, kept in a private directory of ours (never the shared temp dir). Optional:
-// any failure, or a node without the API, just means no cache.
+// V8 compile cache for the 5,000 lines of rules, kept in a private directory of ours (never the shared temp dir, never a directory
+// someone else can write to). Optional: any failure, or a node without the API, just means no cache.
 function enableCache(env) {
   try {
     if (typeof nodeModule.enableCompileCache !== "function") return;
@@ -46,6 +46,7 @@ function enableCache(env) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const st = lstatSync(dir);
     if (!st.isDirectory() || (typeof process.geteuid === "function" && st.uid !== process.geteuid())) return;
+    if ((st.mode & 0o022) !== 0) return; // group- or world-writable: anyone it names could plant compiled code the guard would then load
     nodeModule.enableCompileCache(dir);
   } catch { /* no cache */ }
 }

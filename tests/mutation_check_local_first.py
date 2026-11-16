@@ -66,6 +66,7 @@ MUTATIONS = [
     ("runner: a block with a model question is called unclear", [(RUN, 'reply.unclear = consulted > 0 && reply.decision !== "block";', "reply.unclear = consulted > 0;")], RUNT),
     ("runner: the release beside the hook is not looked at first", [(RUN, '    resolve(here, "..", "server", "src", "kit", "guard.mjs"),\n', "")], RUNT),
     ("runner: a relative JEV_GUARD_RULES is accepted", [(RUN, "if (custom) return isAbsolute(custom) ? [custom] : [];", "if (custom) return [resolve(custom)];")], RUNT),
+    ("runner: a group- or world-writable compile-cache directory is used", [(RUN, "    if ((st.mode & 0o022) !== 0) return; // group- or world-writable: anyone it names could plant compiled code the guard would then load\n", "")], RUNT),
     ("runner: judgeStdin drops the rule's suggestion (the in-process corpus run)", [(RUN, "  reply.unclear = consulted > 0 && reply.decision !== \"block\";\n  return reply;", "  reply.unclear = consulted > 0 && reply.decision !== \"block\";\n  return { ...reply, suggestion: null };")], RUNT),
     ("runner: the one-shot entry drops the rule id (only the real spawns see it)", [(RUN, "  process.stdout.write(`${JSON.stringify(reply)}\\n`);\n  return 0;\n}\n\n// Run only", "  process.stdout.write(`${JSON.stringify({ ...reply, rule: null })}\\n`);\n  return 0;\n}\n\n// Run only")], RUNT),
     # ── omp hook ──

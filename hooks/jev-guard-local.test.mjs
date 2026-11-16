@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -181,6 +181,26 @@ test("the compile cache lives in a private directory of ours, never the shared t
   assert.equal(r.code, 0, r.stderr);
   const dir = join(cache, "jev", "compile-cache");
   if (existsSync(dir)) assert.equal(statSync(dir).mode & 0o777, 0o700); // a node without the API simply makes no cache
+});
+
+test("a group- or world-writable cache directory is not used: no cache is written there, and the run still works", async (t) => {
+  const mk = (name, mode) => {
+    const c = join(scratch, name);
+    mkdirSync(join(c, "jev", "compile-cache"), { recursive: true });
+    chmodSync(join(c, "jev", "compile-cache"), mode);
+    return c;
+  };
+  const entries = (c) => readdirSync(join(c, "jev", "compile-cache"));
+  const ok = mk("cache-private", 0o700);
+  assert.equal(reply(await decide(RUNNER, cleanEnv({ XDG_CACHE_HOME: ok }))).decision, "block");
+  // positive control: a private directory does get a cache (a node without the API makes none, and the rest proves nothing)
+  if (entries(ok).length === 0) return t.skip("this node makes no compile cache");
+  for (const mode of [0o770, 0o707, 0o777]) {
+    const c = mk(`cache-${mode.toString(8)}`, mode);
+    const r = await decide(RUNNER, cleanEnv({ XDG_CACHE_HOME: c }));
+    assert.equal(reply(r).decision, "block", `mode ${mode.toString(8)}: the run still works`);
+    assert.deepEqual(entries(c), [], `mode ${mode.toString(8)}: nothing is cached in a directory others can write`);
+  }
 });
 
 test("a symlinked cache directory is not used", async () => {
