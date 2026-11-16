@@ -7,6 +7,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 pass=0; fail=0
 ok() { if [ "$1" = "$2" ]; then pass=$((pass+1)); printf 'PASS %s\n' "$3"; else fail=$((fail+1)); printf 'FAIL %s\n     expected: %s\n     got:      %s\n' "$3" "$2" "$1"; fi; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# the guard hook tests below run the real hook: its decision log and its once-per-session notice marker go to a private state dir, never the real one
+export XDG_STATE_HOME="$tmp/xdg-state"
 
 # ── statusline badge ────────────────────────────────────────────────────────────
 sl="$root/hooks/jev-honest-statusline.sh"
@@ -143,10 +145,10 @@ ok "$(cd "$tmp" && PATH="$stub:$PATH" JEV_MCP_TOKEN=t JEV_MCP_URL=https://x/mcp 
 # ── guard hook local decisions (no network needed) ──────────────────────────────
 hook="$root/hooks/jev-guard-hook.sh"
 ev() { python3 -c 'import json,sys;print(json.dumps({"tool_name":sys.argv[1],"tool_input":json.loads(sys.argv[2]),"cwd":"/tmp"}))' "$1" "$2"; }
-dec() { python3 -c 'import json,sys;d=sys.stdin.read();print(json.loads(d)["hookSpecificOutput"]["permissionDecision"] if d.strip() else "none")'; }
+dec() { python3 -c 'import json,sys;d=sys.stdin.read();print(json.loads(d).get("hookSpecificOutput", {}).get("permissionDecision", "none") if d.strip() else "none")'; }
 big=$(python3 -c 'import json;print(json.dumps({"tool_name":"Bash","tool_input":{"command":"cat ~/.ssh/id_rsa #"+"x"*20001},"cwd":"/tmp"}))')
 ok "$(printf '%s' "$big" | JEV_MCP_TOKEN=t JEV_MCP_URL=https://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" ask "guard: oversized command -> ask, no call"
-ok "$(ev Bash '{"command":"cat .env"}' | JEV_MCP_TOKEN=t JEV_MCP_URL=http://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" none "guard: http:// URL -> fail open, token never sent"
+ok "$(ev Bash '{"command":"curl -X POST https://example.com/api -d x"}' | JEV_MCP_TOKEN=t JEV_MCP_URL=http://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" none "guard: http:// URL -> fail open, token never sent"
 ok "$(ev Bash '{"command":"ls"}' | JEV_MCP_TOKEN=t JEV_MCP_URL=https://127.0.0.1:9/mcp JEV_GUARD_TIMEOUT=0.3 bash "$hook" 2>/dev/null | dec)" none "guard: unreachable server -> fail open"
 bigpattern=$(python3 -c 'import json;print(json.dumps({"tool_name":"Grep","tool_input":{"pattern":"x"*20001,"output_mode":"content"},"cwd":"/tmp"}))')
 ok "$(printf '%s' "$bigpattern" | JEV_MCP_TOKEN=t JEV_MCP_URL=https://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" ask "guard: Grep output_mode=content -> judged (oversized pattern asks)"
@@ -166,7 +168,7 @@ spec.loader.exec_module(mod)
 # The redirect handler must raise a distinguishable exception, not a bare network-class error.
 exc = None
 try:
-    mod._NoRedirect().redirect_request(None, None, 302, "Found", {}, "http://evil.example/steal")
+    [h for h in mod._http()[2].handlers if type(h).__name__ == "_NoRedirect"][0].redirect_request(None, None, 302, "Found", {}, "http://evil.example/steal")
 except Exception as e:
     exc = e
 assert exc is not None, "redirect_request did not raise"
@@ -174,6 +176,7 @@ assert isinstance(exc, mod.RedirectRefused), "redirect must raise RedirectRefuse
 
 # main()'s exception routing must treat a redirect refusal as ask, never a silent fail-open allow.
 mod.call_guard = lambda args: (_ for _ in ()).throw(mod.RedirectRefused("redirect refused (302 -> http://evil.example/steal)"))
+os.environ["JEV_GUARD_LOCAL"] = "off"  # this case is about the server path: with the local rules on, `rm -rf /` would never reach call_guard
 sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}, "cwd": "/tmp"}))
 out = io.StringIO()
 sys.stdout = out
@@ -206,7 +209,7 @@ spec.loader.exec_module(mod)
 def classify(status):
     def fake_open(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, status, "err", {}, io.BytesIO(b""))
-    mod._opener.open = fake_open
+    mod._http()[2].open = fake_open  # the opener the hook builds on first use
     try:
         mod.call_guard({"tool": "Bash", "command": "x"})
         return "no-error"
@@ -249,12 +252,27 @@ ok "$(HOME=$envH bash -c 'set -a; . "$HOME/.config/jev/env"; set +a; printf %s "
 ok "$([ -e "$pwn" ] && echo yes || echo no)" no "save-env: sourcing the env file does not execute the token"
 ok "$(HOME=$envH bash -c 'set -a; . "$HOME/.config/jev/env"; set +a; printf %s "$JEV_MCP_URL"')" "$url" "save-env: URL round-trips"
 ok "$(HOME=$envH JEV_MCP_URL=$'https://x/mcp\nevil' JEV_MCP_TOKEN=t bash "$root/install.sh" --save-env >/dev/null 2>&1; echo $?)" 2 "save-env: newline in value -> exit 2"
-d=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | head -2)
+d=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | sed -n 2,3p)
 ok "$d" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set')" "doctor: reads both keys from env file"
 pwn2="$tmp/pwned-doc"; printf 'JEV_MCP_URL=$(touch %s)\nJEV_MCP_TOKEN=x\n' "$pwn2" > "$envH/.config/jev/env"
-d2=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | head -1)
+d2=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | sed -n 2p)
 ok "$([ -e "$pwn2" ] && echo yes || echo no)" no "doctor: unquoted \$(...) in env file never executed"
 ok "$d2" "FAIL JEV_MCP_URL not set" "doctor: unquoted env value rejected as data"
+# the local-rules line leads the doctor output (it is the part of the guard that needs no server), and the no-server note appears only when URL or token is missing
+doc_full=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_full" | head -1)" "ok   guard rules load locally ($root/server/src/kit/guard.mjs)" "doctor: first line says the guard rules load locally, and from where"
+ok "$(printf '%s\n' "$doc_full" | grep -c '^note guard runs on local rules only; unclear commands are allowed without a model check$')" 1 "doctor: no server configured -> the local-rules-only note"
+printf 'JEV_MCP_URL='"'"'https://x.example/mcp'"'"'\nJEV_MCP_TOKEN='"'"'t'"'"'\n' > "$envH/.config/jev/env"
+doc_set=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_set" | grep -c '^note guard runs on local rules only' || true)" 0 "doctor: URL and token present -> no local-rules-only note"
+# a runner that cannot load the rules is a FAIL line and exit 1; a missing runtime too
+brokenH="$tmp/brokenhome"; mkdir -p "$brokenH/.local/share/honest-jev/hooks"; printf 'process.exit(3)\n' > "$brokenH/.local/share/honest-jev/hooks/jev-guard-local.mjs"
+doc_broken=$(HOME=$brokenH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null); rc=$?
+ok "$(printf '%s\n' "$doc_broken" | head -1)" "FAIL guard rules do not load locally (runner: $brokenH/.local/share/honest-jev/hooks/jev-guard-local.mjs)" "doctor: an installed runner that fails -> FAIL line"
+ok "$rc" 1 "doctor: the local rules not loading -> exit 1"
+nonode="$tmp/nonode"; mkdir -p "$nonode"; for t in bash env dirname cat head sed grep tr mktemp rm mkdir python3 curl; do p=$(command -v "$t") && ln -sf "$p" "$nonode/$t"; done
+doc_nonode=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$nonode" "$nonode/bash" "$root/install.sh" --doctor 2>/dev/null | head -1)
+ok "$doc_nonode" "FAIL guard rules do not load locally: no node or bun on PATH" "doctor: no node or bun -> FAIL line"
 
 # ── merge_json: first backup kept, atomic write, non-JSON left alone ─────────────
 mj="$tmp/mjhome"; mkdir -p "$mj/.claude"; printf '{"keep":1}\n' > "$mj/.claude.json"

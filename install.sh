@@ -54,8 +54,16 @@ if [ "$doctor" = 1 ]; then
   [ -n "${JEV_MCP_TOKEN:-}" ] || JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true)
   # shellcheck disable=SC2015
   fail=0; ok() { echo "ok   $*"; }; bad() { echo "FAIL $*"; fail=1; }
+  # the guard's local rules (hooks/jev-guard-local.mjs): the installed copy first, else this checkout. First line on purpose: it is the part
+  # of the guard that needs no server.
+  runner="$HOME/.local/share/honest-jev/hooks/jev-guard-local.mjs"; [ -f "$runner" ] || runner="$here/hooks/jev-guard-local.mjs"
+  rt=$(command -v node || command -v bun || true)
+  if [ -z "$rt" ]; then bad "guard rules do not load locally: no node or bun on PATH"
+  elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"
+  else bad "guard rules do not load locally (runner: $runner)"; fi
   [ -n "${JEV_MCP_URL:-}" ] && ok "JEV_MCP_URL set" || bad "JEV_MCP_URL not set"
   [ -n "${JEV_MCP_TOKEN:-}" ] && ok "JEV_MCP_TOKEN set" || bad "JEV_MCP_TOKEN not set"
+  [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] || echo "note guard runs on local rules only; unclear commands are allowed without a model check"
   if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; then
     base="${JEV_MCP_URL%/mcp}"
     [ "$(curl -s -m 10 "$base/health" || true)" = ok ] && ok "/health" || bad "/health did not return ok"

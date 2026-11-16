@@ -63,6 +63,7 @@ const LAYERS = {
 // ---- environment (the hook reads JEV_* at module load, so this precedes the dynamic import) --------------------------
 process.env.JEV_MCP_URL = "https://worker-private.example.workers.dev/mcp";
 process.env.JEV_MCP_TOKEN = "stub-token";
+process.env.JEV_GUARD_LOCAL = "off"; // these tests are about the server path; the local rules are covered by tests/local-first-omp.test.ts
 process.env.JEV_LEDGER = LEDGER;
 process.env.JEV_GUARD_ASK_NO_UI = "block";
 process.env.STUB_GH_ARGV = ARGV_LOG;

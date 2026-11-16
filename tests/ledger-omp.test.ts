@@ -14,6 +14,7 @@ const LEDGER = join(dir, "state", "ledger.jsonl");
 const MARK = "ZXQ-HOSTILE-MARKER";
 process.env.JEV_MCP_URL = "https://worker-private.example.workers.dev/mcp";
 process.env.JEV_MCP_TOKEN = "stub-token";
+process.env.JEV_GUARD_LOCAL = "off"; // these tests are about the server path; the local rules are covered by tests/local-first-omp.test.ts
 process.env.JEV_LEDGER = LEDGER;
 process.env.JEV_GUARD_ASK_NO_UI = "block";
 

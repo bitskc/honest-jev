@@ -1,4 +1,5 @@
-// omp (oh-my-pi) hook: jev-mcp kit_guard_command before every bash tool call.
+// omp (oh-my-pi) hook: the guard rules before every bash/read/grep tool call. The deterministic rules run locally, in this
+// process, first (see "local rules" below); only a command they cannot settle goes to jev-mcp kit_guard_command, if a server is configured.
 // Install:  cp jev-guard.ts ~/.omp/agent/hooks/pre/jev-guard.ts   (user)   or   .omp/hooks/pre/   (project)
 // Try once: omp --hook /abs/path/jev-guard.ts
 //
@@ -16,6 +17,7 @@ import { execFile } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Env is read per call, never at module load: one module instance is shared by every test file in a `bun test` process,
 // so a load-time read freezes whichever file imported the hook first.
@@ -34,6 +36,60 @@ export function parseAskAt(raw: string | undefined): number | undefined {
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
 }
 const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT);
+
+// ── local rules (local-first guard) ─────────────────────────────────────────────────────────────────────────────────
+// The deterministic rules (server/src/kit/guard.mjs, shell.mjs, safere.mjs: no npm package) run IN THIS PROCESS before any
+// network call. A command a rule settles is answered from that result and never leaves the machine; only a command the rules
+// cannot settle without a model ("unclear") goes on to the server, and only if one is configured. This file is copied alone
+// into ~/.omp/agent/hooks/pre/, so the rules are found by path at run time: $JEV_GUARD_RULES (an absolute path to guard.mjs;
+// when set it is the only candidate; tests use it), else the install.sh tree ~/.local/share/honest-jev/jev-policy/server/src/kit,
+// else the pre-rename install dir. The module is imported once per path and cached. JEV_GUARD_LOCAL=off skips all of this.
+// Not preemptable: a rule run is synchronous CPU in this process (measured at most about 0.25 s on the 1,241-row corpus).
+export const LOCAL_NOTICE = "Honest Jev guard: local rules are on, but no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN). This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
+
+export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
+  const custom = (env.JEV_GUARD_RULES ?? "").trim();
+  if (custom) return isAbsolute(custom) && exists(custom) ? custom : null;
+  const home = (env.HOME ?? "").trim() || homedir();
+  for (const dir of ["honest-jev", "jev-agent-skills"]) {
+    const p = join(home, ".local", "share", dir, "jev-policy", "server", "src", "kit", "guard.mjs");
+    if (exists(p)) return p;
+  }
+  return null;
+}
+
+type GuardFn = (args: Record<string, unknown>, deps: { ask: () => Promise<never>; jevAvailable: boolean }) => Promise<Record<string, unknown>>;
+const rulesByPath = new Map<string, Promise<GuardFn | null>>();
+function loadRules(path: string): Promise<GuardFn | null> {
+  let p = rulesByPath.get(path);
+  if (!p) {
+    p = import(pathToFileURL(path).href).then((m: { guardCommand?: unknown }) => (typeof m.guardCommand === "function" ? (m.guardCommand as GuardFn) : null), () => null);
+    rulesByPath.set(path, p);
+  }
+  return p;
+}
+
+export type LocalVerdict = { reply: Record<string, unknown>; unclear: boolean };
+/**
+ * Judge `args` with the local rules. null = the rules did not run (switched off, not found, would not load, threw): the caller
+ * takes the server path unchanged. `unclear` = the rules would have asked a model and no rule blocked; `ask` is never answered,
+ * it only records the question (reading `decided_by: "fail_open"` alone misses a question raised only by guardCommand's second,
+ * comment-masked reading). Never throws.
+ */
+export async function localGuard(args: Record<string, unknown>): Promise<LocalVerdict | null> {
+  try {
+    if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;
+    const path = guardRulesPath();
+    if (!path) return null;
+    const guardCommand = await loadRules(path);
+    if (!guardCommand) return null;
+    let consulted = 0;
+    const reply = await guardCommand({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
+    const by = reply.decided_by;
+    if (!["allow", "ask", "block"].includes(String(reply.decision)) || !["prefilter", "fail_closed", "fail_open"].includes(String(by))) return null;
+    return { reply, unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block") };
+  } catch { return null; }
+}
 
 // Server-side input caps (server/src/kit/tools.mjs): over these the schema rejects the call, and a rejection must
 // become "ask", never a silent allow.
@@ -208,7 +264,7 @@ export function failCodeFor(e: unknown): (typeof FAIL_REASONS)[number] {
   return "client_network";
 }
 
-type GuardReply = { decision?: string; rule?: string; reason?: string; suggestion?: string };
+type GuardReply = { decision?: string; rule?: string; reason?: string; suggestion?: string; decided_by?: string; fail_reason?: string };
 type McpResult<T> = { kind: "reply"; reply: T } | { kind: "rejected"; detail: string } | { kind: "unavailable"; code: (typeof FAIL_REASONS)[number] };
 
 // One JSON-RPC tools/call over the same transport for the guard and the policy call: https only, bearer from the
@@ -470,6 +526,7 @@ type ToolCallCtx = { cwd?: string; hasUI?: boolean; ui?: { confirm?: (title: str
 type Verdict = { block: true; reason: string } | undefined;
 
 export default function jevGuard(pi: ExtensionAPI) {
+  let noticed = false; // the "no server configured" notice goes out once per session, kept in memory
   // `rowId` is the ledger row for this ask (or null). omp hands us the user's answer, so the outcome is host-observed:
   // approved, denied, or no_ui when nobody could be asked. Ledger writes are deferred with setImmediate: the verdict
   // is returned before any ledger I/O, so a slow filesystem cannot delay the decision. Writes keep FIFO order (the
@@ -492,6 +549,9 @@ export default function jevGuard(pi: ExtensionAPI) {
     setImmediate(() => appendLine(p.row));
     return p.id;
   };
+
+  // a new session may be told once again that the guard has no server
+  pi.on("session_start", async () => { noticed = false; });
 
   pi.on("tool_call", async (event: ToolCallEvent, ctx: ToolCallCtx): Promise<Verdict> => {
     try {
@@ -521,18 +581,29 @@ export default function jevGuard(pi: ExtensionAPI) {
       }
       const at = askAt();
       if (at !== undefined) args.ask_at = at;
+      const local = await localGuard(args); // a command the rules settle never reaches mcpCall
       // The policy path runs concurrently with the guard call. It is opt-in: without a `"trigger"` in the user layer
       // nothing starts. policyDecide never rejects, so a policy failure cannot take the guard's answer down with it.
       const policyCwd = ctx.cwd ?? process.cwd();
       const pending = bash && userLayerHasTrigger(process.env, policyCwd)
         ? policyDecide(String(args.command), policyCwd, tStart, (reply, o) => led(tStart, reply, o), (m) => pi.logger?.warn?.(m)).catch(() => null)
         : Promise.resolve(null);
-      const [g, pol] = await Promise.all([mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()), pending]);
+      const settled = local !== null && !local.unclear && (local.reply.decided_by === "prefilter" || local.reply.decided_by === "fail_closed");
+      const [g, pol] = await Promise.all([
+        settled ? Promise.resolve<McpResult<GuardReply>>({ kind: "reply", reply: local!.reply as GuardReply }) : mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()),
+        pending,
+      ]);
 
       // the guard's own effect and reason (rows and shadow notes exactly as before)
       let ge: Effect = "allow", gWhy = "", gRow: string | null = null;
       if (g.kind === "unavailable") {
-        led(t0, undefined, { decision: "allow", decidedBy: "fail_open", failReason: g.code }); // fail open
+        // fail open. A command the local rules flagged keeps the rule id on its row (an id, never text).
+        const flagged = local?.unclear && typeof local.reply.rule === "string" ? local.reply.rule : undefined;
+        led(t0, undefined, { decision: "allow", decidedBy: "fail_open", failReason: g.code, rule: flagged });
+        if (local?.unclear && g.code === "client_config" && !noticed) { // once per session, for the user: fixed words, never the model
+          noticed = true;
+          try { if (typeof ctx.ui?.notify === "function") ctx.ui.notify(LOCAL_NOTICE, "warning"); else pi.logger?.warn?.(LOCAL_NOTICE); } catch { /* a notice never changes a decision */ }
+        }
       } else if (g.kind === "rejected") {
         gRow = led(t0, undefined, { decision: "ask", decidedBy: "fail_closed", failReason: "client_rejected", enforced: !shadow(), wouldHave: shadow() ? "ask" : null });
         gWhy = `Jev guard could not judge this call (server rejected it: ${g.detail}); confirm it by hand.`;
@@ -540,7 +611,8 @@ export default function jevGuard(pi: ExtensionAPI) {
       } else {
         const r = g.reply;
         const would = shadow() && (r.decision === "ask" || r.decision === "block") ? r.decision : null;
-        gRow = led(t0, r, { decision: r.decision, enforced: would === null, wouldHave: would });
+        const ruleError = r.decided_by === "fail_closed" && r.fail_reason === "rule_error" ? "rule_error" : undefined; // a server reply carries this in its record; a local reply has none
+        gRow = led(t0, r, { decision: r.decision, enforced: would === null, wouldHave: would, failReason: ruleError });
         if (r.decision === "ask" || r.decision === "block") {
           gWhy = `Jev guard${r.rule ? ` [${r.rule}]` : ""}: ${r.reason}${r.suggestion ? ` ${r.suggestion}` : ""}`;
           if (shadow()) pi.logger?.warn?.(`(shadow) would ${r.decision}: ${gWhy}`); else ge = r.decision === "block" ? "deny" : "ask";

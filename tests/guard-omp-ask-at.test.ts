@@ -62,6 +62,7 @@ function wireBodies(askAt: string | undefined): Array<{ params: { arguments: Rec
     JEV_MCP_TOKEN: "stub-token",
     JEV_LEDGER: join(dir, `ledger-${askAt ?? "unset"}.jsonl`),
     JEV_GUARD_ASK_NO_UI: "block",
+    JEV_GUARD_LOCAL: "off", // this test is about what the server call carries; a rule-decided `ls` would otherwise never be sent
   };
   if (askAt === undefined) delete env.JEV_GUARD_ASK_AT; else env.JEV_GUARD_ASK_AT = askAt;
   try { writeFileSync(out, ""); } catch { /* first run */ }
