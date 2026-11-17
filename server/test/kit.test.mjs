@@ -1608,10 +1608,15 @@ test("round 11 P2-1: dotenv suffix chains block at any depth; .envrc and the nam
     "cat .env", "cat .env.production", "cat .env.production.local", "cat .env.production.local.bak", "cat .env.a.b.c",
     "cat .envrc", "cat .npmrc", "cat ~/.pypirc", "cat service-account.json", "cat terraform.tfstate", "cat .dev.vars",
     "cat ~/.docker/config.json", "cat ~/.kube/config", "cat ~/.config/gh/hosts.yml",
+    "cat ~/.config/jev/env", "grep JEV_MCP_TOKEN ~/.config/jev/env",
   ]) assert.equal((await g(c)).decision, "block", c);
   for (const c of ["cat .env.example", "cat .env.sample", "stat .env", "cp .env.example .env", "rm .env", "echo .env"]) {
     assert.equal((await g(c)).decision, "allow", c);
   }
+});
+test("the kit token file blocks; other files in ~/.config/jev do not", async () => {
+  assert.equal((await g("cat ~/.config/jev/env")).decision, "block");
+  assert.equal((await g("cat ~/.config/jev/policy.json")).decision, "allow");
 });
 test("round 11 P2-2: glob spellings of secret paths block; globs that reach no secret name and .pub keys stay allowed", async () => {
   for (const c of ["cat .env*", "cat .env.*", "cat ~/.ssh/*"]) assert.equal((await g(c)).decision, "block", c);

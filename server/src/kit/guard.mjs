@@ -78,6 +78,8 @@ const SECRET_PATH_RES = [
   // secret directories: every path under them is a secret, read or exfiltrated (.pub keys stay safe)
   /(^|\/)\.(ssh|aws|gnupg)(\/|$)/,
   /(^|\/)\.config\/gh(\/|$)/,
+  // the kit's own token file (install.sh --save-env). Not the rest of ~/.config/jev: policy.json is not a secret.
+  /(^|\/)\.config\/jev\/env$/,
 ];
 const SAFE_PATH_RES = [
   /\.(example|sample|template|dist|md|rst|txt\.example)$/,
