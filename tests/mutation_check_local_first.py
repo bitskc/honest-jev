@@ -24,12 +24,16 @@ RUNT = ["node", "--test", "hooks/jev-guard-local.test.mjs"]
 LEDT = [sys.executable, "-W", "ignore", "-m", "unittest", "tests/test_ledger_hook.py"]
 OMPT = ["bun", "test", "tests/local-first-omp.test.ts"]
 SCRIPTS = ["bash", "tests/test-scripts.sh"]
+FPT = ["node", "--test", "server/test/rules-fingerprint.test.mjs"]
 
 PYH = "hooks/jev_guard_hook.py"
 PYL = "hooks/jev_ledger.py"
 RUN = "hooks/jev-guard-local.mjs"
 TS = "hooks/omp/jev-guard.ts"
 INST = "install.sh"
+FPMOD = "hooks/jev-rules-fingerprint.mjs"
+HEALTH = "server/src/health.mjs"
+GEN = "server/src/rules-fingerprint.mjs"
 
 # (name, [(file, old, new), ...], command). `old` must occur exactly once.
 MUTATIONS = [
@@ -73,9 +77,9 @@ MUTATIONS = [
     ("hook-omp: local step disabled", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', "  return null;")], OMPT),
     ("hook-omp: JEV_GUARD_LOCAL=off ignored", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', "")], OMPT),
     ("hook-omp: the masked-reading model question is not unclear", [(TS, 'unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block") };', 'unclear: by === "fail_open" };')], OMPT),
-    ("hook-omp: an unclear command is treated as settled", [(TS, "const settled = local !== null && !local.unclear && (", "const settled = local !== null && (")], OMPT),
+    ("hook-omp: an unclear command is treated as settled", [(TS, "const ruleSettled = local !== null && !local.unclear && (", "const ruleSettled = local !== null && (")], OMPT),
     ("hook-omp: a notice on every call", [(TS, 'local?.unclear && g.code === "client_config" && !noticed ? LOCAL_NOTICE : null;', 'local?.unclear && g.code === "client_config" ? LOCAL_NOTICE : null;')], OMPT),
-    ("hook-omp: a new session is never told again", [(TS, 'async () => { noticed = false; downNoticed = false; });', 'async () => { downNoticed = false; });')], OMPT),
+    ("hook-omp: a new session is never told again", [(TS, 'async () => { noticed = false; downNoticed = false; trustNoticed.clear(); });', 'async () => { downNoticed = false; trustNoticed.clear(); });')], OMPT),
     ("hook-omp: the flagged rule is dropped from the fail_open row", [(TS, 'failReason: nothingRan ? "local_rules_unavailable" : g.code, rule: flagged });', 'failReason: nothingRan ? "local_rules_unavailable" : g.code });')], OMPT),
     ("hook-omp: a rule_error row loses its closed fail_reason", [(TS, 'wouldHave: would, failReason: ruleError });', "wouldHave: would });")], OMPT),
     ("hook-omp: rules found only through the override", [(TS, 'for (const dir of ["honest-jev", "jev-agent-skills"]) {', "for (const dir of []) {")], OMPT),
@@ -85,11 +89,11 @@ MUTATIONS = [
     ("hook-omp: not-run row keeps the plain client_config reason", [(TS, 'failReason: nothingRan ? "local_rules_unavailable" : g.code,', "failReason: g.code,")], OMPT),
     ("hook-omp: no notice when the local rules did not run", [(TS, "const say = nothingRan ? (downNoticed ? null : LOCAL_DOWN_NOTICE) :", "const say = nothingRan ? null :")], OMPT),
     ("hook-omp: the not-run notice repeats on every call", [(TS, "const say = nothingRan ? (downNoticed ? null : LOCAL_DOWN_NOTICE) :", "const say = nothingRan ? LOCAL_DOWN_NOTICE :")], OMPT),
-    ("hook-omp: a new session never hears the not-run notice again", [(TS, "noticed = false; downNoticed = false; });", "noticed = false; });")], OMPT),
+    ("hook-omp: a new session never hears the not-run notice again", [(TS, "noticed = false; downNoticed = false; trustNoticed.clear(); });", "noticed = false; trustNoticed.clear(); });")], OMPT),
     ("hook-omp: the off switch counts as 'did not run'", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return { notRun: true };')], OMPT),
     ("hook-omp: a rules failure is reported as the off switch (no notice, no marked row)", [(TS, "    if (!path) return { notRun: true };", "    if (!path) return null;")], OMPT),
     # ── install.sh doctor ──
-    ("doctor: the local-rules-only note is never printed", [(INST, 'echo "note guard runs on local rules only; unclear commands are allowed without a model check"', "true")], SCRIPTS),
+    ("doctor: the local-rules-only note is never printed", [(INST, 'echo "note guard runs on local rules only, not checked against any server; unclear commands are allowed without a model check"', "true")], SCRIPTS),
     ("doctor: the local rules line is never checked", [(INST, '  elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"', '  elif true; then ok "guard rules load locally ($runner)"')], SCRIPTS),
     ("doctor: the 'local rules only' note is printed although the rules do not load", [(INST, '  elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only', '  elif true; then echo "note guard runs on local rules only')], SCRIPTS),
     ("doctor: no note when the rules do not load and a server is configured", [(INST, '[ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"', "true")], SCRIPTS),
@@ -99,6 +103,55 @@ MUTATIONS = [
     ("doctor: the file-only note is printed for the URL alone", [(INST, 'if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then', 'if [ "$url_file_only" = 1 ]; then')], SCRIPTS),
     ("doctor: the file-only note is printed even when both values come from the environment", [(INST, 'if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then', 'if true; then')], SCRIPTS),
     ("doctor: a passing rules check is never recorded", [(INST, 'ok "guard rules load locally ($rp)"; rules_ok=1', 'ok "guard rules load locally ($rp)"')], SCRIPTS),
+    # ── the rules fingerprint: a local allow is final only when the rules here are the server's ──
+    ("hook-py: a different fingerprint still trusts the local allow (trust the local allow on mismatch)", [(PYH, 'return "match" if theirs == mine else "mismatch"', 'return "match"')], PYT),
+    ("hook-py: an unavailable server fingerprint counts as a match", [(PYH, '    if theirs is None:\n        return "unverified"\n', '    if theirs is None:\n        return "match"\n')], PYT),
+    ("hook-py: rules that are not the whole release count as a match", [(PYH, 'if not (isinstance(mine, str) and FP_RE.fullmatch(mine)):\n        return "unverified"', 'if not (isinstance(mine, str) and FP_RE.fullmatch(mine)):\n        return "match"')], PYT),
+    ("hook-py: the runner's rules_fp is ignored (every local allow goes to the server)", [(PYH, 'mine = local.get("rules_fp")', "mine = None")], PYT),
+    ("hook-py: a local ask or block is judged by the fingerprint too (stricter is not kept)", [(PYH, 'if local.get("decision") == "allow" and server_configured():', "if server_configured():")], PYT),
+    ("hook-py: the fingerprint is looked up even with no server configured", [(PYH, 'if local.get("decision") == "allow" and server_configured():', 'if local.get("decision") == "allow":')], PYT),
+    ("hook-py: no notice for a rules mismatch", [(PYH, "if trust in TRUST_NOTICES and _ledger is not None and", "if False and")], PYT),
+    ("hook-py: the rules notice repeats on every call", [(PYH, 'if trust in TRUST_NOTICES and _ledger is not None and _ledger.mark_once("notice-rules-%s-%s" % (trust, _session_key())):', "if trust in TRUST_NOTICES:")], PYT),
+    ("hook-py: the rules notice is not keyed by session", [(PYH, '"notice-rules-%s-%s" % (trust, _session_key())', '"notice-rules-%s-%s" % (trust, "x")')], PYT),
+    ("hook-py: the cached fingerprint never expires", [(PYH, "return (fp,) if 0 <= age <= (FP_TTL if fp else FP_TTL_DOWN) else None", "return (fp,)")], PYT),
+    ("hook-py: 'the server gave none' is remembered as long as a real fingerprint", [(PYH, "(FP_TTL if fp else FP_TTL_DOWN)", "FP_TTL")], PYT),
+    ("hook-py: the fingerprint cache is never written", [(PYH, "        os.replace(tmp, where[1])\n", "        os.unlink(tmp)\n")], PYT),
+    ("hook-py: the cache is shared between servers", [(PYH, "hashlib.sha256(URL.encode())", 'hashlib.sha256(b"x")')], PYT),
+    ("hook-py: a symlinked cache file is followed", [(PYH, "fd = os.open(where[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)", "fd = os.open(where[1], os.O_RDONLY | os.O_NONBLOCK)")], PYT),
+    ("hook-py: the fingerprint fetch has no time budget", [(PYH, "        signal.setitimer(signal.ITIMER_REAL, FP_FETCH_BUDGET)\n", ""), (PYH, "timeout=FP_FETCH_BUDGET - 0.1)", "timeout=60)")], PYT),
+    ("hook-py: the fingerprint is fetched without the token", [(PYH, '"authorization": "Bearer " + os.environ.get("JEV_MCP_TOKEN", "").strip(),', '"x-none": "0",')], PYT),
+    ("runner: rules_fp is missing from the reply", [(RUN, "JSON.stringify({ ...reply, rules_fp: fp })", "JSON.stringify(reply)")], RUNT),
+    ("runner: the fingerprint is not taken from the loaded rules' directory", [(RUN, "fp = rulesFingerprint(dirname(path));", "fp = rulesFingerprint(here);")], RUNT),
+    ("fingerprint: shell.mjs is not covered", [(FPMOD, 'Object.freeze(["guard.mjs", "safere.mjs", "shell.mjs"])', 'Object.freeze(["guard.mjs", "safere.mjs"])')], RUNT),
+    ("fingerprint: files are not length-framed", [(FPMOD, "    h.update(`${name}\\0${bytes.length}\\0`);\n", "")], FPT),
+    ("server: /health reports the fingerprint to everyone", [(HEALTH, "return new Response(\"ok\", authorized ? {", "return new Response(\"ok\", true ? {")], FPT),
+    ("server: an unset token authorizes an empty bearer", [(HEALTH, "  if (!expected) return false;\n", "")], FPT),
+    ("server: the committed fingerprint constant is stale", [(GEN, 'RULES_FINGERPRINT = "0', 'RULES_FINGERPRINT = "1')], FPT),
+    ("hook-omp: a different fingerprint still trusts the local allow (trust the local allow on mismatch)", [(TS, 'return theirs === local.fp ? "match" : "mismatch";', 'return "match";')], OMPT),
+    ("hook-omp: an unavailable server fingerprint counts as a match", [(TS, 'if (theirs === null) return "unverified";', 'if (theirs === null) return "match";')], OMPT),
+    ("hook-omp: rules that are not the whole release count as a match", [(TS, 'if (local.fp === null || !FP_RE.test(local.fp)) return "unverified";', 'if (local.fp === null || !FP_RE.test(local.fp)) return "match";')], OMPT),
+    ("hook-omp: a local ask or block is judged by the fingerprint too (stricter is not kept)", [(TS, 'if (ruleSettled && local!.reply.decision === "allow" && (process.env', 'if (ruleSettled && (process.env')], OMPT),
+    ("hook-omp: no notice for a rules mismatch", [(TS, 'if ((trust === "mismatch" || trust === "unverified") && !trustNoticed.has(trust)) {', "if (false) {")], OMPT),
+    ("hook-omp: the rules notice repeats on every call", [(TS, 'if ((trust === "mismatch" || trust === "unverified") && !trustNoticed.has(trust)) {', 'if (trust === "mismatch" || trust === "unverified") {')], OMPT),
+    ("hook-omp: a new session never hears the rules notice again", [(TS, "downNoticed = false; trustNoticed.clear(); });", "downNoticed = false; });")], OMPT),
+    ("hook-omp: the cached server fingerprint never expires", [(TS, "now - serverFp.at < (serverFp.fp ? FP_TTL_MS : FP_TTL_DOWN_MS)", "true")], OMPT),
+    ("hook-omp: 'the server gave none' is remembered as long as a real fingerprint", [(TS, "(serverFp.fp ? FP_TTL_MS : FP_TTL_DOWN_MS)", "FP_TTL_MS")], OMPT),
+    ("hook-omp: the fingerprint fetch has no time budget", [(TS, "      signal: AbortSignal.timeout(FP_FETCH_MS),\n", "")], OMPT),
+    ("hook-omp: the fingerprint is fetched without the token", [(TS, 'headers: { authorization: `Bearer ${(process.env.JEV_MCP_TOKEN ?? "").trim()}`, "user-agent": "jev-guard-hook-omp/1.0" },', 'headers: { "user-agent": "jev-guard-hook-omp/1.0" },')], OMPT),
+    ("hook-omp: the fingerprint function misses a file", [(TS, 'export const RULE_FILES = ["guard.mjs", "safere.mjs", "shell.mjs"] as const;', 'export const RULE_FILES = ["guard.mjs", "safere.mjs"] as const;')], OMPT),
+    ("hook-omp: the fingerprint is not length-framed", [(TS, "    h.update(`${name}\\0${bytes.length}\\0`);\n", "")], OMPT),
+    ("hook-omp: the rules are looked up again on every call (a rewritten file takes effect)", [(TS, "  let p = rulesByPath.get(path);\n  if (!p) {", "  let p: Promise<Loaded> | undefined;\n  if (!p) {")], OMPT),
+    # ── install.sh doctor: the guard state is what the HOOKS see, and the fingerprint check ──
+    ("doctor: the guard state is decided from the values after the env-file fallback", [(INST, 'if [ "$url_env" = 1 ] && [ "$tok_env" = 1 ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi', 'if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi')], SCRIPTS),
+    ("doctor: the URL counts as in the environment although only the file has it", [(INST, 'if [ -n "${JEV_MCP_URL:-}" ]; then url_env=1; fi', "url_env=1")], SCRIPTS),
+    ("doctor: the token counts as in the environment although only the file has it", [(INST, 'if [ -n "${JEV_MCP_TOKEN:-}" ]; then tok_env=1; fi', "tok_env=1")], SCRIPTS),
+    ("doctor: a URL that is not https counts as a server the hooks see", [(INST, 'if [ "$url_env" = 1 ] && [ "$tok_env" = 1 ] && [ "$url_https" = 1 ]; then', 'if [ "$url_env" = 1 ] && [ "$tok_env" = 1 ]; then')], SCRIPTS),
+    ("doctor: a URL that is not https is reported as set", [(INST, 'elif [ "$url_https" = 0 ]; then bad "JEV_MCP_URL is not an https:// URL', 'elif false; then bad "JEV_MCP_URL is not an https:// URL')], SCRIPTS),
+    ("doctor: a URL that is not https is contacted", [(INST, '[ -n "${JEV_MCP_TOKEN:-}" ] && [ "$url_https" = 1 ]; then\n    base=', '[ -n "${JEV_MCP_TOKEN:-}" ]; then\n    base=')], SCRIPTS),
+    ("doctor: a rules fingerprint mismatch is not a failure", [(INST, '      else bad "guard rules differ from the server', '      else ok "guard rules differ from the server')], SCRIPTS),
+    ("doctor: a server without a fingerprint is a failure", [(INST, 'elif [ -z "$sfp" ]; then echo "note the server did not report', 'elif [ -z "$sfp" ]; then bad "the server did not report')], SCRIPTS),
+    ("doctor: the fingerprints are never compared", [(INST, 'elif [ "$sfp" = "$lfp" ]; then ok', 'elif true; then ok')], SCRIPTS),
+    ("doctor: the fingerprint request puts the token in argv", [(INST, '--config - "$base/health" <<<"header = \\"authorization: Bearer $tokcfg\\"" 2>/dev/null \\', '-H "authorization: Bearer $JEV_MCP_TOKEN" "$base/health" 2>/dev/null \\')], SCRIPTS),
 ]
 
 
