@@ -72,11 +72,11 @@ MUTATIONS = [
     ("runner: a relative JEV_GUARD_RULES is accepted", [(RUN, "if (custom) return isAbsolute(custom) ? [custom] : [];", "if (custom) return [resolve(custom)];")], RUNT),
     ("runner: a group- or world-writable compile-cache directory is used", [(RUN, "    if ((st.mode & 0o022) !== 0) return; // group- or world-writable: anyone it names could plant compiled code the guard would then load\n", "")], RUNT),
     ("runner: judgeStdin drops the rule's suggestion (the in-process corpus run)", [(RUN, "  reply.unclear = consulted > 0 && reply.decision !== \"block\";\n  return reply;", "  reply.unclear = consulted > 0 && reply.decision !== \"block\";\n  return { ...reply, suggestion: null };")], RUNT),
-    ("runner: the one-shot entry drops the rule id (only the real spawns see it)", [(RUN, "  process.stdout.write(`${JSON.stringify(reply)}\\n`);\n  return 0;\n}\n\n// Run only", "  process.stdout.write(`${JSON.stringify({ ...reply, rule: null })}\\n`);\n  return 0;\n}\n\n// Run only")], RUNT),
+    ("runner: the one-shot entry drops the rule id (only the real spawns see it)", [(RUN, "  process.stdout.write(`${JSON.stringify({ ...reply, rules_fp: fp })}\\n`);\n  return 0;\n}\n\n// Run only", "  process.stdout.write(`${JSON.stringify({ ...reply, rules_fp: fp, rule: null })}\\n`);\n  return 0;\n}\n\n// Run only")], RUNT),
     # ── omp hook ──
     ("hook-omp: local step disabled", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', "  return null;")], OMPT),
     ("hook-omp: JEV_GUARD_LOCAL=off ignored", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', "")], OMPT),
-    ("hook-omp: the masked-reading model question is not unclear", [(TS, 'unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block") };', 'unclear: by === "fail_open" };')], OMPT),
+    ("hook-omp: the masked-reading model question is not unclear", [(TS, 'unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block"), fp };', 'unclear: by === "fail_open", fp };')], OMPT),
     ("hook-omp: an unclear command is treated as settled", [(TS, "const ruleSettled = local !== null && !local.unclear && (", "const ruleSettled = local !== null && (")], OMPT),
     ("hook-omp: a notice on every call", [(TS, 'local?.unclear && g.code === "client_config" && !noticed ? LOCAL_NOTICE : null;', 'local?.unclear && g.code === "client_config" ? LOCAL_NOTICE : null;')], OMPT),
     ("hook-omp: a new session is never told again", [(TS, 'async () => { noticed = false; downNoticed = false; trustNoticed.clear(); });', 'async () => { downNoticed = false; trustNoticed.clear(); });')], OMPT),
