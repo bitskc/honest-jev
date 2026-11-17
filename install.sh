@@ -50,10 +50,15 @@ fi
 # server/build-vendor.sh; registerTool count at that commit) + 3 fixed kit_* tools (KIT_TOOL_NAMES in server/src/kit/tools.mjs) + kit_decide (server/src/decide/tool.mjs).
 EXPECTED_TOOLS=16
 if [ "$doctor" = 1 ]; then
-  # The hooks read these two values from the process environment only. Remember which came only from the env file, so the doctor says so.
-  url_file_only=0; tok_file_only=0
+  # The hooks read these two values from the process environment only. Remember what the PROCESS had (url_env / tok_env) before the env file
+  # fills the gaps below, and which values came only from the file, so the doctor says so and describes the guard as the hooks see it.
+  url_env=0; tok_env=0; url_file_only=0; tok_file_only=0
+  if [ -n "${JEV_MCP_URL:-}" ]; then url_env=1; fi
+  if [ -n "${JEV_MCP_TOKEN:-}" ]; then tok_env=1; fi
   if [ -z "${JEV_MCP_URL:-}" ]; then JEV_MCP_URL=$(env_get "$envfile" JEV_MCP_URL || true); if [ -n "$JEV_MCP_URL" ]; then url_file_only=1; fi; fi
   if [ -z "${JEV_MCP_TOKEN:-}" ]; then JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true); if [ -n "$JEV_MCP_TOKEN" ]; then tok_file_only=1; fi; fi
+  url_https=0
+  case "${JEV_MCP_URL:-}" in https://*) url_https=1;; esac
   # shellcheck disable=SC2015
   fail=0; ok() { echo "ok   $*"; }; bad() { echo "FAIL $*"; fail=1; }
   # the guard's local rules (hooks/jev-guard-local.mjs): the installed copy first, else this checkout. First line on purpose: it is the part
@@ -65,6 +70,7 @@ if [ "$doctor" = 1 ]; then
   elif rp=$("$rt" "$runner" --check 2>/dev/null); then ok "guard rules load locally ($rp)"; rules_ok=1
   else bad "guard rules do not load locally (runner: $runner)"; fi
   if [ -z "${JEV_MCP_URL:-}" ]; then bad "JEV_MCP_URL not set"
+  elif [ "$url_https" = 0 ]; then bad "JEV_MCP_URL is not an https:// URL; the hooks refuse any other scheme, so they never reach the server"
   elif [ "$url_file_only" = 1 ]; then ok "JEV_MCP_URL set (from $envfile only)"
   else ok "JEV_MCP_URL set"; fi
   if [ -z "${JEV_MCP_TOKEN:-}" ]; then bad "JEV_MCP_TOKEN not set"
@@ -73,18 +79,33 @@ if [ "$doctor" = 1 ]; then
   if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then
     echo "note the hooks read JEV_MCP_URL / JEV_MCP_TOKEN from the agent's environment, not from this file; start the agent from a shell that loads it (set -a; . $envfile; set +a) or the guard will not reach the server"
   fi
-  # what the guard is doing right now depends on BOTH: whether the local rules load, and whether a server is configured
-  if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; then
+  # what the guard is doing right now depends on BOTH: whether the local rules load, and whether the HOOKS see a server. They see the process
+  # environment only: a value that came from the env file (or an URL that is not https) is no server to them, so this is decided from
+  # the environment as it was BEFORE the file filled the gaps (url_env / tok_env), not from the values the checks below use.
+  hooks_see_server=0
+  if [ "$url_env" = 1 ] && [ "$tok_env" = 1 ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi
+  if [ "$hooks_see_server" = 1 ]; then
     [ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"
-  elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only; unclear commands are allowed without a model check"
+  elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only, not checked against any server; unclear commands are allowed without a model check"
   else echo "note the guard is not checking commands: the local rules do not load and no server is configured"; fi
-  if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; then
+  if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] && [ "$url_https" = 1 ]; then
     base="${JEV_MCP_URL%/mcp}"
     [ "$(curl -s -m 10 "$base/health" || true)" = ok ] && ok "/health" || bad "/health did not return ok"
     code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST "$JEV_MCP_URL" || true)
     [ "$code" = 401 ] && ok "unauthenticated call rejected (401)" || bad "unauthenticated call returned $code (want 401)"
     # the token reaches curl through a config on stdin, never argv (argv is visible in ps and /proc)
     tokcfg=${JEV_MCP_TOKEN//\\/\\\\}; tokcfg=${tokcfg//\"/\\\"}
+    # the rules on this machine against the rules the Worker runs: the guard trusts a local allow only when their fingerprints are identical
+    # (the Worker reports its own in a header of an authenticated GET /health; the token travels in the curl config on stdin, never argv)
+    if [ "$rules_ok" = 1 ]; then
+      lfp=$("$rt" "$runner" --fingerprint 2>/dev/null || true)
+      sfp=$(curl -s -m 10 -D - -o /dev/null --config - "$base/health" <<<"header = \"authorization: Bearer $tokcfg\"" 2>/dev/null \
+        | tr -d '\r' | awk -F': *' 'tolower($1)=="x-jev-rules-fingerprint"{print tolower($2); exit}' || true)
+      if [ -z "$lfp" ]; then bad "guard rules cannot be fingerprinted (the rule files are not the complete release); re-run ./install.sh"
+      elif [ -z "$sfp" ]; then echo "note the server did not report its rules fingerprint (an older Worker, or it refused the token); commands the local rules would allow are sent to the server to decide"
+      elif [ "$sfp" = "$lfp" ]; then ok "guard rules match the server's (fingerprint ${lfp:0:12})"
+      else bad "guard rules differ from the server's (here ${lfp:0:12}, server ${sfp:0:12}); commands the local rules would allow are sent to the server to decide. Run jev-update if the server is newer, or deploy the Worker if this machine is"; fi
+    fi
     # MCP handshake (initialize, then notifications/initialized) before tools/list. If initialize returns an
     # Mcp-Session-Id header, every later call sends it back. It travels in the curl config too, never argv.
     sidcfg=""; hdr=$(mktemp); trap 'rm -f "$hdr"' EXIT
