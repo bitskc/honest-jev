@@ -1616,6 +1616,8 @@ test("round 11 P2-1: dotenv suffix chains block at any depth; .envrc and the nam
 });
 test("the kit token file blocks; other files in ~/.config/jev do not", async () => {
   assert.equal((await g("cat ~/.config/jev/env")).decision, "block");
+  assert.equal((await g("echo x >> ~/.config/jev/env")).decision, "block");
+  assert.equal((await g("tee ~/.config/jev/env")).decision, "block");
   assert.equal((await g("cat ~/.config/jev/policy.json")).decision, "allow");
 });
 test("round 11 P2-2: glob spellings of secret paths block; globs that reach no secret name and .pub keys stay allowed", async () => {

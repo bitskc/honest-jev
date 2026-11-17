@@ -11,7 +11,7 @@ set -u
 [ $# -ge 1 ] || { echo "usage: jev-call <tool> [json-args]" >&2; exit 2; }
 tool="$1"; args="${2:-{\}}"
 # Same reader as install.sh env_get: quoted values only, never executed. Process environment wins.
-if [ -z "${JEV_MCP_URL:-}" ] || [ -z "${JEV_MCP_TOKEN:-}" ]; then
+if [ -z "${JEV_MCP_URL:-}" ] && [ -z "${JEV_MCP_TOKEN:-}" ]; then
   _f="${HOME:-}/.config/jev/env"
   if [ -n "${HOME:-}" ] && [ -f "$_f" ]; then
     _fill() {

@@ -306,11 +306,12 @@ ok "$(printf '%s\n' "$doc_env" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok
 ok "$(notes_of "$doc_env")" "" "doctor: both from the environment -> no note"
 # one from each: only the file-sourced one is marked, and the note appears once
 doc_urlenv=$(HOME=$envH env -u JEV_MCP_TOKEN JEV_MCP_URL=https://env.example/mcp PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
-ok "$(printf '%s\n' "$doc_urlenv" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set (from %s only)' "$ef")" "doctor: URL from the environment, token from the file -> only the token is marked"
-ok "$(notes_of "$doc_urlenv")" "$n_file" "doctor: URL from the environment, token from the file -> the file note once, and the hooks see the server"
+n_mix="note a value in the process and a value in $ef are not combined, so the hooks do not use the file"
+ok "$(printf '%s\n' "$doc_urlenv" | grep -E '^(ok   JEV_MCP_|FAIL JEV_MCP_)' | head -2)" "$(printf 'ok   JEV_MCP_URL set\nFAIL JEV_MCP_TOKEN not set')" "doctor: URL from the environment, token only in the file -> the token is not taken from the file"
+ok "$(notes_of "$doc_urlenv")" "$(printf '%s\n%s' "$n_mix" "$n_local")" "doctor: URL in the process, token in the file -> not combined, local rules only"
 doc_tokenv=$(HOME=$envH env -u JEV_MCP_URL JEV_MCP_TOKEN=envtok PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
-ok "$(printf '%s\n' "$doc_tokenv" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok   JEV_MCP_URL set (from %s only)\nok   JEV_MCP_TOKEN set' "$ef")" "doctor: URL from the file, token from the environment -> only the URL is marked"
-ok "$(notes_of "$doc_tokenv")" "$n_file" "doctor: URL from the file, token from the environment -> the file note once, and the hooks see the server"
+ok "$(printf '%s\n' "$doc_tokenv" | grep -E '^(ok   JEV_MCP_|FAIL JEV_MCP_)' | head -2)" "$(printf 'FAIL JEV_MCP_URL not set\nok   JEV_MCP_TOKEN set')" "doctor: token from the environment, URL only in the file -> the URL is not taken from the file"
+ok "$(notes_of "$doc_tokenv")" "$(printf '%s\n%s' "$n_mix" "$n_local")" "doctor: token in the process, URL in the file -> not combined, local rules only"
 ok "$(notes_of "$doc_nonode_full")" "$(printf '%s\n%s' "$n_file" "$n_srv")" "doctor: no node or bun + a server only in the env file -> the file note, and every command is sent to the server"
 fbH="$tmp/filebroken"; mkdir -p "$fbH/.local/share/honest-jev/hooks" "$fbH/.config/jev"; cp "$envH/.config/jev/env" "$fbH/.config/jev/env"
 printf 'process.exit(3)\n' > "$fbH/.local/share/honest-jev/hooks/jev-guard-local.mjs"

@@ -313,8 +313,11 @@ class UnclearCommands(unittest.TestCase):
         e.run(event("Bash", {"command": UNCLEAR}, session="s-file"))
         self.assertGreater(LISTENER.count, before)
         before = LISTENER.count
-        e.run(event("Bash", {"command": UNCLEAR}, session="s-env"), JEV_MCP_URL="https://127.0.0.1:1/mcp")
-        self.assertEqual(LISTENER.count, before)  # the process URL wins, and nothing is listening there
+        e.run(event("Bash", {"command": UNCLEAR}, session="s-env"), JEV_MCP_URL="https://127.0.0.1:1/mcp", JEV_MCP_TOKEN="stub-token")
+        self.assertEqual(LISTENER.count, before)  # both process values win; nothing is listening on port 1
+        before = LISTENER.count
+        e.run(event("Bash", {"command": UNCLEAR}, session="s-mix"), JEV_MCP_TOKEN="stub-token")
+        self.assertEqual(LISTENER.count, before)  # a process token is not sent to the URL in the file
 
     def test_unclear_with_no_server_allows_and_says_so_once_per_session(self):
         e = Env()

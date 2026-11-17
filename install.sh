@@ -52,8 +52,12 @@ EXPECTED_TOOLS=16
 if [ "$doctor" = 1 ]; then
   # The hooks and jev-call read this same file, so a file-only https URL and token is a server they can call.
   url_file_only=0; tok_file_only=0
-  if [ -z "${JEV_MCP_URL:-}" ]; then JEV_MCP_URL=$(env_get "$envfile" JEV_MCP_URL || true); if [ -n "$JEV_MCP_URL" ]; then url_file_only=1; fi; fi
-  if [ -z "${JEV_MCP_TOKEN:-}" ]; then JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true); if [ -n "$JEV_MCP_TOKEN" ]; then tok_file_only=1; fi; fi
+  # Fill from the file only when the process has neither value. One process value plus the other from the file
+  # would send a process token to a URL the file names (#61).
+  if [ -z "${JEV_MCP_URL:-}" ] && [ -z "${JEV_MCP_TOKEN:-}" ]; then
+    JEV_MCP_URL=$(env_get "$envfile" JEV_MCP_URL || true); if [ -n "$JEV_MCP_URL" ]; then url_file_only=1; fi
+    JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true); if [ -n "$JEV_MCP_TOKEN" ]; then tok_file_only=1; fi
+  fi
   url_https=0
   case "${JEV_MCP_URL:-}" in https://*) url_https=1;; esac
   # shellcheck disable=SC2015
@@ -76,9 +80,12 @@ if [ "$doctor" = 1 ]; then
   if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then
     echo "note the guard hooks and jev-call read $envfile themselves. An MCP entry that uses \${JEV_MCP_URL} / \${JEV_MCP_TOKEN} still needs those variables in the agent process"
   fi
-  # what the guard is doing: local rules, plus a server when both values are present (process or this file) and the URL is https.
+  if { [ -n "${JEV_MCP_URL:-}" ] && [ -z "${JEV_MCP_TOKEN:-}" ]; } || { [ -z "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ]; }; then
+    [ -f "$envfile" ] && echo "note a value in the process and a value in $envfile are not combined, so the hooks do not use the file"
+  fi
+  # Both from the process, or both from the file. A mix is not a server the hooks will call.
   hooks_see_server=0
-  if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi
+  if [ "$url_file_only" = "$tok_file_only" ] && [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi
   if [ "$hooks_see_server" = 1 ]; then
     [ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"
   elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only, not checked against any server; unclear commands are allowed without a model check"

@@ -41,7 +41,13 @@ export function envFileValue(key: string, env: Record<string, string | undefined
     return "";
   }
 }
-const fromEnvOrFile = (key: string): string => (process.env[key] ?? "").trim() || envFileValue(key).trim();
+function fromEnvOrFile(key: string): string {
+  const url = (process.env.JEV_MCP_URL ?? "").trim();
+  const tok = (process.env.JEV_MCP_TOKEN ?? "").trim();
+  // A pair, never one from the process and the other from the file (#61).
+  if (!url && !tok) return envFileValue(key).trim();
+  return key === "JEV_MCP_URL" ? url : tok;
+}
 const mcpUrl = (): string => fromEnvOrFile("JEV_MCP_URL"); // e.g. https://<your-worker>.workers.dev/mcp
 const mcpToken = (): string => fromEnvOrFile("JEV_MCP_TOKEN");
 const timeoutMs = (): number => Number(process.env.JEV_GUARD_TIMEOUT ?? "2") * 1000;

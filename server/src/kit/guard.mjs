@@ -2390,6 +2390,10 @@ const DEVICE_TOOLS = {
   "mdadm": { destructive: (args) => args.some((a) => ["--create", "-C", "--zero-superblock", "-Z"].includes(a)) },
   "blkdiscard": { destructive: () => true },
 };
+function isSecretPathTok(a, home) {
+  if (!a || a === "-") return false;
+  return SECRET_PATH_RES.some((r) => r.test(normalizePath(expand(a, home))));
+}
 function isBlockDeviceTok(a, home) {
   if (a === "-") return false;
   const p = normalizePath(expand(a, home));
@@ -2577,12 +2581,15 @@ function* destructiveMatches(ctx) {
     }
     for (const t of writeRedirectTargets(seg)) {
       if (isBlockDeviceTok(t, ctx.home)) yield block(`\`${prog} ... > ${t}\` overwrites a block device`);
+      else if (isSecretPathTok(t, ctx.home)) yield block(`\`${prog} ... > ${t}\` writes a secret store`);
     }
     if (["tee", "cp", "mv", "install"].includes(prog)) {
       const positional = nonRedirPositionals(args).filter((a) => !a.startsWith("-"));
       const dest = positional[positional.length - 1];
       if (dest && isBlockDeviceTok(dest, ctx.home)) {
         yield block(`\`${prog} ${dest}\` overwrites a block device`);
+      } else if (dest && isSecretPathTok(dest, ctx.home)) {
+        yield block(`\`${prog} ${dest}\` writes a secret store`);
       }
     }
     if (prog === "shred") {

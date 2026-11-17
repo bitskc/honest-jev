@@ -80,11 +80,16 @@ def env_file_value(key):
 
 
 def mcp_setting(key):
-    """``JEV_MCP_URL`` / ``JEV_MCP_TOKEN``: the process environment, else the env file. Never raises."""
-    raw = os.environ.get(key, "")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    return env_file_value(key).strip()
+    """One of the two server settings. The process environment wins only as a pair: if it has both, the file is
+    ignored; if it has neither, both come from the file; if it has exactly one, the file is not used to fill the
+    other (#61: a process token must not be sent to a URL taken from a file the agent can write). Never raises."""
+    def proc(name):
+        raw = os.environ.get(name, "")
+        return raw.strip() if isinstance(raw, str) else ""
+    url, tok = proc("JEV_MCP_URL"), proc("JEV_MCP_TOKEN")
+    if not url and not tok:
+        url, tok = env_file_value("JEV_MCP_URL").strip(), env_file_value("JEV_MCP_TOKEN").strip()
+    return url if key == "JEV_MCP_URL" else tok
 
 
 TIMEOUT = float(os.environ.get("JEV_GUARD_TIMEOUT", "2"))

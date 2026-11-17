@@ -85,8 +85,10 @@ function envFileValue(key) {
   } catch (e) { return ''; }
 }
 function mcpSetting(key) {
-  const raw = (process.env[key] || '').trim();
-  return raw || envFileValue(key).trim();
+  const url = (process.env.JEV_MCP_URL || '').trim();
+  const tok = (process.env.JEV_MCP_TOKEN || '').trim();
+  if (!url && !tok) return envFileValue(key).trim();
+  return key === 'JEV_MCP_URL' ? url : tok;
 }
 // Edit-tool set, shared by both parsers. Must equal server/src/kit/verify.mjs MUTATING_TOOLS: the drift sentinel in
 // jev-stop-verify.test.mjs asserts that, so a tool added on one side cannot silently go unseen by the other.
