@@ -101,7 +101,7 @@ if [ "$doctor" = 1 ]; then
       lfp=$("$rt" "$runner" --fingerprint 2>/dev/null || true)
       sfp=$(curl -s -m 10 -D - -o /dev/null --config - "$base/health" <<<"header = \"authorization: Bearer $tokcfg\"" 2>/dev/null \
         | tr -d '\r' | awk -F': *' 'tolower($1)=="x-jev-rules-fingerprint"{print tolower($2); exit}' || true)
-      if [ -z "$lfp" ]; then bad "guard rules cannot be fingerprinted (the rule files are not the complete release); re-run ./install.sh"
+      if [ -z "$lfp" ]; then bad "guard rules cannot be fingerprinted (the rule files are incomplete, or one of them is a symlink); re-run ./install.sh"
       elif [ -z "$sfp" ]; then echo "note the server did not report its rules fingerprint (an older Worker, or it refused the token); commands the local rules would allow are sent to the server to decide"
       elif [ "$sfp" = "$lfp" ]; then ok "guard rules match the server's (fingerprint ${lfp:0:12})"
       else bad "guard rules differ from the server's (here ${lfp:0:12}, server ${sfp:0:12}); commands the local rules would allow are sent to the server to decide. Run jev-update if the server is newer, or deploy the Worker if this machine is"; fi

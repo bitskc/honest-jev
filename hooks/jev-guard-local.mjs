@@ -23,7 +23,7 @@ import * as nodeModule from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { rulesFingerprint } from "./jev-rules-fingerprint.mjs";
+import { resolveRules } from "./jev-rules-fingerprint.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -76,17 +76,17 @@ async function main() {
   const env = process.env;
   const path = rulesCandidates(env).find((p) => existsSync(p));
   if (!path) { process.stderr.write("jev-guard-local: rules not found\n"); return 3; }
-  // The fingerprint of the rule files about to be loaded, taken first. null when they are not the whole release (a test's single stub
-  // module): the hook then cannot say the rules match the server's.
-  let fp = null;
-  try { fp = rulesFingerprint(dirname(path)); } catch { /* not the whole release */ }
+  // The fingerprint of the rule files about to be loaded, taken first, from the directory they are then imported from (resolveRules: a
+  // symlinked rule file would otherwise hash as genuine while other bytes run). null when the rules are not verifiable (a link among the
+  // rule files, not the whole release, a name other than guard.mjs): the hook then cannot say the rules match the server's.
+  const { path: loadFrom, fp } = resolveRules(path);
   if (process.argv[2] === "--fingerprint") {
-    if (fp === null) { process.stderr.write("jev-guard-local: the rule files are incomplete\n"); return 7; }
+    if (fp === null) { process.stderr.write("jev-guard-local: the rule files cannot be fingerprinted (incomplete, a symlink, or not named guard.mjs)\n"); return 7; }
     process.stdout.write(`${fp}\n`);
     return 0;
   }
   enableCache(env);
-  const { guardCommand } = await import(pathToFileURL(path).href);
+  const { guardCommand } = await import(pathToFileURL(loadFrom).href);
   if (typeof guardCommand !== "function") { process.stderr.write("jev-guard-local: rules module has no guardCommand\n"); return 4; }
   if (process.argv[2] === "--check") {
     const r = await judgeStdin(JSON.stringify({ tool: "Bash", command: "cat .env", cwd: "/", home: "/" }), guardCommand);

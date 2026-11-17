@@ -267,3 +267,87 @@ test("a runner whose rules are not found has no fingerprint either", async () =>
   assert.notEqual(f.code, 0);
   assert.equal(f.stdout, "");
 });
+
+// ── the fingerprint and the import must look at the same files ──────────────────────────────────────────────────────────
+// Node resolves a symlinked guard.mjs to its real path and loads ./shell.mjs and ./safere.mjs from THERE, so hashing the three names in the
+// directory that holds the link covers different bytes than the ones that run. These tests plant exactly that.
+const MARK = "TAMPERED-SHELL-RAN";
+const tamper = (file) => writeFileSync(file, `${readFileSync(file, "utf8")}\nprocess.stderr.write("${MARK}\\n");\n`);
+const ls = JSON.stringify({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" });
+
+function plantGuardLink(name) {
+  const base = join(scratch, name);
+  const kit = join(base, "kit"), planted = join(base, "planted");
+  lay(kit);
+  lay(planted);
+  tamper(join(planted, "shell.mjs")); // guard.mjs in `planted` is genuine; its sibling is not
+  rmSync(join(kit, "guard.mjs"));
+  symlinkSync(join(planted, "guard.mjs"), join(kit, "guard.mjs"));
+  return join(kit, "guard.mjs");
+}
+
+test("a guard.mjs that is a symlink to a genuine file beside a tampered shell.mjs has no fingerprint (the three names hash as genuine, other bytes run)", async () => {
+  const rules = plantGuardLink("plant-guard-link");
+  const env = cleanEnv({ JEV_GUARD_RULES: rules });
+  const r = await run([], { env, input: ls });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stderr.includes(MARK), "premise: the tampered sibling IS what runs through this link");
+  assert.equal(reply(r).rules_fp, null, "it must not claim the genuine fingerprint");
+  const f = await run(["--fingerprint"], { env });
+  assert.notEqual(f.code, 0);
+  assert.equal(f.stdout, "");
+});
+
+test("a symlinked sibling (shell.mjs, safere.mjs) has no fingerprint, even to genuine bytes", async () => {
+  for (const name of ["shell.mjs", "safere.mjs"]) {
+    const base = join(scratch, `plant-sibling-${name}`);
+    const kit = join(base, "kit");
+    lay(kit);
+    lay(join(base, "elsewhere"));
+    rmSync(join(kit, name));
+    symlinkSync(join(base, "elsewhere", name), join(kit, name));
+    const env = cleanEnv({ JEV_GUARD_RULES: join(kit, "guard.mjs") });
+    assert.equal(reply(await run([], { env, input: ls })).rules_fp, null, name);
+    assert.notEqual((await run(["--fingerprint"], { env })).code, 0, name);
+  }
+});
+
+test("rulesFingerprint refuses a symlink and a non-regular file itself (the generator and the doctor share the rule)", () => {
+  const base = join(scratch, "unit-links");
+  lay(join(base, "kit"));
+  lay(join(base, "elsewhere"));
+  assert.equal(rulesFingerprint(join(base, "kit")), rulesFingerprint(KIT));
+  rmSync(join(base, "kit", "shell.mjs"));
+  symlinkSync(join(base, "elsewhere", "shell.mjs"), join(base, "kit", "shell.mjs"));
+  assert.throws(() => rulesFingerprint(join(base, "kit")));
+  rmSync(join(base, "kit", "shell.mjs"));
+  mkdirSync(join(base, "kit", "shell.mjs"));
+  assert.throws(() => rulesFingerprint(join(base, "kit")));
+});
+
+test("only a file named guard.mjs is fingerprinted: another name beside genuine siblings has none", async () => {
+  const kit = join(scratch, "renamed");
+  lay(kit);
+  cpSync(join(kit, "guard.mjs"), join(kit, "other.mjs"));
+  const r = await run([], { env: cleanEnv({ JEV_GUARD_RULES: join(kit, "other.mjs") }), input: ls });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(reply(r).rules_fp, null);
+});
+
+test("a kit directory that is itself reached through a symlink is fine: the fingerprint is that of the resolved directory, which is what runs", async () => {
+  const base = join(scratch, "dir-link");
+  lay(join(base, "real"));
+  symlinkSync(join(base, "real"), join(base, "kit"));
+  const env = cleanEnv({ JEV_GUARD_RULES: join(base, "kit", "guard.mjs") });
+  const r = await run([], { env, input: ls });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(reply(r).rules_fp, rulesFingerprint(KIT));
+  const c = await run(["--check"], { env });
+  assert.equal(c.stdout.trim(), join(base, "kit", "guard.mjs")); // reported as configured
+  // the module that runs is the resolved one: tamper the real directory after laying it out and the fingerprint follows
+  tamper(join(base, "real", "shell.mjs"));
+  const t = await run([], { env, input: ls });
+  assert.ok(t.stderr.includes(MARK));
+  assert.equal(reply(t).rules_fp, rulesFingerprint(join(base, "real")));
+  assert.notEqual(reply(t).rules_fp, rulesFingerprint(KIT));
+});

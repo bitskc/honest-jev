@@ -14,7 +14,7 @@
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -49,7 +49,7 @@ export const LOCAL_NOTICE = "Honest Jev guard: no server is configured (JEV_MCP_
 export const LOCAL_DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
 export const TRUST_NOTICES: Record<"mismatch" | "unverified", string> = {
   mismatch: "Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which.",
-  unverified: "Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
+  unverified: "Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
 };
 
 export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
@@ -72,7 +72,9 @@ export const RULE_FILES = ["guard.mjs", "safere.mjs", "shell.mjs"] as const;
 export function rulesFingerprint(kitDir: string): string {
   const h = createHash("sha256");
   for (const name of RULE_FILES) {
-    const bytes = readFileSync(join(kitDir, name));
+    const file = join(kitDir, name);
+    if (!lstatSync(file).isFile()) throw new Error(`${name} is not a regular file`);
+    const bytes = readFileSync(file);
     h.update(`${name}\0${bytes.length}\0`);
     h.update(bytes);
   }
@@ -82,14 +84,26 @@ export function rulesFingerprint(kitDir: string): string {
 // The module is imported once per path and kept for the life of the process, and its fingerprint is taken just before that import, so it
 // describes the rules that actually run here: a rule file rewritten on disk afterwards changes nothing in this process, and a `jev-update`
 // does not reach it either until omp restarts. The server's fingerprint then no longer matches, and the server decides (see rulesTrust).
+// The hash and the import look at the SAME files: Node loads a symlinked guard.mjs from its real path, together with the siblings beside
+// that path, so a link among the rule files would let the three names hash as genuine while other bytes run. A rule file that is not a regular
+// file makes rulesFingerprint throw (no fingerprint: the server decides), and when the three are regular files the directory is resolved
+// (it, or a parent, may legitimately be a link) and both the hash and the import come from the resolved directory. Same as resolveRules in
+// hooks/jev-rules-fingerprint.mjs.
 type Loaded = { guardCommand: GuardFn | null; fp: string | null };
 const rulesByPath = new Map<string, Promise<Loaded>>();
 function loadRules(path: string): Promise<Loaded> {
   let p = rulesByPath.get(path);
   if (!p) {
     let fp: string | null = null;
-    try { fp = rulesFingerprint(dirname(path)); } catch { /* not the whole release (a test's single stub module): nothing to verify */ }
-    p = import(pathToFileURL(path).href).then((m: { guardCommand?: unknown }) => ({ guardCommand: typeof m.guardCommand === "function" ? (m.guardCommand as GuardFn) : null, fp }), () => ({ guardCommand: null, fp }));
+    let from = path;
+    try {
+      if (basename(path) === "guard.mjs") {
+        const real = realpathSync(dirname(path));
+        fp = rulesFingerprint(real);
+        from = join(real, "guard.mjs");
+      }
+    } catch { /* not verifiable (a link among the rule files, not the whole release, a test's single stub module): nothing to verify */ }
+    p = import(pathToFileURL(from).href).then((m: { guardCommand?: unknown }) => ({ guardCommand: typeof m.guardCommand === "function" ? (m.guardCommand as GuardFn) : null, fp }), () => ({ guardCommand: null, fp }));
     rulesByPath.set(path, p);
   }
   return p;

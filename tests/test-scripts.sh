@@ -524,6 +524,12 @@ ok "$(grep '^FAIL guard rules differ' "$tmp/doc-fp.out")" "FAIL guard rules diff
 STUB_FP="" run_doctor "$want" >"$tmp/doc-fp.out" 2>&1; rc=$?
 ok "$rc" 0 "doctor: a Worker that reports no fingerprint (an older one) -> a note, not a failure"
 ok "$(grep -c '^note the server did not report its rules fingerprint (an older Worker, or it refused the token); commands the local rules would allow are sent to the server to decide$' "$tmp/doc-fp.out")" 1 "doctor: ... and says what that means"
+# a rule file that is a symlink cannot be fingerprinted (Node would load the siblings from the link's target): the installed rules still load, the doctor says why they are unverifiable
+lnH="$tmp/linkhome"; mkdir -p "$lnH"; HOME=$lnH bash "$root/install.sh" --claude >/dev/null 2>&1
+lnK="$lnH/.local/share/honest-jev/jev-policy/server/src/kit"; mkdir -p "$tmp/linkelsewhere"; cp "$lnK/shell.mjs" "$tmp/linkelsewhere/shell.mjs"; rm "$lnK/shell.mjs"; ln -s "$tmp/linkelsewhere/shell.mjs" "$lnK/shell.mjs"
+doc_ln=$(HOME=$lnH DOCTOR_LOG="$dlog" DOCTOR_CFG_LOG="$tmp/doctor-cfg.log" DOCTOR_ARGV_LOG="$tmp/doctor-argv.log" STUB_FP="$real_fp" PATH="$dstub:$PATH" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=tok STUB_TOOLS="$want" bash "$root/install.sh" --doctor 2>&1); rc=$?
+ok "$(printf '%s\n' "$doc_ln" | grep -c '^FAIL guard rules cannot be fingerprinted (the rule files are incomplete, or one of them is a symlink)')" 1 "doctor: a symlinked rule file -> FAIL, cannot be fingerprinted"
+ok "$rc" 1 "doctor: a symlinked rule file -> exit 1"
 # the header dump is created once and removed on exit: no file may survive a run, pass or fail
 dtd=$(mktemp -d)
 HOME=$dH TMPDIR="$dtd" DOCTOR_LOG="$dlog" DOCTOR_CFG_LOG="$tmp/doctor-cfg.log" DOCTOR_ARGV_LOG="$tmp/doctor-argv.log" PATH="$dstub:$PATH" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=tok STUB_TOOLS=15 bash "$root/install.sh" --doctor >/dev/null 2>&1

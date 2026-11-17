@@ -3,7 +3,7 @@
 // The hook's omp import is replaced by a stub module and `fetch` is a counter: no network, no omp, no command executed.
 // Nothing writes the real decision log: JEV_LEDGER points into a private temp dir.
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { rulesFingerprint as nodeFingerprint, RULE_FILES as NODE_RULE_FILES } from "../hooks/jev-rules-fingerprint.mjs";
@@ -566,4 +566,69 @@ test("no usable server (no token, or not https): a local allow stands and nothin
   expect(healthCalls.length).toBe(0);
   expect(calls.length).toBe(0);
   expect(notes).toEqual([]);
+});
+
+// ── the fingerprint and the import must look at the same files ───────────────────────────────────────────────────────────────
+// A symlinked guard.mjs is loaded from its real path, together with the ./shell.mjs and ./safere.mjs BESIDE THAT PATH, so hashing the three
+// names in the directory that holds the link covers other bytes than the ones that run. These tests plant exactly that.
+const tamperShell = (file: string) => writeFileSync(file, `${readFileSync(file, "utf8")}\nglobalThis.__TAMPERED_SHELL_RAN = true;\n`);
+const plantGuardLink = () => {
+  const kit = dirname(kitCopy()), planted = dirname(kitCopy());
+  tamperShell(join(planted, "shell.mjs")); // the guard.mjs in `planted` is genuine; its sibling is not
+  rmSync(join(kit, "guard.mjs"));
+  symlinkSync(join(planted, "guard.mjs"), join(kit, "guard.mjs"));
+  return join(kit, "guard.mjs");
+};
+
+test("a guard.mjs that is a symlink to a genuine file beside a tampered shell.mjs has no fingerprint, and its allows go to the server", async () => {
+  const rules = plantGuardLink();
+  env({ JEV_GUARD_RULES: rules });
+  (globalThis as { __TAMPERED_SHELL_RAN?: boolean }).__TAMPERED_SHELL_RAN = false;
+  const v = await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" }) as { fp: string | null };
+  expect((globalThis as { __TAMPERED_SHELL_RAN?: boolean }).__TAMPERED_SHELL_RAN, "premise: the tampered sibling is what runs through this link").toBe(true);
+  expect(v.fp).toBeNull(); // it must not claim the genuine fingerprint
+  reply = SERVER_BLOCKS;
+  const verdict = await hook().call(bash("ls")); // the rules allow it; the server would not
+  expect(verdict?.block).toBe(true);
+  expect(verdict?.reason).toContain("server says no");
+  expect(calls.length).toBe(1);
+  expect(notes).toEqual([mod.TRUST_NOTICES.unverified]);
+});
+
+test("a symlinked sibling (shell.mjs, safere.mjs) has no fingerprint, even to genuine bytes", async () => {
+  for (const name of ["shell.mjs", "safere.mjs"]) {
+    const kit = dirname(kitCopy()), elsewhere = dirname(kitCopy());
+    rmSync(join(kit, name));
+    symlinkSync(join(elsewhere, name), join(kit, name));
+    env({ JEV_GUARD_RULES: join(kit, "guard.mjs") });
+    expect(((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string | null }).fp, name).toBeNull();
+  }
+});
+
+test("only a file named guard.mjs is fingerprinted", async () => {
+  const kit = dirname(kitCopy());
+  cpSync(join(kit, "guard.mjs"), join(kit, "other.mjs"));
+  env({ JEV_GUARD_RULES: join(kit, "other.mjs") });
+  expect(((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string | null }).fp).toBeNull();
+});
+
+test("rulesFingerprint refuses a symlink and a non-regular file, as the Node function does (the pin covers the refusal too)", () => {
+  const kit = dirname(kitCopy()), elsewhere = dirname(kitCopy());
+  expect(mod.rulesFingerprint(kit)).toBe(nodeFingerprint(kit));
+  rmSync(join(kit, "shell.mjs"));
+  symlinkSync(join(elsewhere, "shell.mjs"), join(kit, "shell.mjs"));
+  expect(() => mod.rulesFingerprint(kit)).toThrow();
+  expect(() => nodeFingerprint(kit)).toThrow();
+  rmSync(join(kit, "shell.mjs"));
+  mkdirSync(join(kit, "shell.mjs"));
+  expect(() => mod.rulesFingerprint(kit)).toThrow();
+  expect(() => nodeFingerprint(kit)).toThrow();
+});
+
+test("a kit directory reached through a symlink is fine: the fingerprint is that of the resolved directory, which is what runs", async () => {
+  const real = dirname(kitCopy());
+  const link = join(mkdtempSync(join(dir, "dirlink-")), "kit");
+  symlinkSync(real, link);
+  env({ JEV_GUARD_RULES: join(link, "guard.mjs") });
+  expect(((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string | null }).fp).toBe(RULES_FP);
 });

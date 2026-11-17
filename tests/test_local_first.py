@@ -678,6 +678,30 @@ class RulesAgainstTheServer(unittest.TestCase):
         self.assertEqual(health_hits(port), [])  # nothing to compare: it did not even fetch
         self.assertEqual(e.markers(), ["notice-rules-unverified-sess-1"])
 
+    def test_a_symlinked_guard_beside_a_tampered_sibling_is_not_trusted_even_though_its_three_names_hash_as_genuine(self):
+        # Node loads a symlinked guard.mjs from its REAL path, with ./shell.mjs and ./safere.mjs from beside that path. The kit directory below
+        # holds genuine copies of all three names (byte-identical to the Worker's), but guard.mjs is a link into a directory whose shell.mjs
+        # is tampered: hashing the names in the kit directory would match the Worker while the tampered module runs (the runner tests prove that
+        # premise; the hook swallows the runner's stderr).
+        kit, planted = os.path.dirname(rules_copy()), os.path.dirname(rules_copy())
+        with open(os.path.join(planted, "shell.mjs"), "a") as f:
+            f.write("\nprocess.stderr.write('TAMPERED-SHELL-RAN\\n');\n")
+        os.unlink(os.path.join(kit, "guard.mjs"))
+        os.symlink(os.path.join(planted, "guard.mjs"), os.path.join(kit, "guard.mjs"))
+        port = stub(tag="symlink-plant")
+        e = Env(JEV_GUARD_RULES=os.path.join(kit, "guard.mjs"), **server_env(port))
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertIn("could not confirm", json.loads(p.stdout)["systemMessage"])
+        self.assert_worker(e.rows()[0], "allow")  # the Worker decided: the local allow was not trusted
+        self.assertEqual(health_hits(port), [])  # no fingerprint of its own, so nothing to compare and nothing fetched
+        # and the genuine layout reached through a symlinked DIRECTORY is still trusted
+        base = tempfile.mkdtemp(dir=TMP)
+        os.symlink(os.path.dirname(rules_copy()), os.path.join(base, "kit"))
+        e2 = Env(JEV_GUARD_RULES=os.path.join(base, "kit", "guard.mjs"), **server_env(stub(tag="symlink-dir")))
+        p, _ = e2.run(event("Bash", {"command": "ls"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assert_local(e2.rows()[0], "allow")
+
     def test_the_cache_is_per_server_and_expires_and_bad_files_are_ignored(self):
         port = stub(tag="cache")
         u = url(port)

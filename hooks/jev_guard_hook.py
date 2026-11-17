@@ -327,7 +327,7 @@ TRUST_NOTICES = {
     "mismatch": ("Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the "
                  "server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which."),
     "unverified": ("Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older "
-                   "Worker that does not report its rules), so commands the local rules would allow are being sent to the server to decide. "
+                   "Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. "
                    "Run install.sh --doctor for details."),
 }
 
