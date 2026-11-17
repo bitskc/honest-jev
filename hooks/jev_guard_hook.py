@@ -8,8 +8,9 @@ A command the rules ALLOW is trusted only when the rules on this machine are the
 dir. When they differ, or the server's cannot be read (an older Worker, no network), the local allow is not final: the command goes to
 the server like any unclear one, and a notice says so once per session. A command the rules cannot settle without a model ("unclear")
 goes on to the jev-mcp server's `kit_guard_command` tool (MCP tools/call over streamable HTTP), and only if a server is configured.
-With no server there is nothing to compare against: the local rules decide alone and are unverified. Prints Claude Code's PreToolUse
-decision JSON:
+With no server there is nothing to compare against: the local rules decide alone and are unverified. When the lookup or the verification call
+fails with a network-class error the server is called down for 60 s: local allows then stand locally with no server call (see SERVER_DOWN_WINDOW).
+Prints Claude Code's PreToolUse decision JSON:
 
     allow -> no output, exit 0 (the normal permission flow continues)
     ask   -> {"hookSpecificOutput": {"permissionDecision": "ask",  ...}}
@@ -215,7 +216,9 @@ def call_guard(args, tool="kit_guard_command", timeout=None):
     result = payload.get("result") or {}
     if result.get("isError"):
         raise ServerRejected(str((result.get("content") or [{}])[0].get("text", "tool error"))[:200])
-    return json.loads(result["content"][0]["text"])
+    out = json.loads(result["content"][0]["text"])
+    clear_server_down()  # the server answered: a window opened by an earlier failure is over
+    return out
 
 
 RANK = {"allow": 0, "ask": 1, "deny": 2}
@@ -329,6 +332,8 @@ TRUST_NOTICES = {
     "unverified": ("Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older "
                    "Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. "
                    "Run install.sh --doctor for details."),
+    "down": ("Honest Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, "
+             "without a server call. Run install.sh --doctor for details."),
 }
 
 
@@ -337,19 +342,21 @@ def server_configured():
     return URL.startswith("https://") and bool(os.environ.get("JEV_MCP_TOKEN", "").strip())
 
 
-def _fp_cache_path():
-    """(state dir, cache file) for the current server URL, or None when there is no ledger module to give the private state dir."""
+def _state_path(prefix):
+    """(state dir, file) of a per-server state file kept next to the ledger (`<prefix>-<hash of the URL>.json`), or None when there is no ledger
+    module to give the private state dir."""
     if _ledger is None:
         return None
     import hashlib
     d = _ledger.state_dir()
-    return d, os.path.join(d, "rules-fp-%s.json" % hashlib.sha256(URL.encode()).hexdigest()[:16])
+    return d, os.path.join(d, "%s-%s.json" % (prefix, hashlib.sha256(URL.encode()).hexdigest()[:16]))
 
 
-def _fp_cache_read():
-    """A fresh cached answer as a 1-tuple (fingerprint or None), or None when there is none. Only a regular file we own is read."""
+def _state_read(prefix):
+    """The JSON object in a state file, or None. Only a small regular file we own is read; a symlink, a FIFO, another owner's file, garbage
+    and a non-object are all None."""
     try:
-        where = _fp_cache_path()
+        where = _state_path(prefix)
         if where is None:
             return None
         import stat as _s
@@ -361,33 +368,99 @@ def _fp_cache_read():
             data = json.loads(os.read(fd, 1024).decode("utf-8", "replace"))
         finally:
             os.close(fd)
-        fp, t = data.get("fp"), data.get("t")
-        if isinstance(t, bool) or not isinstance(t, (int, float)) or not (fp is None or (isinstance(fp, str) and FP_RE.fullmatch(fp))):
-            return None
-        age = time.time() - t
-        return (fp,) if 0 <= age <= (FP_TTL if fp else FP_TTL_DOWN) else None
+        return data if isinstance(data, dict) else None
     except Exception:
         return None
 
 
-def _fp_cache_write(fp):
-    """Remember the server's answer (atomic: a private temp file renamed into place, 0600, in the ledger's own state dir). Never raises."""
+def _state_write(prefix, obj):
+    """Atomic: a private temp file renamed into place, 0600, in the ledger's own state dir. Never raises."""
+    tmp = None
     try:
-        where = _fp_cache_path()
+        where = _state_path(prefix)
         if where is None or not _ledger._owned_dir(where[0]):
             return
         tmp = "%s.%d.tmp" % (where[1], os.getpid())
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            os.write(fd, json.dumps({"v": 1, "fp": fp, "t": time.time()}).encode())
+            os.write(fd, json.dumps(obj).encode())
         finally:
             os.close(fd)
         os.replace(tmp, where[1])
     except Exception:
         try:
-            os.unlink(tmp)
+            if tmp:
+                os.unlink(tmp)
         except Exception:
             pass
+
+
+def _fp_cache_read():
+    """A fresh cached answer as a 1-tuple (fingerprint or None), or None when there is none."""
+    data = _state_read("rules-fp")
+    if data is None:
+        return None
+    fp, t = data.get("fp"), data.get("t")
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or not (fp is None or (isinstance(fp, str) and FP_RE.fullmatch(fp))):
+        return None
+    age = time.time() - t
+    return (fp,) if 0 <= age <= (FP_TTL if fp else FP_TTL_DOWN) else None
+
+
+def _fp_cache_write(fp):
+    """Remember the server's answer (even 'none')."""
+    _state_write("rules-fp", {"v": 1, "fp": fp, "t": time.time()})
+
+
+# The remembered "server down" window. A local ALLOW that cannot be verified normally goes to the Worker; when that attempt (or the /health
+# fingerprint fetch) fails with a NETWORK-class error, the server is called down for SERVER_DOWN_WINDOW seconds and local allows stand locally,
+# unverified, with no server call. Any successful Worker call clears it. A 4xx/5xx with a body, a JSON-RPC error and a 401 never open it: the
+# server answered, and a bad token must stay visible. Unclear commands do not open it and are not skipped by it.
+SERVER_DOWN_WINDOW = 60
+DOWN_CODES = ("client_timeout", "client_network")
+
+
+def is_network_error(e):
+    """Timeout, connection refused or reset, DNS, TLS: an OSError (TimeoutError, socket.timeout, ConnectionError, URLError and ssl.SSLError
+    are all OSErrors) that is not an HTTPError (an HTTPError means the server answered). A JSON, JSON-RPC or other parse problem is not one."""
+    try:
+        import urllib.error
+        if isinstance(e, urllib.error.HTTPError):
+            return False
+    except Exception:
+        pass
+    return isinstance(e, OSError)
+
+
+def server_down():
+    """The closed fail_reason (client_timeout | client_network) of the failure that opened the window, while it is open; else None."""
+    data = _state_read("server-down")
+    if data is None:
+        return None
+    t, code = data.get("t"), data.get("code")
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or code not in DOWN_CODES:
+        return None
+    return code if 0 <= time.time() - t < SERVER_DOWN_WINDOW else None
+
+
+def open_server_down(e):
+    """Open the window for a failed attempt `e` if it is a network-class error. Never raises."""
+    try:
+        if is_network_error(e):
+            code = _ledger.fail_reason_for(e) if _ledger else "client_network"
+            _state_write("server-down", {"v": 1, "t": time.time(), "code": code if code in DOWN_CODES else "client_network"})
+    except Exception:
+        pass
+
+
+def clear_server_down():
+    """A Worker call succeeded: the server is up. Never raises."""
+    try:
+        where = _state_path("server-down")
+        if where is not None:
+            os.unlink(where[1])
+    except Exception:
+        pass
 
 
 def fetch_server_fp():
@@ -407,7 +480,8 @@ def fetch_server_fp():
         with opener.open(req, timeout=FP_FETCH_BUDGET - 0.1) as resp:
             got = (resp.headers.get(FP_HEADER) or "").strip().lower()
         return got if FP_RE.fullmatch(got) else None
-    except Exception:
+    except Exception as e:
+        open_server_down(e)
         return None
     finally:
         try:
@@ -417,26 +491,32 @@ def fetch_server_fp():
 
 
 def server_rules_fp():
-    """The server's rules fingerprint: the cached one while it is fresh, else one GET /health (and the answer, even 'none', is cached)."""
+    """The server's rules fingerprint: the cached one while it is fresh; else None while the server is called down (no fetch); else one GET /health
+    (and the answer, even 'none', is cached)."""
     cached = _fp_cache_read()
     if cached is not None:
         return cached[0]
+    if server_down():
+        return None
     fp = fetch_server_fp()
     _fp_cache_write(fp)
     return fp
 
 
 def rules_trust(local):
-    """Whether a local allow may stand: "match" (the rules here are byte-identical to the server's), "mismatch" (both known, different) or
-    "unverified" (this machine's rules are not the whole release, or the server's fingerprint is unavailable). Anything but "match" means the
-    server decides."""
+    """Whether a local allow may stand: "match" (the rules here are byte-identical to the server's), "mismatch" (both known, different),
+    "unverified" (this machine's rules are not the whole release, or the server's fingerprint is unavailable) or "down" (it could not be
+    verified AND the server is called down for the next minute: the allow stands locally, unverified, with no server call). "mismatch" and
+    "unverified" mean the server decides."""
     mine = local.get("rules_fp")
     if not (isinstance(mine, str) and FP_RE.fullmatch(mine)):
-        return "unverified"
+        return "down" if server_down() else "unverified"
     theirs = server_rules_fp()
-    if theirs is None:
-        return "unverified"
-    return "match" if theirs == mine else "mismatch"
+    if theirs == mine:
+        return "match"
+    if server_down():  # checked after the lookup: a /health fetch that just failed opens the window
+        return "down"
+    return "unverified" if theirs is None else "mismatch"
 
 
 def trust_notice(trust):
@@ -484,15 +564,22 @@ def guard_outcome(args):
         if trust is None or trust == "match":
             note("settled by the local rules; no server call")
             return reply_outcome(local)
+        if trust == "down":
+            # The server is called down: the local allow stands, unverified, with no server call. The row says what is true: the local rules
+            # allowed it and the server was not consulted (fail_open, with the closed code of the failure that opened the window).
+            note("local allow stands: the server is called down for the next minute")
+            return Outcome("allow", row=dict(decision="allow", decided_by="fail_open", fail_reason=server_down() or "client_network", enforced=True),
+                           notice=trust_notice("down"))
         note("local allow not final: the local rules %s the server's; asking the server" % ("differ from" if trust == "mismatch" else "could not be verified against"))
-    out = server_outcome(args, local, unclear)
+    out = server_outcome(args, local, unclear, verifying=trust is not None)
     if trust is not None and out.notice is None:
         out.notice = trust_notice(trust)
     return out
 
 
-def server_outcome(args, local, unclear):
-    """The server half of the guard path: send the command to kit_guard_command, and say what stands when it cannot be consulted."""
+def server_outcome(args, local, unclear, verifying=False):
+    """The server half of the guard path: send the command to kit_guard_command, and say what stands when it cannot be consulted. `verifying` =
+    the call is made only because a local allow could not be verified (it may open the server-down window; an unclear command never does)."""
     # What the ledger row of a command that goes on without a decision can still say: which rule flagged it (a rule id, never text).
     hint = {"rule": local.get("rule")} if unclear and isinstance(local.get("rule"), str) else None
     # `unclear` can hold while the local reply is already an ask (a rule asked on one reading, the model question came from the other):
@@ -521,6 +608,8 @@ def server_outcome(args, local, unclear):
                        row=dict(decision="ask", decided_by="fail_closed", fail_reason="client_rejected"))
     except Exception as e:  # timeout, DNS, HTTP error, bad JSON ... all fail open
         note("fail-open: %s: %s" % (type(e).__name__, str(e)[:120]))
+        if verifying:
+            open_server_down(e)  # a network-class failure of an allow's verification call: the server is down for the next minute
         if stands is not None:
             return reply_outcome(stands)
         return Outcome("allow", reply=hint, row=dict(decision="allow", decided_by="fail_open", fail_reason=_ledger.fail_reason_for(e) if _ledger else "client_network", enforced=True))

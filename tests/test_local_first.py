@@ -127,6 +127,57 @@ def seed_fp_cache(e, server_url, fp, age=0):
     return path
 
 
+def down_file(home, server_url):
+    """The server-down window file of that server (state dir of the ledger)."""
+    return os.path.join(home, ".local", "state", "jev", "server-down-%s.json" % hashlib.sha256(server_url.encode()).hexdigest()[:16])
+
+
+def seed_down(e, server_url, age=0, code="client_timeout", raw=None):
+    """Pretend a hook process opened the server-down window `age` seconds ago (or write `raw` as the file's whole content)."""
+    path = down_file(e.home, server_url)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, "w") as f:
+        if raw is not None:
+            f.write(raw)
+        else:
+            json.dump({"v": 1, "t": time.time() - age, "code": code}, f)
+    return path
+
+
+class HangListener(object):
+    """Accepts TCP connections and never answers (a hanging server). `count` = connections seen."""
+
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(16)
+        self.sock.settimeout(0.05)
+        self.port = self.sock.getsockname()[1]
+        self.count = 0
+        self.conns = []
+        self._stop = False
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def _run(self):
+        while not self._stop:
+            try:
+                c, _ = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.count += 1
+            self.conns.append(c)
+
+    def close(self):
+        self._stop = True
+        self._t.join()
+        for c in self.conns:
+            c.close()
+        self.sock.close()
+
+
 def url(port):
     return "https://127.0.0.1:%d/mcp" % port
 
@@ -612,14 +663,14 @@ class RulesAgainstTheServer(unittest.TestCase):
             self.assertEqual(decision_of(p), "deny", tag)
             self.assert_local(e.rows()[1], "block")  # a local block stands without the server's fingerprint
 
-    def test_an_unreachable_server_allows_with_a_notice_and_does_not_retry_the_fingerprint_every_command(self):
+    def test_an_unreachable_server_opens_the_down_window_with_one_fetch_and_no_guard_call(self):
         e = Env(**server_env(LISTENER.port))  # accepts a connection and hangs up: not a Worker
         before = LISTENER.count
         p, _ = e.run(event("Bash", {"command": "ls"}))
         time.sleep(0.2)
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
-        self.assertIn("could not confirm", json.loads(p.stdout)["systemMessage"])
-        self.assertEqual(LISTENER.count - before, 2, "one fingerprint fetch and one guard call")
+        self.assertIn("the server did not answer", json.loads(p.stdout)["systemMessage"])
+        self.assertEqual(LISTENER.count - before, 1, "one fingerprint fetch; it failed with a network-class error, so no guard call follows")
         r = e.rows()[0]
         self.assertEqual((r["decision"], r["decided_by"], r["source"]), ("allow", "fail_open", "client"))
         self.assertIn(r["fail_reason"], NETWORK_FAILURES)
@@ -627,7 +678,7 @@ class RulesAgainstTheServer(unittest.TestCase):
         p, _ = e.run(event("Bash", {"command": "ls"}))
         time.sleep(0.2)
         self.assertEqual(p.stdout, "")
-        self.assertEqual(LISTENER.count - before, 1, "the 'no fingerprint' answer is remembered for a minute: only the guard call went out")
+        self.assertEqual(LISTENER.count - before, 0, "inside the window nothing is fetched and nothing is called")
 
     def test_tampered_rules_that_allow_everything_are_not_final_when_the_server_is_reachable(self):
         tampered = rules_copy(tamper_allow_all)
@@ -762,8 +813,242 @@ class RulesAgainstTheServer(unittest.TestCase):
         e = Env(**server_env(port))
         p, took = e.run(event("Bash", {"command": "ls"}))
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
-        self.assertLess(took, 4.8, "fetch budget (0.8 s) + the guard call's own 2.5 s alarm must stay inside the hook's 5 s")
-        self.assertIn("could not confirm", json.loads(p.stdout)["systemMessage"])
+        self.assertLess(took, 2.0, "only the 0.8 s fingerprint fetch is paid: it opens the server-down window, so there is no guard call after it")
+        self.assertIn("the server did not answer", json.loads(p.stdout)["systemMessage"])
+
+
+class ServerDownWindow(unittest.TestCase):
+    """A local allow that could not be verified normally goes to the Worker. When that call (or the /health fingerprint fetch) fails with a
+    NETWORK-class error (timeout, refused, reset, DNS, TLS) the server is called down for 60 s: local allows stand locally with no server call and
+    one notice per session. A 401, a 5xx with a body, a JSON-RPC error never open it. Any successful Worker call clears it. Unclear commands are
+    outside it: they still call the Worker, and neither open nor extend it."""
+
+    def assert_standing(self, r, code=None):
+        self.assertEqual((r["decision"], r["decided_by"], r["source"], r["rule"], r["enforced"]), ("allow", "fail_open", "client", None, True))
+        self.assertIn(r["fail_reason"], (code,) if code else NETWORK_FAILURES)
+
+    def windows(self, e):
+        d = os.path.dirname(e.ledger)
+        return sorted(n for n in os.listdir(d) if n.startswith("server-down-")) if os.path.isdir(d) else []
+
+    def test_a_hanging_server_costs_one_timeout_then_the_next_allows_make_no_server_call_and_are_fast(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            p, took = e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
+            self.assertLess(took, 2.0, "the first command pays the 0.8 s fingerprint fetch only")
+            self.assertIn("the server did not answer", json.loads(p.stdout)["systemMessage"])
+            self.assertIn("for the next minute", json.loads(p.stdout)["systemMessage"])
+            self.assertEqual(hang.count, 1)
+            self.assertEqual(len(self.windows(e)), 1)
+            durations = []
+            for i in range(8):
+                p, took = e.run(event("Bash", {"command": "ls -la" if i % 2 else "ls"}))
+                self.assertEqual((p.returncode, p.stdout), (0, ""))  # same session: the notice is not repeated
+                durations.append(took)
+            self.assertEqual(hang.count, 1, "no further connection of any kind while the window is open")
+            self.assertLess(max(durations), 1.0, durations)
+            rows = e.rows()
+            self.assertEqual(len(rows), 9)
+            for r in rows:
+                self.assert_standing(r, "client_timeout")
+            self.assertEqual(e.markers(), ["notice-rules-down-sess-1"])
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(os.path.dirname(e.ledger), self.windows(e)[0])).st_mode), 0o600)
+        finally:
+            hang.close()
+
+    def test_a_verification_call_that_times_out_opens_the_window_too(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            seed_fp_cache(e, url(hang.port), "b" * 64)  # the fingerprint is known and differs: the allow must be verified by a guard call
+            p, took = e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
+            self.assertGreater(took, 2.0)  # the guard call's own timeout
+            self.assertEqual(hang.count, 1)
+            self.assert_standing(e.rows()[0], "client_timeout")
+            p, took = e.run(event("Bash", {"command": "ls"}))
+            self.assertLess(took, 1.0)
+            self.assertEqual(hang.count, 1)
+            self.assert_standing(e.rows()[1], "client_timeout")
+            self.assertEqual(len(self.windows(e)), 1)
+        finally:
+            hang.close()
+
+    def test_a_refused_connection_opens_it_at_once(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()  # nothing listens here now
+        e = Env(**server_env(port))
+        p, took = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual(decision_of(p), "none")
+        self.assertLess(took, 1.0)
+        self.assert_standing(e.rows()[0], "client_network")
+        self.assertEqual(len(self.windows(e)), 1)
+
+    def test_the_window_expires_after_sixty_seconds_and_one_more_attempt_is_made(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            for age, attempts in ((10, 0), (59, 0), (61, 1), (3600, 1)):
+                hang.count = 0
+                seed_down(e, url(hang.port), age=age)
+                p, _ = e.run(event("Bash", {"command": "ls"}, session="s-%d" % age))
+                self.assertEqual(p.returncode, 0)
+                self.assertEqual(hang.count, attempts, "window opened %d s ago" % age)
+        finally:
+            hang.close()
+
+    def test_a_successful_worker_call_clears_it(self):
+        port = stub(jev=True, tag="clear")
+        e = Env(**server_env(port))
+        seed_down(e, url(port), age=5)
+        p, _ = e.run(event("Bash", {"command": "npm publish"}))  # unclear: still goes to the Worker inside the window
+        self.assertEqual(decision_of(p), "ask")
+        self.assertEqual(e.rows()[0]["source"], "server")
+        self.assertEqual(self.windows(e), [], "the Worker answered: the window is over")
+        before = len(health_hits(port))
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertEqual(len(health_hits(port)) - before, 1, "no window: the fingerprint is looked up again")
+        self.assertEqual(e.rows()[1]["source"], "client")
+
+    def test_a_401_and_a_5xx_with_a_body_do_not_open_it(self):
+        for mode, expect in (("4xx", "ask"), ("5xx", "none"), ("rpcerror", "ask")):
+            port = stub(mode=mode, tag="nowindow-" + mode)
+            e = Env(**server_env(port))
+            seed_fp_cache(e, url(port), "b" * 64)  # mismatch: the guard call itself is what fails
+            for _ in range(2):
+                p, _ = e.run(event("Bash", {"command": "ls"}))
+                self.assertEqual(decision_of(p), expect, mode)
+            self.assertEqual(self.windows(e), [], mode)
+            self.assertEqual(len(e.rows()), 2, mode)
+            if mode == "5xx":
+                self.assertEqual([r["fail_reason"] for r in e.rows()], ["client_http_5xx"] * 2)
+            else:
+                self.assertEqual([r["fail_reason"] for r in e.rows()], ["client_rejected"] * 2)  # visible, not hidden by a window
+        # the fingerprint fetch itself: a 401 / 5xx on /health is an answer too
+        for mode in ("4xx", "5xx"):
+            e = Env(**server_env(stub(mode=mode, tag="nowindow-" + mode)))
+            e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual(self.windows(e), [], mode + " on /health")
+
+    def test_a_local_block_and_ask_are_unchanged_inside_the_window(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            seed_down(e, url(hang.port), age=5)
+            p, _ = e.run(event("Bash", {"command": "cat .env"}))
+            self.assertEqual(decision_of(p), "deny")
+            self.assertNotIn("systemMessage", json.loads(p.stdout))
+            p, _ = e.run(event("Bash", {"command": "git push --force origin main"}))
+            self.assertEqual(decision_of(p), "ask")
+            self.assertEqual(hang.count, 0)
+            self.assertEqual([(r["decided_by"], r["source"], r["decision"]) for r in e.rows()], [("prefilter", "client", "block"), ("prefilter", "client", "ask")])
+        finally:
+            hang.close()
+
+    def test_an_unclear_command_inside_the_window_still_calls_the_worker_and_does_not_extend_it(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            path = seed_down(e, url(hang.port), age=30)
+            before = open(path).read()
+            p, took = e.run(event("Bash", {"command": UNCLEAR}))
+            self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
+            self.assertGreater(hang.count, 0, "an unclear command is not skipped by the window")
+            r = e.rows()[0]
+            self.assertEqual((r["decided_by"], r["rule"], r["source"]), ("fail_open", "R10-general-risk", "client"))
+            self.assertIn(r["fail_reason"], NETWORK_FAILURES)
+            self.assertEqual(open(path).read(), before, "its failure neither opens nor extends the window")
+        finally:
+            hang.close()
+
+    def test_an_unclear_command_failing_with_no_window_does_not_open_one(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            seed_fp_cache(e, url(hang.port), local_fp())  # verified: only the unclear command talks to the server
+            e.run(event("Bash", {"command": UNCLEAR}))
+            self.assertGreater(hang.count, 0)
+            self.assertEqual(self.windows(e), [])
+        finally:
+            hang.close()
+
+    def test_a_matching_cached_fingerprint_still_stands_as_an_ordinary_local_allow_inside_the_window(self):
+        port = stub(tag="down-match")
+        e = Env(**server_env(port))
+        seed_fp_cache(e, url(port), local_fp())
+        seed_down(e, url(port), age=5)
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        r = e.rows()[0]
+        self.assertEqual((r["source"], r["decided_by"], r["fail_reason"]), ("client", "prefilter", None))
+
+    def test_a_notice_once_per_session_and_the_row_codes(self):
+        hang = HangListener()
+        try:
+            e = Env(**server_env(hang.port))
+            seed_down(e, url(hang.port), age=5, code="client_network")
+            p, _ = e.run(event("Bash", {"command": "ls"}, session="A"))
+            self.assertIn("for the next minute", json.loads(p.stdout)["systemMessage"])
+            p, _ = e.run(event("Bash", {"command": "ls"}, session="A"))
+            self.assertEqual(p.stdout, "")
+            p, _ = e.run(event("Bash", {"command": "ls"}, session="B"))
+            self.assertIn("for the next minute", json.loads(p.stdout)["systemMessage"])
+            for r in e.rows():
+                self.assert_standing(r, "client_network")
+            self.assertEqual(e.markers(), ["notice-rules-down-A", "notice-rules-down-B"])
+        finally:
+            hang.close()
+
+    def test_a_window_file_that_is_garbage_a_symlink_or_wrong_is_ignored_like_the_fingerprint_cache(self):
+        hang = HangListener()
+        try:
+            u = url(hang.port)
+            good = {"v": 1, "t": time.time() - 5, "code": "client_timeout"}
+            cases = [
+                ("garbage", "{not json"),
+                ("not an object", "[1, 2]"),
+                ("a future timestamp", json.dumps(dict(good, t=time.time() + 1000))),
+                ("a boolean timestamp", json.dumps(dict(good, t=True))),
+                ("a code outside the closed list", json.dumps(dict(good, code="client_http_5xx"))),
+                ("no code", json.dumps({"v": 1, "t": time.time() - 5})),
+                ("too big", json.dumps(dict(good, pad="x" * 2000))),
+            ]
+            for name, content in cases:
+                e = Env(**server_env(hang.port))
+                seed_down(e, u, raw=content)
+                hang.count = 0
+                p, _ = e.run(event("Bash", {"command": "ls"}))
+                self.assertEqual(p.returncode, 0, name)
+                self.assertGreater(hang.count, 0, name + ": not trusted, so the server is tried")
+            e = Env(**server_env(hang.port))  # a symlink to a perfectly good window file
+            path = down_file(e.home, u)
+            os.makedirs(os.path.dirname(path), mode=0o700)
+            target = os.path.join(e.home, "good.json")
+            json.dump(good, open(target, "w"))
+            os.symlink(target, path)
+            hang.count = 0
+            e.run(event("Bash", {"command": "ls"}))
+            self.assertGreater(hang.count, 0, "a symlink is not followed")
+            # a window recorded for another server is not this server's
+            e = Env(**server_env(hang.port))
+            seed_down(e, "https://other.example/mcp", age=5)
+            hang.count = 0
+            e.run(event("Bash", {"command": "ls"}))
+            self.assertGreater(hang.count, 0)
+        finally:
+            hang.close()
+
+    def test_without_a_usable_server_nothing_is_tried_and_no_window_is_made(self):
+        e = Env()
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertEqual(self.windows(e), [])
+        self.assertEqual(e.rows()[0]["decided_by"], "prefilter")
 
 
 class NoticeMarker(unittest.TestCase):

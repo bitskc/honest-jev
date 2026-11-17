@@ -47,9 +47,10 @@ const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT)
 // Not preemptable: a rule run is synchronous CPU in this process (measured at most about 0.25 s on the 1,241-row corpus).
 export const LOCAL_NOTICE = "Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
 export const LOCAL_DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
-export const TRUST_NOTICES: Record<"mismatch" | "unverified", string> = {
+export const TRUST_NOTICES: Record<"mismatch" | "unverified" | "down", string> = {
   mismatch: "Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which.",
   unverified: "Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
+  down: "Honest Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, without a server call. Run install.sh --doctor for details.",
 };
 
 export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
@@ -144,10 +145,37 @@ const FP_TTL_MS = 5 * 60_000;
 const FP_TTL_DOWN_MS = 60_000; // "the server gave none" is remembered for a minute, so an offline or older server costs one fetch a minute
 const FP_FETCH_MS = 800;
 export const FP_HEADER = "x-jev-rules-fingerprint";
-export type RulesTrust = "match" | "mismatch" | "unverified";
+export type RulesTrust = "match" | "mismatch" | "unverified" | "down";
 let serverFp: { key: string; fp: string | null; at: number } | null = null;
-/** Forget the cached server fingerprint (tests). */
-export function resetServerFingerprint(): void { serverFp = null; }
+/** Forget the cached server fingerprint and the server-down window (tests). */
+export function resetServerFingerprint(): void { serverFp = null; serverDown = null; }
+
+// The remembered "server down" window, in memory. A local ALLOW that cannot be verified normally goes to the Worker; when that call (or the
+// /health fingerprint fetch) fails with a NETWORK-class error (timeout, connection refused or reset, DNS, TLS: failCodeFor says client_timeout or
+// client_network, and a refused redirect is not one) the server is called down for SERVER_DOWN_MS and local allows stand locally, unverified, with
+// no server call. Any successful Worker call (mcpCall) clears it. A 4xx/5xx with a body, a JSON-RPC error and a 401 never open it: the server
+// answered, and a bad token must stay visible. Unclear commands do not open it and are not skipped by it.
+const SERVER_DOWN_MS = 60_000;
+type DownCode = "client_timeout" | "client_network";
+let serverDown: { key: string; code: DownCode; at: number } | null = null;
+/** The closed fail_reason of the failure that opened the window, while it is open for the current server; else null. */
+function serverDownCode(): DownCode | null {
+  const age = Date.now() - (serverDown?.at ?? 0);
+  return serverDown && serverDown.key === mcpUrl() && age >= 0 && age < SERVER_DOWN_MS ? serverDown.code : null;
+}
+function openServerDown(code: DownCode): void { serverDown = { key: mcpUrl(), code, at: Date.now() }; }
+function clearServerDown(): void { serverDown = null; }
+/** The network-class code of a failed fetch, or null (a refused redirect, a parse error: the server answered). */
+function networkCode(e: unknown): DownCode | null {
+  let msg = "";
+  if (e instanceof Error) {
+    msg = e.message.toLowerCase();
+    if (e.cause instanceof Error) msg += ` ${e.cause.message.toLowerCase()}`;
+  }
+  if (msg.includes("redirect")) return null;
+  const code = failCodeFor(e);
+  return code === "client_timeout" || code === "client_network" ? code : null;
+}
 
 async function fetchServerFingerprint(): Promise<string | null> {
   try {
@@ -162,24 +190,31 @@ async function fetchServerFingerprint(): Promise<string | null> {
     });
     const got = (res.headers.get(FP_HEADER) ?? "").trim().toLowerCase();
     return res.ok && FP_RE.test(got) ? got : null;
-  } catch { return null; }
+  } catch (e) {
+    const code = networkCode(e);
+    if (code) openServerDown(code);
+    return null;
+  }
 }
 
 async function serverRulesFingerprint(): Promise<string | null> {
   const key = mcpUrl(), now = Date.now();
   if (serverFp && serverFp.key === key && now >= serverFp.at && now - serverFp.at < (serverFp.fp ? FP_TTL_MS : FP_TTL_DOWN_MS)) return serverFp.fp;
+  if (serverDownCode()) return null; // the server is called down: no fetch
   const fp = await fetchServerFingerprint();
   serverFp = { key, fp, at: Date.now() };
   return fp;
 }
 
 /** "match": the rules here are byte-identical to the server's. "mismatch": both known, different. "unverified": this machine's rules are not
- * the whole release, or the server's fingerprint is unavailable. Anything but "match" means the server decides a local allow. */
+ * the whole release, or the server's fingerprint is unavailable. "down": it could not be verified AND the server is called down for the next
+ * minute: the allow stands locally, unverified, with no server call. "mismatch" and "unverified" mean the server decides a local allow. */
 export async function rulesTrust(local: LocalVerdict): Promise<RulesTrust> {
-  if (local.fp === null || !FP_RE.test(local.fp)) return "unverified";
+  if (local.fp === null || !FP_RE.test(local.fp)) return serverDownCode() ? "down" : "unverified";
   const theirs = await serverRulesFingerprint();
-  if (theirs === null) return "unverified";
-  return theirs === local.fp ? "match" : "mismatch";
+  if (theirs === local.fp) return "match";
+  if (serverDownCode()) return "down"; // checked after the lookup: a /health fetch that just failed opens the window
+  return theirs === null ? "unverified" : "mismatch";
 }
 
 // Server-side input caps (server/src/kit/tools.mjs): over these the schema rejects the call, and a rejection must
@@ -393,6 +428,7 @@ async function mcpCall<T>(tool: string, args: Record<string, unknown>, timeoutMs
       if (msg.result?.isError) return { kind: "rejected", detail: String(msg.result.content?.[0]?.text ?? "tool error").slice(0, 200) };
       const text = msg.result?.content?.[0]?.text;
       if (typeof text !== "string") return { kind: "unavailable", code: "client_parse" };
+      clearServerDown(); // the server answered: a window opened by an earlier failure is over
       return { kind: "reply", reply: JSON.parse(text) as T };
     }
   } catch (e) {
@@ -690,14 +726,20 @@ export default function jevGuard(pi: ExtensionAPI) {
       let trust: RulesTrust | null = null;
       if (ruleSettled && local!.reply.decision === "allow" && (process.env.JEV_MCP_TOKEN ?? "").trim() !== "" && mcpUrl().startsWith("https://")) trust = await rulesTrust(local!);
       const settled = ruleSettled && (trust === null || trust === "match");
-      if ((trust === "mismatch" || trust === "unverified") && !trustNoticed.has(trust)) {
+      if ((trust === "mismatch" || trust === "unverified" || trust === "down") && !trustNoticed.has(trust)) {
         trustNoticed.add(trust);
         try { if (typeof ctx.ui?.notify === "function") ctx.ui.notify(TRUST_NOTICES[trust], "warning"); else pi.logger?.warn?.(TRUST_NOTICES[trust]); } catch { /* a notice never changes a decision */ }
       }
+      // trust "down": the server is called down for the next minute, so the allow stands locally with no server call. The call's result is then
+      // the unavailable result of the failure that opened the window, so the row is the usual fail_open one with that closed code.
       const [answered, pol] = await Promise.all([
-        settled ? Promise.resolve<McpResult<GuardReply>>({ kind: "reply", reply: local!.reply as GuardReply }) : mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()),
+        settled ? Promise.resolve<McpResult<GuardReply>>({ kind: "reply", reply: local!.reply as GuardReply })
+          : trust === "down" ? Promise.resolve<McpResult<GuardReply>>({ kind: "unavailable", code: serverDownCode() ?? "client_network" })
+          : mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()),
         pending,
       ]);
+      // a network-class failure of the call made only because a local allow could not be verified opens the window (an unclear command never does)
+      if ((trust === "mismatch" || trust === "unverified") && answered.kind === "unavailable" && (answered.code === "client_timeout" || answered.code === "client_network")) openServerDown(answered.code);
       // `unclear` can hold while the local reply is already an ask (a rule asked on one reading, the model question came from the other):
       // if the server cannot be consulted, that ask is the decision, through the same branch a settled local reply takes. Never an
       // allow only because nobody answered the model question.

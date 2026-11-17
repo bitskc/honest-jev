@@ -23,19 +23,29 @@ let reply: unknown = { decision: "ask", rule: "R10-general-risk", reason: "serve
 // healthFp = what the header carries (null: no header, an older Worker); healthMode "hang" never answers (until the request is aborted).
 const healthCalls: { url: string; method: string; auth: string | null }[] = [];
 let healthFp: string | null = null;
-let healthMode: "ok" | "hang" | "down" = "ok";
+let healthMode: "ok" | "hang" | "down" | "401" | "503" | "redirect" = "ok";
+// the guard call (kit_guard_command): ok, or a network failure (down = connection refused, timeout), or an answer (401, 503 with a body, a JSON-RPC error)
+let guardMode: "ok" | "down" | "timeout" | "401" | "503" | "rpcerror" = "ok";
 globalThis.fetch = (async (url: string, init: { body?: string; method?: string; headers?: Record<string, string>; signal?: AbortSignal }) => {
   if (new URL(url).pathname.endsWith("/health")) {
     healthCalls.push({ url, method: init.method ?? "GET", auth: init.headers?.authorization ?? null });
-    if (healthMode === "down") throw new Error("connect ECONNREFUSED");
+    if (healthMode === "down") throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED") });
+    if (healthMode === "redirect") throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
+    if (healthMode === "401") return new Response("Unauthorized", { status: 401 });
+    if (healthMode === "503") return new Response("down", { status: 503 });
     if (healthMode === "hang") {
       const { promise, reject } = Promise.withResolvers<never>();
-      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")));
       await promise;
     }
     return new Response("ok", healthFp && init.headers?.authorization ? { headers: { "x-jev-rules-fingerprint": healthFp } } : undefined);
   }
   calls.push({ url, body: JSON.parse(init.body as string) });
+  if (guardMode === "down") throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED") });
+  if (guardMode === "timeout") throw new DOMException("The operation timed out.", "TimeoutError");
+  if (guardMode === "401") return new Response("Unauthorized", { status: 401 });
+  if (guardMode === "503") return new Response("down", { status: 503 });
+  if (guardMode === "rpcerror") return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "Invalid arguments" } }));
   return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(reply) }] } }));
 }) as typeof fetch;
 afterAll(() => { globalThis.fetch = realFetch; });
@@ -55,7 +65,7 @@ function env(over: Record<string, string | undefined> = {}) {
 }
 // everything a test can change about the fake server and the notices heard so far, back to the start (also between rounds inside one test)
 function beforeEachReset() {
-  calls.length = 0; healthCalls.length = 0; notes.length = 0; warns.length = 0; healthFp = RULES_FP; healthMode = "ok"; mod.resetServerFingerprint();
+  calls.length = 0; healthCalls.length = 0; notes.length = 0; warns.length = 0; healthFp = RULES_FP; healthMode = "ok"; guardMode = "ok"; mod.resetServerFingerprint();
 }
 beforeEach(() => {
   beforeEachReset();
@@ -423,48 +433,15 @@ test("a mismatch keeps a local block and a local ask: the server is never asked"
   expect(rows().map((x) => [x.decision, x.decided_by, x.source])).toEqual([["block", "prefilter", "client"], ["ask", "prefilter", "client"]]);
 });
 
-test("an unavailable fingerprint (older Worker, network error, no answer in time) behaves as a mismatch", async () => {
-  for (const [name, setup] of [["no header", () => { healthFp = null; }], ["server down", () => { healthMode = "down"; }]] as const) {
-    env();
-    beforeEachReset();
-    setup();
-    reply = SERVER_BLOCKS;
-    notes.length = 0; calls.length = 0;
-    const v = await hook().call(bash("ls"));
-    expect(v?.block, name).toBe(true);
-    expect(calls.length, name).toBe(1);
-    expect(notes, name).toEqual([mod.TRUST_NOTICES.unverified]);
-  }
+test("an unavailable fingerprint (an older Worker that sends no header) behaves as a mismatch: the Worker decides", async () => {
   env();
-  beforeEachReset();
-  healthMode = "hang";
-  reply = SERVER_ALLOWS;
-  const t = Date.now();
-  expect(await hook().call(bash("ls"))).toBeUndefined();
-  expect(Date.now() - t).toBeLessThan(2000); // the fetch gave up after its own 0.8 s budget
+  healthFp = null;
+  reply = SERVER_BLOCKS;
+  const v = await hook().call(bash("ls"));
+  expect(v?.block).toBe(true);
   expect(calls.length).toBe(1);
   expect(notes).toEqual([mod.TRUST_NOTICES.unverified]);
   expect(mod.TRUST_NOTICES.unverified).toContain("older Worker");
-});
-
-test("an unreachable server: the command is allowed, the row says why, and the 'no fingerprint' answer is remembered for a minute", async () => {
-  env();
-  healthMode = "down";
-  const real = globalThis.fetch;
-  globalThis.fetch = (async (url: string, init: Parameters<typeof fetch>[1]) => {
-    if (new URL(url).pathname.endsWith("/health")) return (real as unknown as (u: string, i: unknown) => Promise<Response>)(url, init);
-    calls.push({ url, body: { params: { name: "", arguments: {} } } });
-    throw new Error("connect ECONNREFUSED");
-  }) as typeof fetch;
-  try {
-    const h = hook();
-    expect(await h.call(bash("ls"))).toBeUndefined();
-    expect(await h.call(bash("ls"))).toBeUndefined();
-    expect(healthCalls.length).toBe(1);
-    expect(calls.length).toBe(2);
-    expect(rows().map((x) => [x.decision, x.decided_by, x.fail_reason])).toEqual([["allow", "fail_open", "client_network"], ["allow", "fail_open", "client_network"]]);
-    expect(notes).toEqual([mod.TRUST_NOTICES.unverified]);
-  } finally { globalThis.fetch = real; }
 });
 
 test("tampered rules that allow everything are not final when the server is reachable", async () => {
@@ -631,4 +608,213 @@ test("a kit directory reached through a symlink is fine: the fingerprint is that
   symlinkSync(real, link);
   env({ JEV_GUARD_RULES: join(link, "guard.mjs") });
   expect(((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string | null }).fp).toBe(RULES_FP);
+});
+
+// ── the remembered "server down" window ──────────────────────────────────────────────────────────────────────────────────────
+// A local allow that could not be verified goes to the Worker; a network-class failure of that call or of the /health fetch calls the server down
+// for 60 s: local allows then stand locally with no server call and one notice per session (row: fail_open + the closed code). A 401, a 5xx with a
+// body, a JSON-RPC error never open it. A successful Worker call clears it. Unclear commands neither open nor extend it and are never skipped by it.
+const withClock = async (fn: (setOffset: (ms: number) => void) => Promise<void>) => {
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  try { await fn((ms) => { offset = ms; }); } finally { Date.now = realNow; }
+};
+const standing = (code: string) => ["allow", "fail_open", "client", code];
+const rowShape = (x: Record<string, unknown>) => [x.decision, x.decided_by, x.source, x.fail_reason];
+
+test("a hanging server costs one fetch timeout, then the next allowed commands make no server call and are fast", async () => {
+  env();
+  healthMode = "hang";
+  const h = hook();
+  const t = Date.now();
+  expect(await h.call(bash("ls"))).toBeUndefined();
+  expect(Date.now() - t).toBeLessThan(2000); // only the 0.8 s fingerprint fetch is paid
+  expect(notes).toEqual([mod.TRUST_NOTICES.down]);
+  expect(mod.TRUST_NOTICES.down).toContain("for the next minute");
+  const t2 = Date.now();
+  for (let i = 0; i < 8; i++) expect(await h.call(bash(i % 2 ? "ls -la" : "ls"))).toBeUndefined();
+  expect(Date.now() - t2).toBeLessThan(500);
+  expect(healthCalls.length).toBe(1);
+  expect(calls.length).toBe(0);
+  expect(notes.length).toBe(1); // once per session
+  expect(rows().map(rowShape)).toEqual(Array.from({ length: 9 }, () => standing("client_timeout")));
+  await h.startSession();
+  await h.call(bash("ls"));
+  expect(notes).toEqual([mod.TRUST_NOTICES.down, mod.TRUST_NOTICES.down]); // a new session hears it once more
+});
+
+test("a verification call that times out or is refused opens the window too", async () => {
+  for (const [mode, code] of [["timeout", "client_timeout"], ["down", "client_network"]] as const) {
+    env();
+    beforeEachReset(); writeFileSync(LEDGER, "");
+    healthFp = "a".repeat(64); // known and different: the allow must be verified by a guard call
+    guardMode = mode;
+    const h = hook();
+    expect(await h.call(bash("ls")), mode).toBeUndefined();
+    expect(calls.length, mode).toBe(1);
+    expect(await h.call(bash("ls")), mode).toBeUndefined();
+    expect(calls.length, mode).toBe(1); // no second call
+    expect(healthCalls.length, mode).toBe(1);
+    expect(rows().map(rowShape), mode).toEqual([standing(code), standing(code)]);
+    expect(notes, mode).toEqual([mod.TRUST_NOTICES.mismatch, mod.TRUST_NOTICES.down]); // the first command was sent (mismatch notice); the second stood (down notice)
+  }
+});
+
+test("an unreachable server (connection refused): one fetch, no guard call, the window is open", async () => {
+  env();
+  healthMode = "down";
+  const h = hook();
+  expect(await h.call(bash("ls"))).toBeUndefined();
+  expect(await h.call(bash("ls"))).toBeUndefined();
+  expect(healthCalls.length).toBe(1);
+  expect(calls.length).toBe(0);
+  expect(rows().map(rowShape)).toEqual([standing("client_network"), standing("client_network")]);
+  expect(notes).toEqual([mod.TRUST_NOTICES.down]);
+});
+
+test("the window expires after sixty seconds and one more attempt is made", async () => {
+  await withClock(async (setOffset) => {
+    env();
+    healthMode = "down";
+    const h = hook();
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(1);
+    healthMode = "ok";
+    setOffset(59_000);
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(1);
+    expect(calls.length).toBe(0);
+    setOffset(61_000);
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(2); // the "no fingerprint" answer is also a minute old: fetched again, and it is fine now
+    expect(rows().map(rowShape).at(-1)).toEqual(["allow", "prefilter", "client", null]);
+  });
+});
+
+test("a successful Worker call clears the window", async () => {
+  env();
+  healthMode = "down";
+  const h = hook();
+  await h.call(bash("ls")); // opens it
+  healthMode = "ok";
+  reply = { decision: "ask", rule: "R10-general-risk", reason: "server says ask", decided_by: "jev" };
+  const v = await h.call(bash(UNCLEAR)); // unclear: goes to the Worker inside the window, and the Worker answers
+  expect(v?.block).toBe(true);
+  expect(calls.length).toBe(1);
+  reply = SERVER_ALLOWS;
+  await h.call(bash("ls"));
+  expect(calls.length).toBe(2); // the window is gone: the cached "no fingerprint" makes this allow unverified again, so the Worker decides it
+  expect(rows().at(-1)).toMatchObject({ decision: "allow", decided_by: "prefilter" }); // the Worker's own reply, not a standing allow (calls.length is the proof)
+});
+
+test("a 401, a 5xx with a body and a JSON-RPC error do not open it", async () => {
+  for (const mode of ["401", "503", "rpcerror"] as const) {
+    env();
+    beforeEachReset(); writeFileSync(LEDGER, "");
+    healthFp = "a".repeat(64);
+    guardMode = mode;
+    const h = hook();
+    await h.call(bash("ls"));
+    await h.call(bash("ls"));
+    expect(calls.length, mode).toBe(2); // both went to the Worker: nothing was remembered
+    expect(rows().map((x) => x.fail_reason), mode).toEqual(mode === "503" ? ["client_http_5xx", "client_http_5xx"] : ["client_rejected", "client_rejected"]);
+    expect(notes.filter((n) => n === mod.TRUST_NOTICES.down), mode).toEqual([]);
+  }
+  for (const mode of ["401", "503"] as const) { // the fingerprint fetch: an answer with a status is an answer
+    env();
+    beforeEachReset(); writeFileSync(LEDGER, "");
+    healthMode = mode;
+    await hook().call(bash("ls"));
+    await hook().call(bash("ls"));
+    expect(notes.filter((n) => n === mod.TRUST_NOTICES.down), `health ${mode}`).toEqual([]);
+    expect(calls.length, `health ${mode}`).toBe(2);
+  }
+});
+
+test("a local block and ask are unchanged inside the window", async () => {
+  env();
+  healthMode = "down";
+  const h = hook();
+  await h.call(bash("ls"));
+  notes.length = 0;
+  expect((await h.call(bash("cat .env")))?.block).toBe(true);
+  expect((await h.call(bash("git push --force origin main")))?.block).toBe(true);
+  expect(calls.length).toBe(0);
+  expect(notes).toEqual([]);
+  expect(rows().slice(1).map(rowShape)).toEqual([["block", "prefilter", "client", null], ["ask", "prefilter", "client", null]]);
+});
+
+test("an unclear command inside the window still calls the Worker, and its failure neither opens nor extends the window", async () => {
+  await withClock(async (setOffset) => {
+    env();
+    healthMode = "down";
+    const h = hook();
+    await h.call(bash("ls")); // opens at t=0
+    guardMode = "down";
+    setOffset(40_000);
+    await h.call(bash(UNCLEAR));
+    expect(calls.length).toBe(1);
+    expect(rows().at(-1)).toMatchObject({ decision: "allow", decided_by: "fail_open", fail_reason: "client_network", rule: "R10-general-risk" });
+    healthMode = "ok";
+    guardMode = "ok";
+    reply = SERVER_ALLOWS;
+    setOffset(61_000); // 61 s after the first failure: had the unclear failure extended it, this would still be inside
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(2);
+  });
+});
+
+test("an unclear command that fails with no window open does not open one", async () => {
+  env();
+  guardMode = "down";
+  const h = hook();
+  await h.call(bash("ls")); // verified (matching fingerprint): stands as an ordinary local allow
+  await h.call(bash(UNCLEAR));
+  expect(calls.length).toBe(1);
+  await h.call(bash(UNCLEAR));
+  expect(calls.length).toBe(2); // not skipped
+  await h.call(bash("ls"));
+  expect(rows().at(-1)).toMatchObject({ decision: "allow", decided_by: "prefilter", source: "client" });
+  expect(notes.filter((n) => n === mod.TRUST_NOTICES.down)).toEqual([]);
+});
+
+test("the window belongs to one server: another URL is not covered by it", async () => {
+  env();
+  healthMode = "down";
+  await hook().call(bash("ls"));
+  env({ JEV_MCP_URL: "https://other.example.workers.dev/mcp" });
+  healthMode = "ok";
+  await hook().call(bash("ls"));
+  expect(healthCalls.length).toBe(2); // the other server was asked
+});
+
+test("a refused redirect on the fingerprint fetch is an answer, not a network failure: it does not open the window", async () => {
+  env();
+  healthMode = "redirect";
+  const h = hook();
+  await h.call(bash("ls"));
+  await h.call(bash("ls"));
+  expect(calls.length).toBe(2); // unverified both times: the Worker decided, nothing was remembered
+  expect(notes.filter((n) => n === mod.TRUST_NOTICES.down)).toEqual([]);
+});
+
+test("no fingerprint fetch is made while the window is open, even after the cached answer expired", async () => {
+  await withClock(async (setOffset) => {
+    env();
+    healthFp = null; // an older Worker: the "no fingerprint" answer is cached for a minute
+    reply = SERVER_ALLOWS;
+    const h = hook();
+    await h.call(bash("ls")); // t=0: unverified, the Worker decides, one fetch
+    expect(healthCalls.length).toBe(1);
+    guardMode = "down";
+    setOffset(58_000);
+    await h.call(bash("ls")); // cached "none" still fresh: the guard call fails and opens the window at t=58
+    expect(calls.length).toBe(2);
+    setOffset(61_000); // the cached answer is now stale, the window is 3 s old
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(1);
+    expect(calls.length).toBe(2);
+    expect(rows().at(-1)).toMatchObject({ decided_by: "fail_open", fail_reason: "client_network" });
+  });
 });
