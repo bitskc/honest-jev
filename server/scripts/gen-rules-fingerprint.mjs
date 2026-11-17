@@ -2,9 +2,11 @@
 // Writes src/rules-fingerprint.mjs: the fingerprint of the rule files in src/kit, the constant the Worker reports on an authenticated
 // GET /health (header x-jev-rules-fingerprint). A Worker cannot read its own source files at run time, so the value is computed here, at
 // build time, with the very function the hooks use (hooks/jev-rules-fingerprint.mjs), over the same files the local runner loads.
-// `npm run deploy` and `npm run dev` run this first; test/rules-fingerprint.test.mjs fails when the committed file is stale.
+// The file is NOT committed (it is in .gitignore): it is made at build time, so it cannot be stale and a rule PR does not have to remember to
+// regenerate it. It is written by wrangler's build.command (wrangler.jsonc, so a raw `wrangler deploy` and `wrangler dev` do it too), by
+// `npm test` (pretest), `npm run dev` and `npm run deploy`; test/rules-fingerprint.test.mjs checks the wiring and the value.
 //   node scripts/gen-rules-fingerprint.mjs           write src/rules-fingerprint.mjs
-//   node scripts/gen-rules-fingerprint.mjs --check   exit 1 (writing nothing) when the committed file is not current
+//   node scripts/gen-rules-fingerprint.mjs --check   exit 1 (writing nothing) when the file is missing or not current
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

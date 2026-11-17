@@ -5,7 +5,7 @@
 // parsed by the guard, never executed.
 //   node tests/stub-worker.mjs --cert c.pem --key k.pem [--mode ok|5xx|4xx|rpcerror|slow|garbage|oldworker|hostile] [--jev] [--log FILE]
 //                              [--fp <64 hex>|none] [--health-log FILE]
-// GET /health answers "ok" with the rules fingerprint of THIS checkout (the same constant the real Worker reports) in x-jev-rules-fingerprint
+// GET /health answers "ok" with the rules fingerprint of THIS checkout (the same value the real Worker reports) in x-jev-rules-fingerprint
 // when the request carries a bearer token. --fp <hex> reports that value instead (a Worker whose rules differ from the client's), --fp none
 // and --mode oldworker report none (a Worker deployed before the fingerprint existed). --health-log appends one line per /health request.
 // kit_decide is served too (the real handler, fake upstream); the fake upstream answers `merges_pr` with $STUB_MERGES_PR
@@ -26,7 +26,9 @@ const healthLog = arg("health-log", "");
 
 const { registerKitTools } = await import(join(root, "server/src/kit/tools.mjs"));
 const { registerDecideTool } = await import(join(root, "server/src/decide/tool.mjs"));
-const { RULES_FINGERPRINT } = await import(join(root, "server/src/rules-fingerprint.mjs"));
+// the fingerprint the real Worker reports is a build-time constant made by this same function over the same files (server/scripts/gen-rules-fingerprint.mjs)
+const { rulesFingerprint } = await import(join(root, "hooks/jev-rules-fingerprint.mjs"));
+const RULES_FINGERPRINT = rulesFingerprint(join(root, "server/src/kit"));
 const { appendFileSync } = await import("node:fs");
 const tools = {};
 const answers = {

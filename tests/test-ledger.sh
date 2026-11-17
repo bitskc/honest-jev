@@ -43,8 +43,8 @@ step "install.sh ships the local rules runner and the rules it loads, and the IN
   s=$H/.local/share/honest-jev
   [ -f $s/hooks/jev-guard-local.mjs ] && [ -f $s/jev-policy/server/src/kit/guard.mjs ] || { echo "local rules not installed"; exit 1; }
   [ "$(HOME=$H node $s/hooks/jev-guard-local.mjs --check)" = "$s/jev-policy/server/src/kit/guard.mjs" ] || { echo "installed runner did not load the installed rules"; exit 1; }
-  want=$(sed -n "s/.*RULES_FINGERPRINT = \"\\([0-9a-f]*\\)\".*/\\1/p" server/src/rules-fingerprint.mjs)
-  [ -n "$want" ] && [ "$(HOME=$H node $s/hooks/jev-guard-local.mjs --fingerprint)" = "$want" ] || { echo "the installed rules do not have the fingerprint the Worker reports"; exit 1; }
+  want=$(node hooks/jev-guard-local.mjs --fingerprint)
+  [ -n "$want" ] && [ "$(HOME=$H node $s/hooks/jev-guard-local.mjs --fingerprint)" = "$want" ] || { echo "the installed rules do not have the fingerprint of the checkout (which is what the Worker reports)"; exit 1; }
   out=$(printf "%s" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat .env\"},\"cwd\":\"/tmp\",\"session_id\":\"t\"}" | env -u JEV_MCP_URL -u JEV_MCP_TOKEN -u JEV_LEDGER -u XDG_STATE_HOME HOME=$H bash $s/hooks/jev-guard-hook.sh)
   case "$out" in *\"permissionDecision\":*\"deny\"*) ;; *) echo "installed hook did not deny cat .env locally: $out"; exit 1;; esac
   grep -q "\"decided_by\":\"prefilter\"" $H/.local/state/jev/ledger.jsonl || { echo "no local prefilter row"; exit 1; }

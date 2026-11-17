@@ -24,7 +24,8 @@ RUNT = ["node", "--test", "hooks/jev-guard-local.test.mjs"]
 LEDT = [sys.executable, "-W", "ignore", "-m", "unittest", "tests/test_ledger_hook.py"]
 OMPT = ["bun", "test", "tests/local-first-omp.test.ts"]
 SCRIPTS = ["bash", "tests/test-scripts.sh"]
-FPT = ["node", "--test", "server/test/rules-fingerprint.test.mjs"]
+# the generated constant is not committed: the copy has none, and this command makes it exactly as `npm test` does (pretest)
+FPT = ["sh", "-c", "cd server && npm run fingerprint --silent && node --test test/rules-fingerprint.test.mjs"]
 
 PYH = "hooks/jev_guard_hook.py"
 PYL = "hooks/jev_ledger.py"
@@ -33,7 +34,11 @@ TS = "hooks/omp/jev-guard.ts"
 INST = "install.sh"
 FPMOD = "hooks/jev-rules-fingerprint.mjs"
 HEALTH = "server/src/health.mjs"
-GEN = "server/src/rules-fingerprint.mjs"
+GENS = "server/scripts/gen-rules-fingerprint.mjs"
+PKG = "server/package.json"
+WRANGLER = "server/wrangler.jsonc"
+CI = ".github/workflows/test.yml"
+GITIGNORE = ".gitignore"
 
 # (name, [(file, old, new), ...], command). `old` must occur exactly once.
 MUTATIONS = [
@@ -121,12 +126,22 @@ MUTATIONS = [
     ("hook-py: the fingerprint fetch has no time budget", [(PYH, "        signal.setitimer(signal.ITIMER_REAL, FP_FETCH_BUDGET)\n", ""), (PYH, "timeout=FP_FETCH_BUDGET - 0.1)", "timeout=60)")], PYT),
     ("hook-py: the fingerprint is fetched without the token", [(PYH, '"authorization": "Bearer " + os.environ.get("JEV_MCP_TOKEN", "").strip(),', '"x-none": "0",')], PYT),
     ("runner: rules_fp is missing from the reply", [(RUN, "JSON.stringify({ ...reply, rules_fp: fp })", "JSON.stringify(reply)")], RUNT),
-    ("runner: the fingerprint is not taken from the loaded rules' directory", [(RUN, "fp = rulesFingerprint(dirname(path));", "fp = rulesFingerprint(here);")], RUNT),
+    ("runner: the fingerprint is not taken from the loaded rules' directory", [(FPMOD, 'return { path: join(dir, "guard.mjs"), fp: rulesFingerprint(dir) };', 'return { path: join(dir, "guard.mjs"), fp: rulesFingerprint(dirname(dir)) };')], RUNT),
     ("fingerprint: shell.mjs is not covered", [(FPMOD, 'Object.freeze(["guard.mjs", "safere.mjs", "shell.mjs"])', 'Object.freeze(["guard.mjs", "safere.mjs"])')], RUNT),
     ("fingerprint: files are not length-framed", [(FPMOD, "    h.update(`${name}\\0${bytes.length}\\0`);\n", "")], FPT),
     ("server: /health reports the fingerprint to everyone", [(HEALTH, "return new Response(\"ok\", authorized ? {", "return new Response(\"ok\", true ? {")], FPT),
     ("server: an unset token authorizes an empty bearer", [(HEALTH, "  if (!expected) return false;\n", "")], FPT),
-    ("server: the committed fingerprint constant is stale", [(GEN, 'RULES_FINGERPRINT = "0', 'RULES_FINGERPRINT = "1')], FPT),
+    ("server: the generator writes a constant that is not the fingerprint", [(GENS, '${rulesFingerprint(join(server, "src", "kit"))}', '${"0".repeat(64)}')], FPT),
+    ("server: npm test does not generate the constant (no pretest)", [(PKG, '    "pretest": "npm run fingerprint",\n', "")], FPT),
+    ("server: wrangler's build step does not generate the constant (a raw wrangler deploy ships a stale one)", [(WRANGLER, '    "command": "npm run fingerprint",\n', "")], FPT),
+    ("server: npm run deploy does not generate the constant", [(PKG, "npm run vendor && npm run fingerprint && wrangler deploy", "npm run vendor && wrangler deploy")], FPT),
+    ("server: the generated constant is no longer ignored (it would be committed and go stale)", [(GITIGNORE, "server/src/rules-fingerprint.mjs\n", "")], FPT),
+    ("server: CI runs the server tests without npm (no pretest)", [(CI, "        working-directory: server\n        run: npm test", '        working-directory: server\n        run: node --test "test/**/*.test.mjs"')], FPT),
+    ("fingerprint: a symlinked rule file is hashed through the link", [(FPMOD, "    if (!lstatSync(file).isFile()) throw new Error(`${name} is not a regular file`);\n", "")], RUNT),
+    ("runner: a rule file not named guard.mjs is fingerprinted", [(FPMOD, 'if (basename(guardPath) !== "guard.mjs") return { path: guardPath, fp: null };', "")], RUNT),
+    ("hook-omp: a symlinked rule file is hashed through the link", [(TS, "    if (!lstatSync(file).isFile()) throw new Error(`${name} is not a regular file`);\n", "")], OMPT),
+    ("doctor: rules that cannot be fingerprinted are not a failure", [(INST, 'if [ -z "$lfp" ]; then bad "guard rules cannot be fingerprinted', 'if [ -z "$lfp" ]; then ok "guard rules cannot be fingerprinted')], SCRIPTS),
+    ("hook-omp: a rule file not named guard.mjs is fingerprinted", [(TS, 'if (basename(path) === "guard.mjs") {', "if (true) {")], OMPT),
     ("hook-omp: a different fingerprint still trusts the local allow (trust the local allow on mismatch)", [(TS, 'return theirs === local.fp ? "match" : "mismatch";', 'return "match";')], OMPT),
     ("hook-omp: an unavailable server fingerprint counts as a match", [(TS, 'if (theirs === null) return "unverified";', 'if (theirs === null) return "match";')], OMPT),
     ("hook-omp: rules that are not the whole release count as a match", [(TS, 'if (local.fp === null || !FP_RE.test(local.fp)) return "unverified";', 'if (local.fp === null || !FP_RE.test(local.fp)) return "match";')], OMPT),
@@ -158,7 +173,7 @@ MUTATIONS = [
 def fresh_copy(work):
     """The whole tree (never .git or node_modules) in a scratch directory; the stub Worker finds zod through a symlink."""
     shutil.rmtree(work, ignore_errors=True)
-    shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "node_modules"))
+    shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "node_modules", "rules-fingerprint.mjs"))
     os.symlink(os.path.join(ROOT, "server", "node_modules"), os.path.join(work, "server", "node_modules"))
 
 

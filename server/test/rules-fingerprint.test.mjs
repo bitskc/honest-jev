@@ -22,10 +22,10 @@ function copyKit() {
   return d;
 }
 
-test("the committed constant is the fingerprint of the rule files in src/kit (run npm run fingerprint when this fails)", () => {
+test("the generated constant is the fingerprint of the rule files in src/kit", () => {
   assert.match(RULES_FINGERPRINT, /^[0-9a-f]{64}$/);
   assert.equal(RULES_FINGERPRINT, rulesFingerprint(KIT));
-  // the generator agrees with the committed file, the same check CI relies on
+  // the generator agrees with the file it wrote
   execFileSync(process.execPath, [join(here, "..", "scripts", "gen-rules-fingerprint.mjs"), "--check"], { stdio: "pipe" });
 });
 
@@ -89,4 +89,22 @@ test("GET /health: body ok for everyone; the fingerprint header only with the ri
   }
   assert.equal(await tokenOk("Bearer right-token", "right-token"), true);
   assert.equal(await tokenOk("Bearer right-token", ""), false);
+});
+
+test("the constant is built, never committed, and every route into the Worker and the tests builds it first", () => {
+  const server = join(here, "..");
+  const repo = join(server, "..");
+  const pkg = JSON.parse(readFileSync(join(server, "package.json"), "utf8"));
+  assert.equal(pkg.scripts.fingerprint, "node scripts/gen-rules-fingerprint.mjs");
+  assert.equal(pkg.scripts.pretest, "npm run fingerprint"); // npm test, wherever it is run from (CI's server job, a fresh clone)
+  for (const s of ["dev", "deploy"]) assert.match(pkg.scripts[s], /npm run fingerprint && wrangler /, s);
+  // a raw `wrangler deploy` / `wrangler dev` builds it too: wrangler runs build.command from the directory of the config
+  const wr = JSON.parse(readFileSync(join(server, "wrangler.jsonc"), "utf8"));
+  assert.equal(wr.build?.command, "npm run fingerprint");
+  assert.equal(wr.build?.cwd, ".");
+  // not committed: a rule PR never has to regenerate it, and a stale copy cannot be deployed
+  assert.ok(readFileSync(join(repo, ".gitignore"), "utf8").split("\n").includes("server/src/rules-fingerprint.mjs"));
+  // CI runs the server tests through npm, so pretest generates the file
+  const ci = readFileSync(join(repo, ".github", "workflows", "test.yml"), "utf8");
+  assert.match(ci, /working-directory: server\n\s+run: npm test/);
 });
