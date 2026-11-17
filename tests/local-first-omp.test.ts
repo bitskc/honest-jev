@@ -493,6 +493,18 @@ test("known limit: with no server there is nothing to compare with, and tampered
   expect(rows()[0]).toMatchObject({ decision: "allow", decided_by: "prefilter", source: "client" });
 });
 
+test("a local rule that never returns is killed, and the next call still judges", async () => {
+  const hang = join(mkdtempSync(join(dir, "hang-")), "guard.mjs");
+  writeFileSync(hang, "export function guardCommand() { for (;;) {} }\n");
+  env({ JEV_GUARD_RULES: hang, JEV_GUARD_LOCAL_TIMEOUT: "0.2", ...NO_SERVER });
+  const t0 = Date.now();
+  expect(await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })).toEqual({ notRun: true });
+  expect(Date.now() - t0).toBeLessThan(1500);
+  env({ JEV_GUARD_LOCAL_TIMEOUT: undefined });
+  const again = await mod.localGuard({ tool: "Bash", command: "cat .env", cwd: "/p", home: "/h" }) as { reply: { decision: string } };
+  expect(again.reply.decision).toBe("block");
+});
+
 test("a rule file rewritten on disk after the module loaded changes nothing in this process, and the fingerprint is that of what runs", async () => {
   const p = kitCopy();
   env({ JEV_GUARD_RULES: p, ...NO_SERVER });
@@ -570,21 +582,22 @@ test("no usable server (no token, or not https): a local allow stands and nothin
 // ── the fingerprint and the import must look at the same files ───────────────────────────────────────────────────────────────
 // A symlinked guard.mjs is loaded from its real path, together with the ./shell.mjs and ./safere.mjs BESIDE THAT PATH, so hashing the three
 // names in the directory that holds the link covers other bytes than the ones that run. These tests plant exactly that.
-const tamperShell = (file: string) => writeFileSync(file, `${readFileSync(file, "utf8")}\nglobalThis.__TAMPERED_SHELL_RAN = true;\n`);
-const plantGuardLink = () => {
+const tamperShell = (file: string, mark: string) => writeFileSync(file, `import { writeFileSync as __mark } from "node:fs";\n__mark(${JSON.stringify(mark)}, "1");\n${readFileSync(file, "utf8")}`);
+const plantGuardLink = (mark: string) => {
   const kit = dirname(kitCopy()), planted = dirname(kitCopy());
-  tamperShell(join(planted, "shell.mjs")); // the guard.mjs in `planted` is genuine; its sibling is not
+  tamperShell(join(planted, "shell.mjs"), mark); // the guard.mjs in `planted` is genuine; its sibling is not
   rmSync(join(kit, "guard.mjs"));
   symlinkSync(join(planted, "guard.mjs"), join(kit, "guard.mjs"));
   return join(kit, "guard.mjs");
 };
 
 test("a guard.mjs that is a symlink to a genuine file beside a tampered shell.mjs has no fingerprint, and its allows go to the server", async () => {
-  const rules = plantGuardLink();
+  const mark = join(dir, "tampered-shell");
+  try { rmSync(mark); } catch { /* absent */ }
+  const rules = plantGuardLink(mark);
   env({ JEV_GUARD_RULES: rules });
-  (globalThis as { __TAMPERED_SHELL_RAN?: boolean }).__TAMPERED_SHELL_RAN = false;
   const v = await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" }) as { fp: string | null };
-  expect((globalThis as { __TAMPERED_SHELL_RAN?: boolean }).__TAMPERED_SHELL_RAN, "premise: the tampered sibling is what runs through this link").toBe(true);
+  expect(existsSync(mark), "premise: the tampered sibling is what runs through this link").toBe(true);
   expect(v.fp).toBeNull(); // it must not claim the genuine fingerprint
   reply = SERVER_BLOCKS;
   const verdict = await hook().call(bash("ls")); // the rules allow it; the server would not

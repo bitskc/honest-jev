@@ -14,6 +14,7 @@
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -65,7 +66,9 @@ const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT)
 // into ~/.omp/agent/hooks/pre/, so the rules are found by path at run time: $JEV_GUARD_RULES (an absolute path to guard.mjs;
 // when set it is the only candidate; tests use it), else the install.sh tree ~/.local/share/honest-jev/jev-policy/server/src/kit,
 // else the pre-rename install dir. The module is imported once per path and cached. JEV_GUARD_LOCAL=off skips all of this.
-// Not preemptable: a rule run is synchronous CPU in this process (measured at most about 0.25 s on the 1,241-row corpus).
+// The rules run in a worker thread with the same budget as the Claude hook (JEV_GUARD_LOCAL_TIMEOUT, default 1.5 s, clamped
+// to 0.1..1.5). A run that does not finish is killed and treated as "the rules did not run" (#49). The module stays loaded
+// in that worker, so a file rewritten on disk after the first call does not change what this process runs.
 export const LOCAL_NOTICE = "Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
 export const LOCAL_DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
 export const TRUST_NOTICES: Record<"mismatch" | "unverified" | "down", string> = {
@@ -111,28 +114,88 @@ export function rulesFingerprint(kitDir: string): string {
 // file makes rulesFingerprint throw (no fingerprint: the server decides), and when the three are regular files the directory is resolved
 // (it, or a parent, may legitimately be a link) and both the hash and the import come from the resolved directory. Same as resolveRules in
 // hooks/jev-rules-fingerprint.mjs.
-type Loaded = { guardCommand: GuardFn | null; fp: string | null };
-const rulesByPath = new Map<string, Promise<Loaded>>();
-function loadRules(path: string): Promise<Loaded> {
-  let p = rulesByPath.get(path);
-  if (!p) {
-    let fp: string | null = null;
-    let from = path;
-    try {
-      if (basename(path) === "guard.mjs") {
-        const real = realpathSync(dirname(path));
-        fp = rulesFingerprint(real);
-        from = join(real, "guard.mjs");
-      }
-    } catch { /* not verifiable (a link among the rule files, not the whole release, a test's single stub module): nothing to verify */ }
-    p = import(pathToFileURL(from).href).then((m: { guardCommand?: unknown }) => ({ guardCommand: typeof m.guardCommand === "function" ? (m.guardCommand as GuardFn) : null, fp }), () => ({ guardCommand: null, fp }));
-    rulesByPath.set(path, p);
+type Loaded = { from: string; fp: string | null };
+const loadedByPath = new Map<string, Loaded>();
+function loadRules(path: string): Loaded {
+  const hit = loadedByPath.get(path);
+  if (hit) return hit;
+  let fp: string | null = null;
+  let from = path;
+  try {
+    if (basename(path) === "guard.mjs") {
+      const real = realpathSync(dirname(path));
+      fp = rulesFingerprint(real);
+      from = join(real, "guard.mjs");
+    }
+  } catch { /* not verifiable (a link among the rule files, not the whole release, a test's single stub module): nothing to verify */ }
+  const v = { from, fp };
+  loadedByPath.set(path, v);
+  return v;
+}
+
+function localBudgetMs(): number {
+  const v = Number(process.env.JEV_GUARD_LOCAL_TIMEOUT ?? "1.5");
+  if (!Number.isFinite(v)) return 1500;
+  return Math.min(1.5, Math.max(0.1, v)) * 1000;
+}
+
+// One worker for the life of the process. A call that misses the budget terminates it; the next call starts a fresh one,
+// which re-reads the rules from disk. The source is a string because this file is copied alone into the omp hooks dir.
+const RULES_WORKER = `
+import { parentPort } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
+const cache = new Map();
+parentPort.on("message", async ({ id, path, args }) => {
+  try {
+    let guard = cache.get(path);
+    if (!guard) {
+      const m = await import(pathToFileURL(path).href);
+      guard = m.guardCommand;
+      if (typeof guard !== "function") throw new Error("no guardCommand");
+      cache.set(path, guard);
+    }
+    let consulted = 0;
+    const reply = await guard({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
+    parentPort.postMessage({ id, ok: true, reply, consulted });
+  } catch {
+    parentPort.postMessage({ id, ok: false });
   }
-  return p;
+});
+`;
+let rulesWorker: Worker | null = null;
+let rulesSeq = 0;
+function worker(): Worker {
+  if (!rulesWorker) {
+    rulesWorker = new Worker(RULES_WORKER, { eval: true });
+    rulesWorker.on("error", () => { rulesWorker = null; });
+  }
+  return rulesWorker;
+}
+function dropWorker(path: string): void {
+  rulesWorker?.terminate();
+  rulesWorker = null;
+  loadedByPath.delete(path);
+}
+type WorkerReply = { ok: true; reply: Record<string, unknown>; consulted: number } | { ok: false } | { notRun: true };
+function judgeInWorker(path: string, args: Record<string, unknown>): Promise<WorkerReply> {
+  const id = ++rulesSeq;
+  const w = worker();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v: WorkerReply) => { if (settled) return; settled = true; clearTimeout(timer); w.off("message", onMsg); resolve(v); };
+    const timer = setTimeout(() => { dropWorker(path); finish({ notRun: true }); }, localBudgetMs());
+    const onMsg = (m: { id?: number; ok?: boolean; reply?: Record<string, unknown>; consulted?: number }) => {
+      if (m.id !== id) return;
+      if (m.ok && m.reply) finish({ ok: true, reply: m.reply, consulted: m.consulted ?? 0 });
+      else finish({ ok: false });
+    };
+    w.on("message", onMsg);
+    w.postMessage({ id, path, args });
+  });
 }
 
 export type LocalVerdict = { reply: Record<string, unknown>; unclear: boolean; fp: string | null };
-/** The rules were enabled and did not run (not found, would not load, threw, answered nonsense). In process there is no time budget to miss. */
+/** The rules were enabled and did not run (not found, would not load, threw, answered nonsense, or missed the time budget). */
 export type LocalNotRun = { notRun: true };
 /**
  * Judge `args` with the local rules. null = switched off (JEV_GUARD_LOCAL=off: the user chose server-only). `{ notRun: true }` = enabled
@@ -146,13 +209,13 @@ export async function localGuard(args: Record<string, unknown>): Promise<LocalVe
   try {
     const path = guardRulesPath();
     if (!path) return { notRun: true };
-    const { guardCommand, fp } = await loadRules(path);
-    if (!guardCommand) return { notRun: true };
-    let consulted = 0;
-    const reply = await guardCommand({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
+    const { from, fp } = loadRules(path);
+    const judged = await judgeInWorker(from, args);
+    if (!("ok" in judged) || !judged.ok) return { notRun: true };
+    const reply = judged.reply;
     const by = reply.decided_by;
     if (!["allow", "ask", "block"].includes(String(reply.decision)) || !["prefilter", "fail_closed", "fail_open"].includes(String(by))) return { notRun: true };
-    return { reply, unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block"), fp };
+    return { reply, unclear: by === "fail_open" || (judged.consulted > 0 && reply.decision !== "block"), fp };
   } catch { return { notRun: true }; }
 }
 
