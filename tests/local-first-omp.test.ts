@@ -3,9 +3,10 @@
 // The hook's omp import is replaced by a stub module and `fetch` is a counter: no network, no omp, no command executed.
 // Nothing writes the real decision log: JEV_LEDGER points into a private temp dir.
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { rulesFingerprint as nodeFingerprint, RULE_FILES as NODE_RULE_FILES } from "../hooks/jev-rules-fingerprint.mjs";
 
 mock.module("@oh-my-pi/pi-coding-agent", () => ({ isToolCallEventType: (name: string, e: { toolName?: string }) => e.toolName === name }));
 
@@ -18,8 +19,23 @@ const UNCLEAR = "curl -X POST https://example.com/api -d x";
 const realFetch = globalThis.fetch;
 const calls: { url: string; body: { params: { name: string; arguments: Record<string, unknown> } } }[] = [];
 let reply: unknown = { decision: "ask", rule: "R10-general-risk", reason: "server says ask", decided_by: "jev" };
-globalThis.fetch = (async (url: string, init: { body: string }) => {
-  calls.push({ url, body: JSON.parse(init.body) });
+// GET /health (the rules fingerprint): answered like the Worker does, with this checkout's fingerprint unless a test says otherwise.
+// healthFp = what the header carries (null: no header, an older Worker); healthMode "hang" never answers (until the request is aborted).
+const healthCalls: { url: string; method: string; auth: string | null }[] = [];
+let healthFp: string | null = null;
+let healthMode: "ok" | "hang" | "down" = "ok";
+globalThis.fetch = (async (url: string, init: { body?: string; method?: string; headers?: Record<string, string>; signal?: AbortSignal }) => {
+  if (new URL(url).pathname.endsWith("/health")) {
+    healthCalls.push({ url, method: init.method ?? "GET", auth: init.headers?.authorization ?? null });
+    if (healthMode === "down") throw new Error("connect ECONNREFUSED");
+    if (healthMode === "hang") {
+      const { promise, reject } = Promise.withResolvers<never>();
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      await promise;
+    }
+    return new Response("ok", healthFp && init.headers?.authorization ? { headers: { "x-jev-rules-fingerprint": healthFp } } : undefined);
+  }
+  calls.push({ url, body: JSON.parse(init.body as string) });
   return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(reply) }] } }));
 }) as typeof fetch;
 afterAll(() => { globalThis.fetch = realFetch; });
@@ -28,6 +44,7 @@ afterAll(() => { globalThis.fetch = realFetch; });
 // path is chosen at run time, as in the hook.
 const mod = await import("../hooks/omp/jev-guard.ts");
 const { guardCommand } = await import(RULES);
+const RULES_FP: string = nodeFingerprint(join(root, "server", "src", "kit"));
 
 function env(over: Record<string, string | undefined> = {}) {
   const base: Record<string, string | undefined> = {
@@ -36,7 +53,15 @@ function env(over: Record<string, string | undefined> = {}) {
   };
   for (const [k, v] of Object.entries(base)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
 }
-beforeEach(() => { calls.length = 0; reply = { decision: "ask", rule: "R10-general-risk", reason: "server says ask", decided_by: "jev" }; try { writeFileSync(LEDGER, ""); } catch { /* dir absent yet */ } });
+// everything a test can change about the fake server and the notices heard so far, back to the start (also between rounds inside one test)
+function beforeEachReset() {
+  calls.length = 0; healthCalls.length = 0; notes.length = 0; warns.length = 0; healthFp = RULES_FP; healthMode = "ok"; mod.resetServerFingerprint();
+}
+beforeEach(() => {
+  beforeEachReset();
+  reply = { decision: "ask", rule: "R10-general-risk", reason: "server says ask", decided_by: "jev" };
+  try { writeFileSync(LEDGER, ""); } catch { /* dir absent yet */ }
+});
 
 const notes: string[] = [];
 const warns: string[] = [];
@@ -68,7 +93,8 @@ test("rule-decided commands never reach fetch, even with a server configured; th
   ];
   const verdicts = [];
   for (const [e] of cases) verdicts.push(await h.call(e));
-  expect(calls.length).toBe(0);
+  expect(calls.length).toBe(0); // the Worker is never asked to decide any of them
+  expect(healthCalls.map((c) => [c.method, c.auth])).toEqual([["GET", "Bearer stub-token"]]); // only the allow needed the server: its rules fingerprint, once
   expect(verdicts.map((v) => (v ? "stopped" : "passed"))).toEqual(["stopped", "stopped", "passed", "stopped"]); // ask with no UI blocks
   const r = rows();
   expect(r.map((x) => [x.decision, x.decided_by, x.source, x.rule, x.server_decision_id, x.fail_reason, x.host, x.enforced])).toEqual(
@@ -94,7 +120,7 @@ test("unclear with no server: allowed, one notice per session, and the row names
   expect(await h.call(bash(UNCLEAR))).toBeUndefined();
   expect(await h.call(bash(UNCLEAR))).toBeUndefined();
   expect(notes).toEqual([mod.LOCAL_NOTICE]);
-  expect(mod.LOCAL_NOTICE).toBe("Honest Jev guard: local rules are on, but no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN). This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.");
+  expect(mod.LOCAL_NOTICE).toBe("Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.");
   await h.startSession();
   await h.call(bash(UNCLEAR));
   expect(notes.length).toBe(2); // a new session hears it once more
@@ -322,4 +348,222 @@ test("rules that ran are never reported as not run", async () => {
   expect(rows().map((x) => [x.decided_by, x.fail_reason])).toEqual([["prefilter", null], ["fail_open", "client_config"]]);
   expect(notes).toEqual([mod.LOCAL_NOTICE]); // the unclear notice only
   notes.length = 0;
+});
+
+// ── the local rules against the server's rules ───────────────────────────────────────────────────────────────────────────────
+// A local ALLOW is final only when the rules in this process are byte-identical to the Worker's (fingerprints; the Worker's from an
+// authenticated GET /health, cached in memory). Otherwise the server decides. A local ask or block stands either way.
+const KIT = join(root, "server", "src", "kit");
+const ALLOW_ALL_HEAD = 'export async function guardCommand(input, deps = {}) {\n  return { decision: "allow", decided_by: "prefilter", rule: null, reason: "", suggestion: null, score: 0, notes: [] };\n}\nasync function realGuardCommand(input, deps = {}) {';
+const allowAll = (t: string) => t.replace("export async function guardCommand(input, deps = {}) {", ALLOW_ALL_HEAD);
+const staleRelease = (t: string) => `${t}\n// the release before the last rule fix\n`;
+const kitCopy = (edit?: (text: string) => string) => {
+  const d = mkdtempSync(join(dir, "kit-"));
+  for (const f of NODE_RULE_FILES) cpSync(join(KIT, f), join(d, f));
+  const p = join(d, "guard.mjs");
+  if (edit) { const before = readFileSync(p, "utf8"); const after = edit(before); expect(after).not.toBe(before); writeFileSync(p, after); }
+  return p;
+};
+const SERVER_BLOCKS = { decision: "block", rule: "R1-secret-exposure", reason: "server says no", decided_by: "prefilter" };
+const SERVER_ALLOWS = { decision: "allow", rule: null, reason: "", suggestion: null, decided_by: "prefilter" };
+
+test("the omp copy of the fingerprint function is the Claude Code runner's and the Worker generator's, byte for byte", async () => {
+  expect([...mod.RULE_FILES]).toEqual([...NODE_RULE_FILES]);
+  expect(mod.rulesFingerprint(KIT)).toBe(RULES_FP);
+  for (const edit of [allowAll, staleRelease]) {
+    const d = dirname(kitCopy(edit));
+    expect(mod.rulesFingerprint(d)).toBe(nodeFingerprint(d));
+    expect(mod.rulesFingerprint(d)).not.toBe(RULES_FP);
+  }
+  env();
+  expect((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" }) as { fp: string }).fp).toBe(RULES_FP);
+});
+
+test("a matching fingerprint trusts the local allow; the server's fingerprint is fetched once, with the token, and then remembered", async () => {
+  env();
+  const h = hook();
+  expect(await h.call(bash("ls"))).toBeUndefined();
+  expect(await h.call(bash("ls -la"))).toBeUndefined();
+  expect(calls.length).toBe(0);
+  expect(healthCalls).toEqual([{ url: "https://worker-private.example.workers.dev/health", method: "GET", auth: "Bearer stub-token" }]);
+  expect(notes).toEqual([]);
+  expect(rows().map((x) => [x.decision, x.decided_by, x.source])).toEqual([["allow", "prefilter", "client"], ["allow", "prefilter", "client"]]);
+});
+
+test("a different fingerprint sends the local allow to the server, whose verdict wins; the user is told once per session", async () => {
+  env();
+  healthFp = "a".repeat(64);
+  reply = SERVER_BLOCKS;
+  const h = hook();
+  const v = await h.call(bash("ls"));
+  expect(v?.block).toBe(true);
+  expect(v?.reason).toContain("server says no");
+  expect(calls.length).toBe(1);
+  expect(notes).toEqual([mod.TRUST_NOTICES.mismatch]);
+  reply = SERVER_ALLOWS;
+  expect(await h.call(bash("ls"))).toBeUndefined();
+  expect(calls.length).toBe(2); // every allow still goes to the server
+  expect(notes.length).toBe(1);
+  expect(healthCalls.length).toBe(1); // the mismatch is remembered too
+  await h.startSession();
+  await h.call(bash("ls"));
+  expect(notes).toEqual([mod.TRUST_NOTICES.mismatch, mod.TRUST_NOTICES.mismatch]);
+  expect(mod.TRUST_NOTICES.mismatch).toContain("jev-update");
+});
+
+test("a mismatch keeps a local block and a local ask: the server is never asked", async () => {
+  env();
+  healthFp = "a".repeat(64);
+  const h = hook();
+  expect((await h.call(bash("cat .env")))?.block).toBe(true);
+  expect((await h.call(bash("git push --force origin main")))?.block).toBe(true); // ask with no UI blocks
+  expect(calls.length).toBe(0);
+  expect(healthCalls.length).toBe(0);
+  expect(notes).toEqual([]);
+  expect(rows().map((x) => [x.decision, x.decided_by, x.source])).toEqual([["block", "prefilter", "client"], ["ask", "prefilter", "client"]]);
+});
+
+test("an unavailable fingerprint (older Worker, network error, no answer in time) behaves as a mismatch", async () => {
+  for (const [name, setup] of [["no header", () => { healthFp = null; }], ["server down", () => { healthMode = "down"; }]] as const) {
+    env();
+    beforeEachReset();
+    setup();
+    reply = SERVER_BLOCKS;
+    notes.length = 0; calls.length = 0;
+    const v = await hook().call(bash("ls"));
+    expect(v?.block, name).toBe(true);
+    expect(calls.length, name).toBe(1);
+    expect(notes, name).toEqual([mod.TRUST_NOTICES.unverified]);
+  }
+  env();
+  beforeEachReset();
+  healthMode = "hang";
+  reply = SERVER_ALLOWS;
+  const t = Date.now();
+  expect(await hook().call(bash("ls"))).toBeUndefined();
+  expect(Date.now() - t).toBeLessThan(2000); // the fetch gave up after its own 0.8 s budget
+  expect(calls.length).toBe(1);
+  expect(notes).toEqual([mod.TRUST_NOTICES.unverified]);
+  expect(mod.TRUST_NOTICES.unverified).toContain("older Worker");
+});
+
+test("an unreachable server: the command is allowed, the row says why, and the 'no fingerprint' answer is remembered for a minute", async () => {
+  env();
+  healthMode = "down";
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: Parameters<typeof fetch>[1]) => {
+    if (new URL(url).pathname.endsWith("/health")) return (real as unknown as (u: string, i: unknown) => Promise<Response>)(url, init);
+    calls.push({ url, body: { params: { name: "", arguments: {} } } });
+    throw new Error("connect ECONNREFUSED");
+  }) as typeof fetch;
+  try {
+    const h = hook();
+    expect(await h.call(bash("ls"))).toBeUndefined();
+    expect(await h.call(bash("ls"))).toBeUndefined();
+    expect(healthCalls.length).toBe(1);
+    expect(calls.length).toBe(2);
+    expect(rows().map((x) => [x.decision, x.decided_by, x.fail_reason])).toEqual([["allow", "fail_open", "client_network"], ["allow", "fail_open", "client_network"]]);
+    expect(notes).toEqual([mod.TRUST_NOTICES.unverified]);
+  } finally { globalThis.fetch = real; }
+});
+
+test("tampered rules that allow everything are not final when the server is reachable", async () => {
+  const tampered = kitCopy(allowAll);
+  env({ JEV_GUARD_RULES: tampered });
+  const premise = await mod.localGuard({ tool: "Bash", command: "cat .env", cwd: "/home/u/p", home: "/home/u" }) as { reply: { decision: string }; fp: string };
+  expect(premise.reply.decision).toBe("allow"); // a hook that trusted these rules would let `cat .env` through
+  expect(premise.fp).not.toBe(RULES_FP);
+  reply = SERVER_BLOCKS;
+  const v = await hook().call(bash("cat .env"));
+  expect(v?.block).toBe(true);
+  expect(v?.reason).toContain("server says no");
+  expect(calls.length).toBe(1);
+  expect(notes).toEqual([mod.TRUST_NOTICES.mismatch]);
+  // the control: with their own fingerprint reported as the server's, the same rules ARE trusted, so the fingerprint is what stops them
+  mod.resetServerFingerprint();
+  healthFp = premise.fp;
+  calls.length = 0;
+  expect(await hook().call(bash("cat .env"))).toBeUndefined();
+  expect(calls.length).toBe(0);
+});
+
+test("known limit: with no server there is nothing to compare with, and tampered rules allow", async () => {
+  env({ JEV_GUARD_RULES: kitCopy(allowAll), ...NO_SERVER });
+  expect(await hook().call(bash("cat .env"))).toBeUndefined();
+  expect(notes).toEqual([]);
+  expect(rows()[0]).toMatchObject({ decision: "allow", decided_by: "prefilter", source: "client" });
+});
+
+test("a rule file rewritten on disk after the module loaded changes nothing in this process, and the fingerprint is that of what runs", async () => {
+  const p = kitCopy();
+  env({ JEV_GUARD_RULES: p, ...NO_SERVER });
+  const before = await mod.localGuard({ tool: "Bash", command: "cat .env", cwd: "/home/u/p", home: "/home/u" }) as { reply: { decision: string }; fp: string };
+  writeFileSync(p, allowAll(readFileSync(p, "utf8")));
+  const after = await mod.localGuard({ tool: "Bash", command: "cat .env", cwd: "/home/u/p", home: "/home/u" }) as { reply: { decision: string }; fp: string };
+  expect([before.reply.decision, after.reply.decision]).toEqual(["block", "block"]);
+  expect([before.fp, after.fp]).toEqual([RULES_FP, RULES_FP]);
+});
+
+test("a stale release is not trusted for allows, and its blocks stand", async () => {
+  env({ JEV_GUARD_RULES: kitCopy(staleRelease) });
+  reply = SERVER_ALLOWS;
+  expect(await hook().call(bash("ls"))).toBeUndefined();
+  expect(calls.length).toBe(1);
+  expect(notes).toEqual([mod.TRUST_NOTICES.mismatch]);
+  calls.length = 0;
+  expect((await hook().call(bash("cat .env")))?.block).toBe(true);
+  expect(calls.length).toBe(0);
+});
+
+test("rules that are not the whole release cannot be verified: the server decides, and nothing is fetched", async () => {
+  const p = join(mkdtempSync(join(dir, "r-")), "guard.mjs");
+  writeFileSync(p, "export async function guardCommand() { return { decision: 'allow', decided_by: 'prefilter', rule: null, reason: '', suggestion: null, score: 0 }; }\n");
+  env({ JEV_GUARD_RULES: p });
+  reply = SERVER_BLOCKS;
+  expect((await hook().call(bash("cat .env")))?.block).toBe(true);
+  expect(calls.length).toBe(1);
+  expect(healthCalls.length).toBe(0);
+  expect(notes).toEqual([mod.TRUST_NOTICES.unverified]);
+});
+
+test("the cached server fingerprint lives five minutes, and 'none' one minute", async () => {
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  try {
+    env();
+    const h = hook();
+    await h.call(bash("ls"));
+    offset = 4 * 60_000;
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(1);
+    offset = 5 * 60_000 + 1000;
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(2);
+    mod.resetServerFingerprint(); healthCalls.length = 0; healthFp = null; offset = 0;
+    reply = SERVER_ALLOWS;
+    await h.call(bash("ls"));
+    offset = 30_000;
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(1);
+    offset = 61_000;
+    await h.call(bash("ls"));
+    expect(healthCalls.length).toBe(2);
+  } finally { Date.now = realNow; }
+});
+
+test("the health URL is the server's own, whatever prefix and query the MCP URL has", async () => {
+  env({ JEV_MCP_URL: "https://h.example/prefix/mcp?x=1" });
+  await hook().call(bash("ls"));
+  expect(healthCalls.map((c) => c.url)).toEqual(["https://h.example/prefix/health"]);
+});
+
+test("no usable server (no token, or not https): a local allow stands and nothing is fetched or said", async () => {
+  for (const over of [{ JEV_MCP_TOKEN: undefined }, { JEV_MCP_URL: "http://worker-private.example.workers.dev/mcp" }, { JEV_MCP_URL: undefined }]) {
+    env(over);
+    expect(await hook().call(bash("ls")), JSON.stringify(over)).toBeUndefined();
+  }
+  expect(healthCalls.length).toBe(0);
+  expect(calls.length).toBe(0);
+  expect(notes).toEqual([]);
 });

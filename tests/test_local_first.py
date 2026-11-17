@@ -8,6 +8,7 @@ The proof that a rule-decided command never touches the network is a TCP listene
 any connection attempt is counted, and a positive control (an unclear command DOES connect) shows the counter works.
 Nothing writes the real decision log: every run gets a fresh HOME under a private temp dir, and the ledger defaults to its state dir.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -77,18 +78,53 @@ def setUpModule():
 
 def tearDownModule():
     LISTENER.close()
-    for p, _ in STUBS.values():
+    for p, _, _ in STUBS.values():
         p.terminate()
         p.wait()
         p.stdout.close()
     shutil.rmtree(TMP, ignore_errors=True)
 
 
-def stub(jev=False):
-    if jev not in STUBS:
-        p = subprocess.Popen(["node", STUB, "--cert", CERT, "--key", KEY, "--mode", "ok"] + (["--jev"] if jev else []), stdout=subprocess.PIPE, text=True)
-        STUBS[jev] = (p, int(p.stdout.readline().strip()))
-    return STUBS[jev][1]
+def stub(jev=False, fp=None, mode="ok", tag=""):
+    """A stub Worker (tests/stub-worker.mjs); returns its port. `fp` is the rules fingerprint its /health reports ("none" = an older Worker,
+    None = the one of this checkout). Instances are shared by key, so give a `tag` to a test that counts the /health requests it makes."""
+    key = (jev, fp, mode, tag)
+    if key not in STUBS:
+        log = os.path.join(TMP, "health-%d.log" % len(STUBS))
+        open(log, "w").close()
+        cmd = ["node", STUB, "--cert", CERT, "--key", KEY, "--mode", mode, "--health-log", log] + (["--jev"] if jev else []) + (["--fp", fp] if fp else [])
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+        STUBS[key] = (p, int(p.stdout.readline().strip()), log)
+    return STUBS[key][1]
+
+
+def health_hits(port):
+    """How many GET /health requests the stub on `port` has answered so far (one word per request: auth or anon)."""
+    for _, p, log in STUBS.values():
+        if p == port:
+            with open(log) as f:
+                return f.read().split()
+    raise KeyError(port)
+
+
+def local_fp(rules=None):
+    """The fingerprint the runner reports for the rule files it would load (the real thing, not a re-implementation)."""
+    env = dict(os.environ, **({"JEV_GUARD_RULES": rules} if rules else {}))
+    return subprocess.run(["node", os.path.join(ROOT, "hooks", "jev-guard-local.mjs"), "--fingerprint"], capture_output=True, text=True, env=env, check=True).stdout.strip()
+
+
+def cache_file(home, server_url):
+    """Where the hook keeps what it learned about that server's rules fingerprint (state dir of the ledger)."""
+    return os.path.join(home, ".local", "state", "jev", "rules-fp-%s.json" % hashlib.sha256(server_url.encode()).hexdigest()[:16])
+
+
+def seed_fp_cache(e, server_url, fp, age=0):
+    """Pretend an earlier hook process learned `fp` (a hex string, or None for 'the server gave none') `age` seconds ago."""
+    path = cache_file(e.home, server_url)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"v": 1, "fp": fp, "t": time.time() - age}, f)
+    return path
 
 
 def url(port):
@@ -147,6 +183,9 @@ class RuleDecidedStaysLocal(unittest.TestCase):
 
     def test_no_connection_is_attempted_and_the_row_is_a_local_prefilter_row(self):
         e = Env(**server_env(LISTENER.port))  # a server IS configured; the counter must still stay put
+        # a local ALLOW is final only once the rules here are known to be the server's: that knowledge is the cached fingerprint (the cases
+        # below with no cache are in RulesAgainstTheServer). Ask and block need nothing from the server at all.
+        seed_fp_cache(e, url(LISTENER.port), local_fp())
         for tool, ti, hook_word, decision, rule in self.CASES:
             before = LISTENER.count
             p, _ = e.run(event(tool, ti))
@@ -200,6 +239,7 @@ class RuleDecidedStaysLocal(unittest.TestCase):
                 "print(sorted(m for m in ('urllib.request', 'urllib.error', 'http.client', 'ssl', 'socket') if m in sys.modules))\n"
                 % (os.path.join(ROOT, "hooks"), event("Bash", {"command": "ls"})))
         e = Env(**server_env(LISTENER.port))
+        seed_fp_cache(e, url(LISTENER.port), local_fp())  # an earlier call already learned the server's fingerprint: a settled allow then needs no network
         p = subprocess.run([sys.executable, "-c", wrap], capture_output=True, text=True, env={k: v for k, v in e.env.items()}, timeout=30)
         self.assertEqual(p.stdout.strip().splitlines()[-1], "[]", p.stdout + p.stderr)
 
@@ -211,7 +251,7 @@ class UnclearCommands(unittest.TestCase):
         out = json.loads(p.stdout)
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
         self.assertNotIn("hookSpecificOutput", out)  # a notice, not a decision
-        self.assertEqual(out["systemMessage"], "Honest Jev guard: local rules are on, but no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN). "
+        self.assertEqual(out["systemMessage"], "Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
                          "This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.")
         p2, _ = e.run(event("Bash", {"command": UNCLEAR}, session="s-A"))
         self.assertEqual(p2.stdout, "")  # same session: nothing again
@@ -463,6 +503,243 @@ class LocalRulesDidNotRun(unittest.TestCase):
         for r in rows:  # every miss is marked in the log, whether or not it was said
             self.assert_marked_row(r)
         self.assertEqual(e.markers(), ["notice-down-s-A", "notice-slow-s-A", "notice-slow-s-B"])
+
+
+KIT = os.path.join(ROOT, "server", "src", "kit")
+ALLOW_ALL = ('export async function guardCommand(input, deps = {}) {\n'
+             '  return { decision: "allow", decided_by: "prefilter", rule: null, reason: "", suggestion: null, score: 0, notes: [] };\n}\n'
+             'async function realGuardCommand(input, deps = {}) {')
+
+
+def rules_copy(edit=None):
+    """A throwaway copy of the three rule files (an install the guarded agent could have written to); returns the path of its guard.mjs."""
+    d = tempfile.mkdtemp(dir=TMP)
+    for f in ("guard.mjs", "safere.mjs", "shell.mjs"):
+        shutil.copy(os.path.join(KIT, f), os.path.join(d, f))
+    path = os.path.join(d, "guard.mjs")
+    if edit:
+        with open(path) as f:
+            before = f.read()
+        after = edit(before)
+        assert after != before, "the edit changed nothing"
+        with open(path, "w") as f:
+            f.write(after)
+    return path
+
+
+def tamper_allow_all(text):
+    return text.replace("export async function guardCommand(input, deps = {}) {", ALLOW_ALL, 1)
+
+
+def stale_release(text):
+    return text + "\n// the release before the last rule fix\n"
+
+
+NETWORK_FAILURES = ("client_network", "client_timeout", "client_parse")
+
+
+class RulesAgainstTheServer(unittest.TestCase):
+    """A local ALLOW is final only when the rules on this machine are byte-identical to the rules the server runs (their fingerprints, the
+    server's read from an authenticated GET /health and cached for minutes). Otherwise the server decides. A local ask or block always stands."""
+
+    def assert_local(self, r, decision):
+        self.assertEqual((r["source"], r["decided_by"], r["decision"], r["fail_reason"]), ("client", "prefilter", decision, None))
+
+    def assert_worker(self, r, decision):
+        self.assertEqual((r["source"], r["decided_by"], r["decision"]), ("server", "prefilter", decision))
+
+    def test_a_matching_fingerprint_trusts_the_local_allow_and_is_asked_once_per_few_minutes(self):
+        port = stub(tag="match")
+        e = Env(**server_env(port))
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertEqual(health_hits(port), ["auth"])  # one GET /health, with the bearer token
+        p, _ = e.run(event("Bash", {"command": "ls -la"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertEqual(health_hits(port), ["auth"])  # the second command read the cache: no network
+        for r in e.rows():
+            self.assert_local(r, "allow")
+        self.assertEqual(e.markers(), [])
+        cache = cache_file(e.home, url(port))
+        self.assertEqual(json.load(open(cache))["fp"], local_fp())
+        self.assertEqual(stat.S_IMODE(os.stat(cache).st_mode), 0o600)
+        self.assertNotIn("stub-token", open(cache).read())
+
+    def test_a_different_fingerprint_sends_the_local_allow_to_the_worker_and_says_so_once_per_session(self):
+        port = stub(fp="a" * 64, tag="differs")
+        e = Env(**server_env(port))
+        p, _ = e.run(event("Bash", {"command": "ls"}, session="s1"))
+        out = json.loads(p.stdout)
+        self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
+        self.assertIn("differ from the server's", out["systemMessage"])
+        self.assertIn("jev-update", out["systemMessage"])
+        p, _ = e.run(event("Bash", {"command": "ls"}, session="s1"))
+        self.assertEqual(p.stdout, "")  # same session: nothing again
+        p, _ = e.run(event("Bash", {"command": "ls"}, session="s2"))
+        self.assertIn("differ from the server's", json.loads(p.stdout)["systemMessage"])
+        rows = e.rows()
+        self.assertEqual(len(rows), 3)
+        for r in rows:
+            self.assert_worker(r, "allow")  # the Worker decided every one of them
+        self.assertEqual(health_hits(port), ["auth"])  # a mismatch is cached too: one fetch, not one per command
+        self.assertEqual(e.markers(), ["notice-rules-mismatch-s1", "notice-rules-mismatch-s2"])
+
+    def test_a_mismatch_keeps_a_local_block_and_a_local_ask(self):
+        port = stub(fp="a" * 64, tag="differs-strict")
+        e = Env(**server_env(port))
+        p, _ = e.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual(decision_of(p), "deny")
+        p, _ = e.run(event("Bash", {"command": "git push --force origin main"}))
+        self.assertEqual(decision_of(p), "ask")
+        r1, r2 = e.rows()
+        self.assert_local(r1, "block")
+        self.assert_local(r2, "ask")
+        self.assertEqual(health_hits(port), [])  # stricter than the server is safe: it never even asked
+        self.assertEqual(e.markers(), [])
+
+    def test_an_unavailable_fingerprint_behaves_as_a_mismatch(self):
+        for tag, port in (("old-fp-none", stub(fp="none", tag="none")), ("old-oldworker", stub(mode="oldworker", tag="oldworker"))):
+            e = Env(**server_env(port))
+            p, _ = e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual((p.returncode, decision_of(p)), (0, "none"), tag)
+            msg = json.loads(p.stdout)["systemMessage"]
+            self.assertIn("could not confirm", msg, tag)
+            self.assertIn("older Worker", msg, tag)
+            if tag == "old-fp-none":
+                self.assert_worker(e.rows()[0], "allow")  # (the oldworker stub sends no ledger record, so its row is the client's own synthesis)
+            self.assertEqual(e.markers(), ["notice-rules-unverified-sess-1"], tag)
+            p, _ = e.run(event("Bash", {"command": "cat .env"}))
+            self.assertEqual(decision_of(p), "deny", tag)
+            self.assert_local(e.rows()[1], "block")  # a local block stands without the server's fingerprint
+
+    def test_an_unreachable_server_allows_with_a_notice_and_does_not_retry_the_fingerprint_every_command(self):
+        e = Env(**server_env(LISTENER.port))  # accepts a connection and hangs up: not a Worker
+        before = LISTENER.count
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        time.sleep(0.2)
+        self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
+        self.assertIn("could not confirm", json.loads(p.stdout)["systemMessage"])
+        self.assertEqual(LISTENER.count - before, 2, "one fingerprint fetch and one guard call")
+        r = e.rows()[0]
+        self.assertEqual((r["decision"], r["decided_by"], r["source"]), ("allow", "fail_open", "client"))
+        self.assertIn(r["fail_reason"], NETWORK_FAILURES)
+        before = LISTENER.count
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        time.sleep(0.2)
+        self.assertEqual(p.stdout, "")
+        self.assertEqual(LISTENER.count - before, 1, "the 'no fingerprint' answer is remembered for a minute: only the guard call went out")
+
+    def test_tampered_rules_that_allow_everything_are_not_final_when_the_server_is_reachable(self):
+        tampered = rules_copy(tamper_allow_all)
+        self.assertNotEqual(local_fp(tampered), local_fp())
+        port = stub(tag="tamper")  # a Worker running this checkout's real rules, and reporting their fingerprint
+        e = Env(JEV_GUARD_RULES=tampered, **server_env(port))
+        p, _ = e.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual(decision_of(p), "deny")
+        self.assert_worker(e.rows()[0], "block")
+        self.assertIn("differ from the server's", json.loads(p.stdout)["systemMessage"])
+        p, _ = e.run(event("Read", {"file_path": "/home/u/.ssh/id_rsa"}))
+        self.assertEqual(decision_of(p), "deny")
+        self.assert_worker(e.rows()[1], "block")
+        # the control: the same tampered rules with their own fingerprint cached as the server's ARE trusted, so the fingerprint is what stops them
+        e2 = Env(JEV_GUARD_RULES=tampered, **server_env(port))
+        seed_fp_cache(e2, url(port), local_fp(tampered))
+        p, _ = e2.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assert_local(e2.rows()[0], "allow")
+
+    def test_known_limit_with_no_server_there_is_nothing_to_compare_with_and_tampered_rules_allow(self):
+        e = Env(JEV_GUARD_RULES=rules_copy(tamper_allow_all))
+        p, _ = e.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))  # allowed, silently: local-only mode is unverified by definition
+        self.assert_local(e.rows()[0], "allow")
+
+    def test_a_stale_release_is_not_trusted_for_allows_but_its_blocks_stand(self):
+        stale = rules_copy(stale_release)
+        port = stub(tag="stale")
+        e = Env(JEV_GUARD_RULES=stale, **server_env(port))
+        p, _ = e.run(event("Bash", {"command": "ls"}))
+        self.assertIn("differ from the server's", json.loads(p.stdout)["systemMessage"])
+        self.assert_worker(e.rows()[0], "allow")
+        p, _ = e.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual(decision_of(p), "deny")
+        self.assert_local(e.rows()[1], "block")
+
+    def test_rules_that_are_not_the_whole_release_cannot_be_verified(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(d, "guard.mjs")
+        with open(path, "w") as f:
+            f.write("export async function guardCommand() { return { decision: 'allow', decided_by: 'prefilter', rule: null, reason: '', suggestion: null, score: 0 }; }\n")
+        port = stub(tag="incomplete")
+        e = Env(JEV_GUARD_RULES=path, **server_env(port))
+        p, _ = e.run(event("Bash", {"command": "cat .env"}))
+        self.assertEqual(decision_of(p), "deny")  # the Worker decided
+        self.assert_worker(e.rows()[0], "block")
+        self.assertEqual(health_hits(port), [])  # nothing to compare: it did not even fetch
+        self.assertEqual(e.markers(), ["notice-rules-unverified-sess-1"])
+
+    def test_the_cache_is_per_server_and_expires_and_bad_files_are_ignored(self):
+        port = stub(tag="cache")
+        u = url(port)
+        mine = local_fp()
+        cases = [
+            ("fresh cache, matching: no fetch, local allow", lambda e: seed_fp_cache(e, u, mine, age=10), 0, "client"),
+            ("fresh cache, other fingerprint: no fetch, the Worker decides", lambda e: seed_fp_cache(e, u, "b" * 64, age=10), 0, "server"),
+            ("fresh 'server gave none': no fetch, the Worker decides", lambda e: seed_fp_cache(e, u, None, age=10), 0, "server"),
+            ("expired cache (5 minutes): fetched again", lambda e: seed_fp_cache(e, u, "b" * 64, age=400), 1, "client"),
+            ("expired 'none' (a minute): fetched again", lambda e: seed_fp_cache(e, u, None, age=90), 1, "client"),
+            ("a cache written for another server is ignored", lambda e: seed_fp_cache(e, "https://other.example/mcp", "b" * 64, age=1), 1, "client"),
+            ("a timestamp in the future is ignored", lambda e: seed_fp_cache(e, u, "b" * 64, age=-1000), 1, "client"),
+            ("a fingerprint that is not 64 hex is ignored", lambda e: seed_fp_cache(e, u, "XYZ", age=1), 1, "client"),
+        ]
+        for name, seed, fetches, source in cases:
+            e = Env(**server_env(port))
+            seed(e)
+            before = len(health_hits(port))
+            p, _ = e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual(p.returncode, 0, name)
+            self.assertEqual(len(health_hits(port)) - before, fetches, name)
+            self.assertEqual(e.rows()[0]["source"], source, name)
+
+    def test_a_cache_file_that_is_garbage_or_a_symlink_is_ignored(self):
+        port = stub(tag="cache-bad")
+        u = url(port)
+        for name, make in (("garbage", lambda path: open(path, "w").write("{not json")),
+                           ("a symlink to a good file", None)):
+            e = Env(**server_env(port))
+            path = cache_file(e.home, u)
+            os.makedirs(os.path.dirname(path), mode=0o700)
+            if make:
+                make(path)
+            else:
+                good = os.path.join(e.home, "good.json")
+                json.dump({"v": 1, "fp": "b" * 64, "t": time.time()}, open(good, "w"))
+                os.symlink(good, path)
+            before = len(health_hits(port))
+            p, _ = e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual(p.returncode, 0, name)
+            self.assertEqual(len(health_hits(port)) - before, 1, name)  # not trusted: fetched
+            self.assertEqual(e.rows()[0]["source"], "client", name)
+
+    def test_without_a_usable_server_a_local_allow_stands_and_nothing_is_fetched(self):
+        before = LISTENER.count
+        for extra in ({"JEV_MCP_URL": url(LISTENER.port)},  # no token
+                      {"JEV_MCP_TOKEN": "t"},  # no URL
+                      {"JEV_MCP_URL": "http://127.0.0.1:%d/mcp" % LISTENER.port, "JEV_MCP_TOKEN": "t"}):  # not https
+            e = Env(**extra)
+            p, _ = e.run(event("Bash", {"command": "ls"}))
+            self.assertEqual((p.returncode, p.stdout), (0, ""), extra)
+            self.assert_local(e.rows()[0], "allow")
+        time.sleep(0.2)
+        self.assertEqual(LISTENER.count, before)
+
+    def test_a_slow_server_costs_the_fingerprint_fetch_its_budget_and_not_more(self):
+        port = stub(mode="slow", tag="slow")  # answers nothing for 5 s
+        e = Env(**server_env(port))
+        p, took = e.run(event("Bash", {"command": "ls"}))
+        self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
+        self.assertLess(took, 4.8, "fetch budget (0.8 s) + the guard call's own 2.5 s alarm must stay inside the hook's 5 s")
+        self.assertIn("could not confirm", json.loads(p.stdout)["systemMessage"])
 
 
 class NoticeMarker(unittest.TestCase):

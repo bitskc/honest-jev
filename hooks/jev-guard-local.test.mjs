@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { judgeStdin } from "./jev-guard-local.mjs";
+import { rulesFingerprint } from "./jev-rules-fingerprint.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -124,6 +125,7 @@ test("failure modes exit non-zero with nothing on stdout", async () => {
 });
 
 // ── where the rules are found ────────────────────────────────────────────────────────────────────────────────────────
+const FPMOD = join(here, "jev-rules-fingerprint.mjs"); // the runner imports it from its own directory, so every copied runner needs it beside it
 function lay(kitDir) {
   mkdirSync(kitDir, { recursive: true });
   for (const f of THREE) cpSync(join(KIT, f), join(kitDir, f));
@@ -134,6 +136,7 @@ test("installed layout (share/hooks + share/jev-policy/server/src), three kit fi
   const share = join(scratch, "share");
   mkdirSync(join(share, "hooks"), { recursive: true });
   cpSync(RUNNER, join(share, "hooks", "jev-guard-local.mjs"));
+  cpSync(FPMOD, join(share, "hooks", "jev-rules-fingerprint.mjs"));
   lay(join(share, "jev-policy", "server", "src", "kit"));
   const r = await decide(join(share, "hooks", "jev-guard-local.mjs"), { PATH: process.env.PATH, HOME: join(scratch, "nohome") });
   assert.equal(r.code, 0, r.stderr);
@@ -147,6 +150,7 @@ test("plugin / repo layout (hooks/ beside server/src/kit): the plugin root needs
   const plugin = join(scratch, "plugin");
   mkdirSync(join(plugin, "hooks"), { recursive: true });
   cpSync(RUNNER, join(plugin, "hooks", "jev-guard-local.mjs"));
+  cpSync(FPMOD, join(plugin, "hooks", "jev-rules-fingerprint.mjs"));
   lay(join(plugin, "server", "src", "kit"));
   const r = await decide(join(plugin, "hooks", "jev-guard-local.mjs"), { PATH: process.env.PATH, HOME: join(scratch, "nohome") });
   assert.equal(r.code, 0, r.stderr);
@@ -161,6 +165,7 @@ test("a hook runs the rules of its own release: hook-relative beats the legacy i
   const lone = join(scratch, "lone", "hooks");
   mkdirSync(lone, { recursive: true });
   cpSync(RUNNER, join(lone, "jev-guard-local.mjs"));
+  cpSync(FPMOD, join(lone, "jev-rules-fingerprint.mjs"));
   let r = await decide(join(lone, "jev-guard-local.mjs"), { PATH: process.env.PATH, HOME: home });
   assert.equal(reply(r).rule, "LEGACY", "nothing beside the hook: the pre-rename install dir");
   lay(join(scratch, "lone", "server", "src", "kit"));
@@ -212,4 +217,53 @@ test("a symlinked cache directory is not used", async () => {
   const r = await decide(RUNNER, cleanEnv({ XDG_CACHE_HOME: cache }));
   assert.equal(r.code, 0, r.stderr);
   assert.deepEqual(readdirSync(target), []);
+});
+
+// ── the rules fingerprint ───────────────────────────────────────────────────────────────────────────────────────────────
+test("--fingerprint prints the fingerprint of the rule files that would be loaded, and every reply carries the same value as rules_fp", async () => {
+  const expected = rulesFingerprint(KIT);
+  assert.match(expected, /^[0-9a-f]{64}$/);
+  const f = await run(["--fingerprint"]);
+  assert.equal(f.code, 0, f.stderr);
+  assert.equal(f.stdout.trim(), expected);
+  const r = await decide(RUNNER, cleanEnv());
+  assert.equal(reply(r).rules_fp, expected);
+  const allow = await run([], { input: JSON.stringify({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" }) });
+  assert.deepEqual([reply(allow).decision, reply(allow).rules_fp], ["allow", expected]);
+});
+
+test("the fingerprint is taken from the files that are loaded: an edited copy has another one, whatever it is called", async () => {
+  const kit = join(scratch, "tampered");
+  lay(kit);
+  const before = (await run(["--fingerprint"], { env: cleanEnv({ JEV_GUARD_RULES: join(kit, "guard.mjs") }) })).stdout.trim();
+  assert.equal(before, rulesFingerprint(KIT));
+  writeFileSync(join(kit, "guard.mjs"), `${readFileSync(join(kit, "guard.mjs"), "utf8")}\n// edited\n`);
+  const env = cleanEnv({ JEV_GUARD_RULES: join(kit, "guard.mjs") });
+  const after = (await run(["--fingerprint"], { env })).stdout.trim();
+  assert.notEqual(after, before);
+  assert.equal(reply(await decide(RUNNER, env)).rules_fp, after);
+  // a sibling edited instead of guard.mjs counts as well: the fingerprint covers every file the rules load
+  const kit2 = join(scratch, "tampered2");
+  lay(kit2);
+  writeFileSync(join(kit2, "shell.mjs"), `${readFileSync(join(kit2, "shell.mjs"), "utf8")}\n// edited\n`);
+  assert.notEqual((await run(["--fingerprint"], { env: cleanEnv({ JEV_GUARD_RULES: join(kit2, "guard.mjs") }) })).stdout.trim(), before);
+});
+
+test("rule files that are not the whole release: rules_fp is null in a reply, and --fingerprint exits non-zero with nothing on stdout", async () => {
+  const lone = join(scratch, "lone-guard");
+  mkdirSync(lone, { recursive: true });
+  writeFileSync(join(lone, "guard.mjs"), 'export async function guardCommand() { return { decision: "allow", decided_by: "prefilter", rule: null, reason: "" }; }\n');
+  const env = cleanEnv({ JEV_GUARD_RULES: join(lone, "guard.mjs") });
+  const r = await run([], { env, input: JSON.stringify({ tool: "Bash", command: "ls" }) });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(reply(r).rules_fp, null);
+  const f = await run(["--fingerprint"], { env });
+  assert.notEqual(f.code, 0);
+  assert.equal(f.stdout, "");
+});
+
+test("a runner whose rules are not found has no fingerprint either", async () => {
+  const f = await run(["--fingerprint"], { env: cleanEnv({ JEV_GUARD_RULES: "/nonexistent/guard.mjs" }) });
+  assert.notEqual(f.code, 0);
+  assert.equal(f.stdout, "");
 });

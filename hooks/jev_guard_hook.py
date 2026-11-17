@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """PreToolUse hook for Claude Code (and Claude-Code-compatible agents).
 
-Reads the hook JSON on stdin. The deterministic rules run LOCALLY first (hooks/jev-guard-local.mjs, one node process): a
-command the rules settle (an allow, ask or block by a rule) is answered from the local result and never touches the network.
-Only a command the rules cannot settle without a model ("unclear") goes on to the jev-mcp server's `kit_guard_command`
-tool (MCP tools/call over streamable HTTP), and only if a server is configured. Prints Claude Code's PreToolUse decision JSON:
+Reads the hook JSON on stdin. The deterministic rules run LOCALLY first (hooks/jev-guard-local.mjs, one node process). A command the
+rules block or ask on is answered from the local result and never touches the network (being stricter than the server is safe).
+A command the rules ALLOW is trusted only when the rules on this machine are the rules the server runs: the rules fingerprint
+(hooks/jev-rules-fingerprint.mjs) is compared with the one the server reports on GET /health, cached for a few minutes in the state
+dir. When they differ, or the server's cannot be read (an older Worker, no network), the local allow is not final: the command goes to
+the server like any unclear one, and a notice says so once per session. A command the rules cannot settle without a model ("unclear")
+goes on to the jev-mcp server's `kit_guard_command` tool (MCP tools/call over streamable HTTP), and only if a server is configured.
+With no server there is nothing to compare against: the local rules decide alone and are unverified. Prints Claude Code's PreToolUse
+decision JSON:
 
     allow -> no output, exit 0 (the normal permission flow continues)
     ask   -> {"hookSpecificOutput": {"permissionDecision": "ask",  ...}}
@@ -13,7 +18,8 @@ tool (MCP tools/call over streamable HTTP), and only if a server is configured. 
 Fails OPEN: any error, timeout (default 2 s hard cap), missing token, non-200, or malformed reply
 exits 0 with no output. Set JEV_GUARD_DEBUG=1 to see why on stderr. If the local rules cannot run (no node, the rules
 not found, a crash, the time budget), the call falls through to the server path exactly as before.
-The first unclear command allowed because no server is configured prints a one-line `systemMessage` once per session.
+The first unclear command allowed because no server is configured prints a one-line `systemMessage` once per session. The same hook
+file can be edited by anything running as the same user, so none of this is a sandbox (README: "What it protects against").
 
 Env:
   JEV_MCP_TOKEN        required. Bearer token; never hardcoded, never logged.
@@ -234,7 +240,7 @@ class Outcome(object):
 
 
 LOCAL_SETTLED = ("prefilter", "fail_closed")
-LOCAL_NOTICE = ("Honest Jev guard: local rules are on, but no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN). "
+LOCAL_NOTICE = ("Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
                 "This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.")
 
 
@@ -310,6 +316,138 @@ def first_unclear_in_session():
 LOCAL_DOWN_NOTICE = ("Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
                      "so commands are not being checked. Run install.sh --doctor for details.")
 
+# The local rules' fingerprint against the server's (hooks/jev-rules-fingerprint.mjs; the server reports its own on GET /health, see
+# server/src/health.mjs). Only a local ALLOW needs it: a local ask or block is honoured whatever the server's rules are.
+FP_RE = re.compile(r"[0-9a-f]{64}")
+FP_TTL = 300           # seconds a fingerprint read from the server is trusted (the hot path reads one tiny file and makes no network call)
+FP_TTL_DOWN = 60       # seconds the fact "the server gave none" is remembered, so an offline or older server costs one fetch a minute, not one per command
+FP_FETCH_BUDGET = 0.8  # seconds for the whole GET /health; with the local runner's 1.5 and the server call's 2.5 the path stays under the hook's 5
+FP_HEADER = "x-jev-rules-fingerprint"
+TRUST_NOTICES = {
+    "mismatch": ("Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the "
+                 "server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which."),
+    "unverified": ("Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older "
+                   "Worker that does not report its rules), so commands the local rules would allow are being sent to the server to decide. "
+                   "Run install.sh --doctor for details."),
+}
+
+
+def server_configured():
+    """A server the hook can actually call: an https URL and a token in the PROCESS environment (what call_guard needs)."""
+    return URL.startswith("https://") and bool(os.environ.get("JEV_MCP_TOKEN", "").strip())
+
+
+def _fp_cache_path():
+    """(state dir, cache file) for the current server URL, or None when there is no ledger module to give the private state dir."""
+    if _ledger is None:
+        return None
+    import hashlib
+    d = _ledger.state_dir()
+    return d, os.path.join(d, "rules-fp-%s.json" % hashlib.sha256(URL.encode()).hexdigest()[:16])
+
+
+def _fp_cache_read():
+    """A fresh cached answer as a 1-tuple (fingerprint or None), or None when there is none. Only a regular file we own is read."""
+    try:
+        where = _fp_cache_path()
+        if where is None:
+            return None
+        import stat as _s
+        fd = os.open(where[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            st = os.fstat(fd)
+            if not _s.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_size > 1024:
+                return None
+            data = json.loads(os.read(fd, 1024).decode("utf-8", "replace"))
+        finally:
+            os.close(fd)
+        fp, t = data.get("fp"), data.get("t")
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not (fp is None or (isinstance(fp, str) and FP_RE.fullmatch(fp))):
+            return None
+        age = time.time() - t
+        return (fp,) if 0 <= age <= (FP_TTL if fp else FP_TTL_DOWN) else None
+    except Exception:
+        return None
+
+
+def _fp_cache_write(fp):
+    """Remember the server's answer (atomic: a private temp file renamed into place, 0600, in the ledger's own state dir). Never raises."""
+    try:
+        where = _fp_cache_path()
+        if where is None or not _ledger._owned_dir(where[0]):
+            return
+        tmp = "%s.%d.tmp" % (where[1], os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, json.dumps({"v": 1, "fp": fp, "t": time.time()}).encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, where[1])
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+
+
+def fetch_server_fp():
+    """The fingerprint the server reports (GET <server>/health with the bearer token), or None: an older Worker that sends no header, a
+    refused token, no network, a redirect, a slow answer. Never raises; bounded by FP_FETCH_BUDGET."""
+    try:
+        from urllib.parse import urlsplit
+        request, _error, opener = _http()
+        u = urlsplit(URL)
+        path = u.path[:-4] if u.path.endswith("/mcp") else u.path
+        req = request.Request("%s://%s%s/health" % (u.scheme, u.netloc, path.rstrip("/")), method="GET", headers={
+            "authorization": "Bearer " + os.environ.get("JEV_MCP_TOKEN", "").strip(),
+            "user-agent": "jev-guard-hook/1.0",  # Cloudflare 403s the default Python-urllib UA
+        })
+        signal.signal(signal.SIGALRM, _alarm)
+        signal.setitimer(signal.ITIMER_REAL, FP_FETCH_BUDGET)
+        with opener.open(req, timeout=FP_FETCH_BUDGET - 0.1) as resp:
+            got = (resp.headers.get(FP_HEADER) or "").strip().lower()
+        return got if FP_RE.fullmatch(got) else None
+    except Exception:
+        return None
+    finally:
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        except Exception:
+            pass
+
+
+def server_rules_fp():
+    """The server's rules fingerprint: the cached one while it is fresh, else one GET /health (and the answer, even 'none', is cached)."""
+    cached = _fp_cache_read()
+    if cached is not None:
+        return cached[0]
+    fp = fetch_server_fp()
+    _fp_cache_write(fp)
+    return fp
+
+
+def rules_trust(local):
+    """Whether a local allow may stand: "match" (the rules here are byte-identical to the server's), "mismatch" (both known, different) or
+    "unverified" (this machine's rules are not the whole release, or the server's fingerprint is unavailable). Anything but "match" means the
+    server decides."""
+    mine = local.get("rules_fp")
+    if not (isinstance(mine, str) and FP_RE.fullmatch(mine)):
+        return "unverified"
+    theirs = server_rules_fp()
+    if theirs is None:
+        return "unverified"
+    return "match" if theirs == mine else "mismatch"
+
+
+def trust_notice(trust):
+    """The one-time-per-session notice for a local allow that went to the server because its rules could not be matched to the server's."""
+    try:
+        if trust in TRUST_NOTICES and _ledger is not None and _ledger.mark_once("notice-rules-%s-%s" % (trust, _session_key())):
+            return TRUST_NOTICES[trust]
+    except Exception:
+        pass
+    return None
+
 
 def local_down_notice(why):
     """Whether to say, now, that the local rules could not run (once per session, its own marker). A hard failure (no runtime, no runner
@@ -337,9 +475,24 @@ def guard_outcome(args):
             args[key] = args[key][:cap]
     local = run_local(args)
     unclear = local_unclear(local)
+    trust = None  # set only when a local ALLOW needs the server's rules fingerprint before it can stand
     if local is not None and not unclear and local.get("decided_by") in LOCAL_SETTLED:
-        note("settled by the local rules; no server call")
-        return reply_outcome(local)
+        # A local ask or block stands whatever the server's rules are (stricter than the server is safe). A local allow stands when there is
+        # no server to ask, or when the rules on this machine are the ones the server runs.
+        if local.get("decision") == "allow" and server_configured():
+            trust = rules_trust(local)
+        if trust is None or trust == "match":
+            note("settled by the local rules; no server call")
+            return reply_outcome(local)
+        note("local allow not final: the local rules %s the server's; asking the server" % ("differ from" if trust == "mismatch" else "could not be verified against"))
+    out = server_outcome(args, local, unclear)
+    if trust is not None and out.notice is None:
+        out.notice = trust_notice(trust)
+    return out
+
+
+def server_outcome(args, local, unclear):
+    """The server half of the guard path: send the command to kit_guard_command, and say what stands when it cannot be consulted."""
     # What the ledger row of a command that goes on without a decision can still say: which rule flagged it (a rule id, never text).
     hint = {"rule": local.get("rule")} if unclear and isinstance(local.get("rule"), str) else None
     # `unclear` can hold while the local reply is already an ask (a rule asked on one reading, the model question came from the other):

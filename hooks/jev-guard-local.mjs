@@ -2,10 +2,12 @@
 // Local rules runner for the Claude Code guard hook (hooks/jev_guard_hook.py).
 //
 //   stdin : the already-shaped guard args as one JSON object, the same object the hook would send to kit_guard_command
-//   stdout: guardCommand's reply as one JSON object (decision, rule, reason, decided_by, ...) plus `unclear` (boolean); nothing else
+//   stdout: guardCommand's reply as one JSON object (decision, rule, reason, decided_by, ...) plus `unclear` (boolean) and `rules_fp`
+//           (the rules fingerprint, see jev-rules-fingerprint.mjs; null when the rule files are not the whole release); nothing else
 //   exit  : 0 with a reply; non-zero with empty stdout when the rules cannot be found, loaded or run (the hook then
 //           falls through to the server path unchanged)
 //   --check: load the rules, judge one harmless probe, print the path they were loaded from (install.sh --doctor)
+//   --fingerprint: print the fingerprint of the rule files that would be loaded (install.sh --doctor); exit 7 when they are incomplete
 //
 // The rules are the deterministic prefilter in server/src/kit (guard.mjs, shell.mjs, safere.mjs): no npm package, nothing
 // but node:path. This file imports no other module of the kit and never calls a model. `unclear: true` means the rules
@@ -21,6 +23,7 @@ import * as nodeModule from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { rulesFingerprint } from "./jev-rules-fingerprint.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -73,6 +76,15 @@ async function main() {
   const env = process.env;
   const path = rulesCandidates(env).find((p) => existsSync(p));
   if (!path) { process.stderr.write("jev-guard-local: rules not found\n"); return 3; }
+  // The fingerprint of the rule files about to be loaded, taken first. null when they are not the whole release (a test's single stub
+  // module): the hook then cannot say the rules match the server's.
+  let fp = null;
+  try { fp = rulesFingerprint(dirname(path)); } catch { /* not the whole release */ }
+  if (process.argv[2] === "--fingerprint") {
+    if (fp === null) { process.stderr.write("jev-guard-local: the rule files are incomplete\n"); return 7; }
+    process.stdout.write(`${fp}\n`);
+    return 0;
+  }
   enableCache(env);
   const { guardCommand } = await import(pathToFileURL(path).href);
   if (typeof guardCommand !== "function") { process.stderr.write("jev-guard-local: rules module has no guardCommand\n"); return 4; }
@@ -84,7 +96,7 @@ async function main() {
   }
   let reply;
   try { reply = await judgeStdin(readFileSync(0, "utf8"), guardCommand); } catch { process.stderr.write("jev-guard-local: input is not a JSON object\n"); return 6; }
-  process.stdout.write(`${JSON.stringify(reply)}\n`);
+  process.stdout.write(`${JSON.stringify({ ...reply, rules_fp: fp })}\n`);
   return 0;
 }
 
