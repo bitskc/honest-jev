@@ -12,9 +12,9 @@ const require = createRequire(import.meta.url);
 const stopGate = require("./jev-stop-verify.js");
 const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
 
-const ISOLATED = ["CLAUDE_CONFIG_DIR", "XDG_STATE_HOME", "JEV_STOP_GATE", "JEV_MCP_URL", "JEV_MCP_TOKEN", "JEV_GUARD_TIMEOUT", "JEV_GUARD_DEBUG", "JEV_HONEST_DEFAULT_LEVEL"];
+const ISOLATED = ["HOME", "CLAUDE_CONFIG_DIR", "XDG_STATE_HOME", "JEV_STOP_GATE", "JEV_MCP_URL", "JEV_MCP_TOKEN", "JEV_GUARD_TIMEOUT", "JEV_GUARD_DEBUG", "JEV_HONEST_DEFAULT_LEVEL"];
 let saved;
-test.beforeEach(() => { saved = Object.fromEntries(ISOLATED.map((k) => [k, process.env[k]])); process.env.XDG_STATE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "state-")); process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cfgdir-")); delete process.env.JEV_GUARD_DEBUG; });
+test.beforeEach(() => { saved = Object.fromEntries(ISOLATED.map((k) => [k, process.env[k]])); process.env.XDG_STATE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "state-")); process.env.HOME = process.env.XDG_STATE_HOME; process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "cfgdir-")); delete process.env.JEV_GUARD_DEBUG; });
 test.afterEach(() => { for (const k of ISOLATED) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
 const setEnv = (gate) => { process.env.JEV_MCP_URL = "https://stub.invalid/mcp"; process.env.JEV_MCP_TOKEN = "super-secret-token-value"; process.env.JEV_GUARD_TIMEOUT = "3"; process.env.JEV_STOP_GATE = gate; };
 const U = (t) => ({ type: "user", message: { role: "user", content: t } });

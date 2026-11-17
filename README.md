@@ -219,7 +219,7 @@ mkdir -p ~/.config/jev && umask 077 && cat > ~/.config/jev/env <<'ENV'
 JEV_MCP_URL=https://<your-worker>.workers.dev/mcp
 JEV_MCP_TOKEN=<the MCP_BEARER_TOKEN you set on the worker>
 ENV
-set -a; . ~/.config/jev/env; set +a      # in ~/.bashrc or the launcher that starts the agent
+set -a; . ~/.config/jev/env; set +a      # only for MCP ${JEV_MCP_URL} expansion; the guard hooks and jev-call read this file themselves
 ```
 
 **omp**: `~/.omp/agent/mcp.json` (user) or `.omp/mcp.json` (project); `config/omp-mcp.json` is the file. omp expands `${VAR}` at discovery:

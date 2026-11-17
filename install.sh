@@ -50,11 +50,8 @@ fi
 # server/build-vendor.sh; registerTool count at that commit) + 3 fixed kit_* tools (KIT_TOOL_NAMES in server/src/kit/tools.mjs) + kit_decide (server/src/decide/tool.mjs).
 EXPECTED_TOOLS=16
 if [ "$doctor" = 1 ]; then
-  # The hooks read these two values from the process environment only. Remember what the PROCESS had (url_env / tok_env) before the env file
-  # fills the gaps below, and which values came only from the file, so the doctor says so and describes the guard as the hooks see it.
-  url_env=0; tok_env=0; url_file_only=0; tok_file_only=0
-  if [ -n "${JEV_MCP_URL:-}" ]; then url_env=1; fi
-  if [ -n "${JEV_MCP_TOKEN:-}" ]; then tok_env=1; fi
+  # The hooks and jev-call read this same file, so a file-only https URL and token is a server they can call.
+  url_file_only=0; tok_file_only=0
   if [ -z "${JEV_MCP_URL:-}" ]; then JEV_MCP_URL=$(env_get "$envfile" JEV_MCP_URL || true); if [ -n "$JEV_MCP_URL" ]; then url_file_only=1; fi; fi
   if [ -z "${JEV_MCP_TOKEN:-}" ]; then JEV_MCP_TOKEN=$(env_get "$envfile" JEV_MCP_TOKEN || true); if [ -n "$JEV_MCP_TOKEN" ]; then tok_file_only=1; fi; fi
   url_https=0
@@ -77,13 +74,11 @@ if [ "$doctor" = 1 ]; then
   elif [ "$tok_file_only" = 1 ]; then ok "JEV_MCP_TOKEN set (from $envfile only)"
   else ok "JEV_MCP_TOKEN set"; fi
   if [ "$url_file_only" = 1 ] || [ "$tok_file_only" = 1 ]; then
-    echo "note the hooks read JEV_MCP_URL / JEV_MCP_TOKEN from the agent's environment, not from this file; start the agent from a shell that loads it (set -a; . $envfile; set +a) or the guard will not reach the server"
+    echo "note the guard hooks and jev-call read $envfile themselves. An MCP entry that uses \${JEV_MCP_URL} / \${JEV_MCP_TOKEN} still needs those variables in the agent process"
   fi
-  # what the guard is doing right now depends on BOTH: whether the local rules load, and whether the HOOKS see a server. They see the process
-  # environment only: a value that came from the env file (or an URL that is not https) is no server to them, so this is decided from
-  # the environment as it was BEFORE the file filled the gaps (url_env / tok_env), not from the values the checks below use.
+  # what the guard is doing: local rules, plus a server when both values are present (process or this file) and the URL is https.
   hooks_see_server=0
-  if [ "$url_env" = 1 ] && [ "$tok_env" = 1 ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi
+  if [ -n "${JEV_MCP_URL:-}" ] && [ -n "${JEV_MCP_TOKEN:-}" ] && [ "$url_https" = 1 ]; then hooks_see_server=1; fi
   if [ "$hooks_see_server" = 1 ]; then
     [ "$rules_ok" = 1 ] || echo "note the local rules do not load; every command is sent to the server"
   elif [ "$rules_ok" = 1 ]; then echo "note guard runs on local rules only, not checked against any server; unclear commands are allowed without a model check"

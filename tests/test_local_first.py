@@ -296,6 +296,26 @@ class RuleDecidedStaysLocal(unittest.TestCase):
 
 
 class UnclearCommands(unittest.TestCase):
+    def test_env_file_is_the_server_when_the_process_has_neither_value(self):
+        e = Env()
+        d = os.path.join(e.home, ".config", "jev")
+        os.makedirs(d)
+        bomb = os.path.join(e.home, "bombed")
+        with open(os.path.join(d, "env"), "w") as f:
+            f.write("JEV_MCP_URL='https://127.0.0.1:%d/mcp'\nJEV_MCP_TOKEN=$(touch %s)\n" % (LISTENER.port, bomb))
+        p, _ = e.run(event("Bash", {"command": UNCLEAR}))
+        self.assertFalse(os.path.exists(bomb))
+        self.assertEqual(decision_of(p), "none")
+        self.assertIn("no server is configured", message_of(p) or "")
+        with open(os.path.join(d, "env"), "w") as f:
+            f.write("JEV_MCP_URL='https://127.0.0.1:%d/mcp'\nJEV_MCP_TOKEN='stub-token'\n" % LISTENER.port)
+        before = LISTENER.count
+        e.run(event("Bash", {"command": UNCLEAR}, session="s-file"))
+        self.assertGreater(LISTENER.count, before)
+        before = LISTENER.count
+        e.run(event("Bash", {"command": UNCLEAR}, session="s-env"), JEV_MCP_URL="https://127.0.0.1:1/mcp")
+        self.assertEqual(LISTENER.count, before)  # the process URL wins, and nothing is listening there
+
     def test_unclear_with_no_server_allows_and_says_so_once_per_session(self):
         e = Env()
         p, _ = e.run(event("Bash", {"command": UNCLEAR}, session="s-A"))

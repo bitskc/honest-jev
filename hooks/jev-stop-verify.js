@@ -65,6 +65,29 @@ const path = require('path');
 const rt = require('./honest/jev-honest-runtime.js');
 const { redact } = require('./jev-redact.js');
 const crypto = require('crypto');
+
+// Quoted KEY='value' from ~/.config/jev/env, or ''. Never executes the file. Same rule as install.sh env_get.
+// A value already in the process environment wins.
+function envFileValue(key) {
+  const home = process.env.HOME || '';
+  if (!home || !path.isAbsolute(home)) return '';
+  try {
+    const p = path.join(home, '.config', 'jev', 'env');
+    const st = fs.statSync(p);
+    if (!st.isFile() || st.size > 65536) return '';
+    let found = '';
+    for (const raw of fs.readFileSync(p, 'utf8').split('\n')) {
+      const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+      if (line.startsWith(key + '=')) found = line.slice(key.length + 1);
+    }
+    if (found.length < 2 || found[0] !== "'" || found[found.length - 1] !== "'") return '';
+    return found.slice(1, -1).replaceAll("'\\''", "'");
+  } catch (e) { return ''; }
+}
+function mcpSetting(key) {
+  const raw = (process.env[key] || '').trim();
+  return raw || envFileValue(key).trim();
+}
 // Edit-tool set, shared by both parsers. Must equal server/src/kit/verify.mjs MUTATING_TOOLS: the drift sentinel in
 // jev-stop-verify.test.mjs asserts that, so a tool added on one side cannot silently go unseen by the other.
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -1176,8 +1199,8 @@ function honestGatePurpose(nonce) {
 const SCHEMA_REJECT_STATUS = new Set([400, 413, 422]);
 async function mcpCall(toolName, args, fetchImpl, rejections, warned) {
   const doFetch = fetchImpl || fetch;
-  const url = (process.env.JEV_MCP_URL || '').trim();
-  const token = (process.env.JEV_MCP_TOKEN || '').trim();
+  const url = mcpSetting('JEV_MCP_URL');
+  const token = mcpSetting('JEV_MCP_TOKEN');
   if (!url.startsWith('https://') || !token) { note('missing JEV_MCP_URL/JEV_MCP_TOKEN'); return null; }
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: toolName, arguments: args } });
   const ctrl = new AbortController();

@@ -10,7 +10,7 @@
 // ASSUMED (not verified; this file has not been run inside omp):
 //   - ctx.ui.confirm(title, message) exists and returns Promise<boolean> (used for "ask"; guarded by typeof check)
 //   - the built-in read tool is named "read" with event.input.path (only used for secret-file reads)
-// Endpoint and token come from the env vars JEV_MCP_URL and JEV_MCP_TOKEN; never hardcode them.
+// Endpoint and token come from JEV_MCP_URL and JEV_MCP_TOKEN, then ~/.config/jev/env; never hardcode them.
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -21,7 +21,28 @@ import { pathToFileURL } from "node:url";
 
 // Env is read per call, never at module load: one module instance is shared by every test file in a `bun test` process,
 // so a load-time read freezes whichever file imported the hook first.
-const mcpUrl = (): string => (process.env.JEV_MCP_URL ?? "").trim(); // e.g. https://<your-worker>.workers.dev/mcp
+/** Quoted KEY='value' from ~/.config/jev/env, or "". Never executes the file. Same rule as install.sh env_get. */
+export function envFileValue(key: string, env: Record<string, string | undefined> = process.env): string {
+  const home = env.HOME ?? "";
+  if (!home || !isAbsolute(home)) return "";
+  try {
+    const p = join(home, ".config", "jev", "env");
+    const st = statSync(p);
+    if (!st.isFile() || st.size > 65536) return "";
+    let found = "";
+    for (const raw of readFileSync(p, "utf8").split("\n")) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (line.startsWith(key + "=")) found = line.slice(key.length + 1);
+    }
+    if (found.length < 2 || !found.startsWith("'") || !found.endsWith("'")) return "";
+    return found.slice(1, -1).replaceAll("'\\''", "'");
+  } catch {
+    return "";
+  }
+}
+const fromEnvOrFile = (key: string): string => (process.env[key] ?? "").trim() || envFileValue(key).trim();
+const mcpUrl = (): string => fromEnvOrFile("JEV_MCP_URL"); // e.g. https://<your-worker>.workers.dev/mcp
+const mcpToken = (): string => fromEnvOrFile("JEV_MCP_TOKEN");
 const timeoutMs = (): number => Number(process.env.JEV_GUARD_TIMEOUT ?? "2") * 1000;
 const shadow = (): boolean => process.env.JEV_GUARD_MODE === "shadow";
 const askNoUi = (): string => process.env.JEV_GUARD_ASK_NO_UI ?? "block"; // "block" | "allow" when "ask" but nobody can answer
@@ -186,7 +207,7 @@ async function fetchServerFingerprint(): Promise<string | null> {
       method: "GET",
       redirect: "error", // a 3xx would re-send the bearer wherever it points
       signal: AbortSignal.timeout(FP_FETCH_MS),
-      headers: { authorization: `Bearer ${(process.env.JEV_MCP_TOKEN ?? "").trim()}`, "user-agent": "jev-guard-hook-omp/1.0" },
+      headers: { authorization: `Bearer ${mcpToken()}`, "user-agent": "jev-guard-hook-omp/1.0" },
     });
     const got = (res.headers.get(FP_HEADER) ?? "").trim().toLowerCase();
     return res.ok && FP_RE.test(got) ? got : null;
@@ -397,7 +418,7 @@ type McpResult<T> = { kind: "reply"; reply: T } | { kind: "rejected"; detail: st
 // One JSON-RPC tools/call over the same transport for the guard and the policy call: https only, bearer from the
 // environment, redirects refused, a hard timeout.
 async function mcpCall<T>(tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<McpResult<T>> {
-  const token = (process.env.JEV_MCP_TOKEN ?? "").trim();
+  const token = mcpToken();
   if (!token || !mcpUrl().startsWith("https://")) return { kind: "unavailable", code: "client_config" };
   try {
     const res = await fetch(mcpUrl(), {
@@ -724,7 +745,7 @@ export default function jevGuard(pi: ExtensionAPI) {
       // A local ask or block stands whatever the server's rules are (stricter than the server is safe). A local allow stands when there is no
       // server to ask, or when the rules in this process are the ones the server runs; otherwise the server decides, and the user is told once.
       let trust: RulesTrust | null = null;
-      if (ruleSettled && local!.reply.decision === "allow" && (process.env.JEV_MCP_TOKEN ?? "").trim() !== "" && mcpUrl().startsWith("https://")) trust = await rulesTrust(local!);
+      if (ruleSettled && local!.reply.decision === "allow" && mcpToken() !== "" && mcpUrl().startsWith("https://")) trust = await rulesTrust(local!);
       const settled = ruleSettled && (trust === null || trust === "match");
       if ((trust === "mismatch" || trust === "unverified" || trust === "down") && !trustNoticed.has(trust)) {
         trustNoticed.add(trust);

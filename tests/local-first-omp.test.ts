@@ -56,7 +56,10 @@ const mod = await import("../hooks/omp/jev-guard.ts");
 const { guardCommand } = await import(RULES);
 const RULES_FP: string = nodeFingerprint(join(root, "server", "src", "kit"));
 
+const FAKE_HOME = mkdtempSync(join(tmpdir(), "jev-omp-home-"));
 function env(over: Record<string, string | undefined> = {}) {
+  process.env.HOME = FAKE_HOME;
+  try { rmSync(join(FAKE_HOME, ".config", "jev", "env")); } catch { /* no file yet */ }
   const base: Record<string, string | undefined> = {
     JEV_MCP_URL: "https://worker-private.example.workers.dev/mcp", JEV_MCP_TOKEN: "stub-token", JEV_LEDGER: LEDGER,
     JEV_GUARD_RULES: RULES, JEV_GUARD_LOCAL: undefined, JEV_GUARD_MODE: undefined, JEV_GUARD_ASK_NO_UI: "block", JEV_GUARD_ASK_AT: undefined, ...over,
@@ -137,6 +140,25 @@ test("unclear with no server: allowed, one notice per session, and the row names
   expect(calls.length).toBe(0);
   for (const x of rows()) expect([x.decision, x.decided_by, x.fail_reason, x.source, x.rule]).toEqual(["allow", "fail_open", "client_config", "client", "R10-general-risk"]);
   expect(rows().length).toBe(3);
+});
+
+test("env file supplies the URL and token when the process has neither; an unquoted substitution is ignored", async () => {
+  const bomb = join(FAKE_HOME, "bombed");
+  mkdirSync(join(FAKE_HOME, ".config", "jev"), { recursive: true });
+  env({ JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined });
+  mkdirSync(join(FAKE_HOME, ".config", "jev"), { recursive: true });
+  writeFileSync(join(FAKE_HOME, ".config", "jev", "env"), `JEV_MCP_URL='https://from-file.example/mcp'\nJEV_MCP_TOKEN=$(touch ${bomb})\n`);
+  expect(existsSync(bomb)).toBe(false);
+  expect(mod.envFileValue("JEV_MCP_TOKEN")).toBe("");
+  writeFileSync(join(FAKE_HOME, ".config", "jev", "env"), "JEV_MCP_URL='https://from-file.example/mcp'\nJEV_MCP_TOKEN='file-token'\n");
+  calls.length = 0;
+  await hook().call(bash(UNCLEAR));
+  expect(calls.length).toBe(1);
+  expect(calls[0].url).toBe("https://from-file.example/mcp");
+  calls.length = 0;
+  env({ JEV_MCP_URL: "https://from-env.example/mcp", JEV_MCP_TOKEN: "env-token" });
+  await hook().call(bash(UNCLEAR));
+  expect(calls[0].url).toBe("https://from-env.example/mcp");
   notes.length = 0;
 });
 

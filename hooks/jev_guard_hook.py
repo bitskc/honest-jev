@@ -23,8 +23,8 @@ The first unclear command allowed because no server is configured prints a one-l
 file can be edited by anything running as the same user, so none of this is a sandbox (README: "What it protects against").
 
 Env:
-  JEV_MCP_TOKEN        required. Bearer token; never hardcoded, never logged.
-  JEV_MCP_URL          required. Your deployed endpoint, e.g. https://<your-worker>.workers.dev/mcp
+  JEV_MCP_TOKEN        bearer token; never hardcoded, never logged. Process environment, else ~/.config/jev/env.
+  JEV_MCP_URL          deployed endpoint, e.g. https://<your-worker>.workers.dev/mcp. Same fallback.
   JEV_GUARD_TIMEOUT    seconds, default 2
   JEV_GUARD_MODE       enforce (default) | shadow (never blocks; logs what it would do to stderr)
   JEV_GUARD_ASK_AT     risk threshold sent as ask_at (server default 0.65)
@@ -45,12 +45,48 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
 
-URL = os.environ.get("JEV_MCP_URL", "").strip()
+def env_file_value(key):
+    """The quoted value of one key in ``~/.config/jev/env``, or "". Never executes the file.
+
+    Same acceptance rule as ``env_get`` in install.sh: only a single-quoted value counts, and an
+    unquoted ``$(...)`` is ignored rather than run. A value already in the process environment wins
+    (see ``mcp_setting``)."""
+    home = os.environ.get("HOME") or ""
+    if not home or not os.path.isabs(home) or not isinstance(key, str):
+        return ""
+    path = os.path.join(home, ".config", "jev", "env")
+    try:
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            return ""
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read(65536)
+    except Exception:
+        return ""
+    found = ""
+    prefix = key + "="
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            found = line[len(prefix):]
+    if len(found) < 2 or found[0] != "'" or found[-1] != "'":
+        return ""
+    return found[1:-1].replace("'\\''", "'")
+
+
+def mcp_setting(key):
+    """``JEV_MCP_URL`` / ``JEV_MCP_TOKEN``: the process environment, else the env file. Never raises."""
+    raw = os.environ.get(key, "")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return env_file_value(key).strip()
+
+
 TIMEOUT = float(os.environ.get("JEV_GUARD_TIMEOUT", "2"))
 MODE = os.environ.get("JEV_GUARD_MODE", "enforce")
 DEBUG = os.environ.get("JEV_GUARD_DEBUG") == "1"
@@ -170,11 +206,12 @@ class GuardFailOpen(Exception):
 
 
 def call_guard(args, tool="kit_guard_command", timeout=None):
-    token = os.environ.get("JEV_MCP_TOKEN", "").strip()
-    if not URL:
+    token = mcp_setting("JEV_MCP_TOKEN")
+    url = mcp_setting("JEV_MCP_URL")
+    if not url:
         raise GuardFailOpen("JEV_MCP_URL is not set", "client_config")
-    if not URL.startswith("https://"):
-        raise GuardFailOpen("JEV_MCP_URL must be https:// (got %r)" % URL[:40], "client_config")
+    if not url.startswith("https://"):
+        raise GuardFailOpen("JEV_MCP_URL must be https:// (got %r)" % url[:40], "client_config")
     if not token:
         raise GuardFailOpen("JEV_MCP_TOKEN is not set", "client_config")
     request, error, opener = _http()
@@ -182,7 +219,7 @@ def call_guard(args, tool="kit_guard_command", timeout=None):
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": tool, "arguments": args},
     }).encode()
-    req = request.Request(URL, data=body, method="POST", headers={
+    req = request.Request(url, data=body, method="POST", headers={
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
         "authorization": "Bearer " + token,
@@ -338,8 +375,8 @@ TRUST_NOTICES = {
 
 
 def server_configured():
-    """A server the hook can actually call: an https URL and a token in the PROCESS environment (what call_guard needs)."""
-    return URL.startswith("https://") and bool(os.environ.get("JEV_MCP_TOKEN", "").strip())
+    """A server the hook can call: an https URL and a token, from the process environment or ~/.config/jev/env."""
+    return mcp_setting("JEV_MCP_URL").startswith("https://") and bool(mcp_setting("JEV_MCP_TOKEN"))
 
 
 def _state_path(prefix):
@@ -349,7 +386,7 @@ def _state_path(prefix):
         return None
     import hashlib
     d = _ledger.state_dir()
-    return d, os.path.join(d, "%s-%s.json" % (prefix, hashlib.sha256(URL.encode()).hexdigest()[:16]))
+    return d, os.path.join(d, "%s-%s.json" % (prefix, hashlib.sha256(mcp_setting("JEV_MCP_URL").encode()).hexdigest()[:16]))
 
 
 def _state_read(prefix):
@@ -469,10 +506,10 @@ def fetch_server_fp():
     try:
         from urllib.parse import urlsplit
         request, _error, opener = _http()
-        u = urlsplit(URL)
+        u = urlsplit(mcp_setting("JEV_MCP_URL"))
         path = u.path[:-4] if u.path.endswith("/mcp") else u.path
         req = request.Request("%s://%s%s/health" % (u.scheme, u.netloc, path.rstrip("/")), method="GET", headers={
-            "authorization": "Bearer " + os.environ.get("JEV_MCP_TOKEN", "").strip(),
+            "authorization": "Bearer " + mcp_setting("JEV_MCP_TOKEN"),
             "user-agent": "jev-guard-hook/1.0",  # Cloudflare 403s the default Python-urllib UA
         })
         signal.signal(signal.SIGALRM, _alarm)
