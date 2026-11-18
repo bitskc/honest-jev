@@ -785,8 +785,10 @@ const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest
 // phrasing, not filesystem readers — allow those. Unknown lowercase tools (vim, nano, …) still ask, as on main.
 const BARE_WORD_ASK_PROGS = new Set(["sort", "uniq", "curl", "wget", "tar", "zip", "unzip", "git", "kubectl", "docker", "podman",
   "vim", "nvim", "vi", "nano", "emacs", "ed", "view", "ex", "rvim", "vimdiff"]);
-function bareWordContextAsks(prog) {
+function bareWordContextAsks(prog, args = []) {
   if (!prog) return false;
+  // `cp`/`install`/`mv`/`rsync` are NON_CONTENT unless they copy onto a print device (`cp token /dev/stdout`).
+  if (copiesToTerminal(prog, args)) return true;
   if (NON_CONTENT_PROGS.has(prog) || CREDENTIAL_CONSUMER_PROGS.has(prog)) return false;
   if (READERS.has(prog) || TEST_PROGS.has(prog) || BARE_WORD_ASK_PROGS.has(prog)) return true;
   // Capitalized / Title Case command words are not shell readers (`Paste token`, `Open secrets`).
@@ -1666,7 +1668,7 @@ function ruleSecret(ctx) {
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
     // Bare credential words ask only for programs that can print/stage the operand (`Paste token` → allow).
     if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
-      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog))) {
+      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args))) {
       const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
       soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }

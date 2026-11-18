@@ -49,6 +49,24 @@ test("NON_CONTENT / echo / true with a bare credential word still allow", async 
   }
 });
 
+test("copy/install onto a print device with a bare credential word asks (copiesToTerminal)", async () => {
+  for (const c of [
+    "cp token /dev/stdout",
+    "install token /dev/stdout",
+    "cp password /dev/stderr",
+    "mv credentials /dev/tty",
+    "cp token /proc/self/fd/1",
+  ]) {
+    const r = await g(c);
+    assert.equal(r.decision, "ask", c);
+    assert.equal(r.suggestion, R1_BARE_WORD_SUGGESTION, c);
+  }
+  // Ordinary copy destinations stay NON_CONTENT (no print device) → allow.
+  for (const c of ["cp token /tmp/out", "install token /tmp/out", "mv credentials /tmp/out"]) {
+    assert.equal((await g(c)).decision, "allow", c);
+  }
+});
+
 test("shape matches still block for any program, including unknown verbs", async () => {
   for (const c of ["Paste .env", "Open ~/.ssh/id_rsa", "cat .env"]) {
     const r = await g(c);

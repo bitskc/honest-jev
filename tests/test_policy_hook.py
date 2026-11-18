@@ -539,6 +539,49 @@ class PolicyNotice(unittest.TestCase):
         self.assertEqual(p.stdout.strip(), "")
 
 
+class ConcludeAdditionalContext(unittest.TestCase):
+    """When guard+policy both ask, additionalContext must carry the policy reason even if only the guard set model_context."""
+
+    def load_hook(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("jev_guard_hook_ctx", os.path.join(ROOT, "hooks", "jev_guard_hook.py"))
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        return hook
+
+    def conclude_stdout(self, hook, g, p):
+        import contextlib
+        import io
+
+        class Done(object):
+            outcome = p
+            deadline = time.monotonic() + 1
+
+            def join(self, _t):
+                return None
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            hook.conclude(g, Done())
+        return out.getvalue(), err.getvalue()
+
+    def test_both_ask_includes_policy_reason_and_next_step_once(self):
+        hook = self.load_hook()
+        guard_why = "Jev guard [R1]: `cat token` is a bare credential word. Safer: Confirm the path is not a secret."
+        policy_why = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+        g = hook.Outcome("ask", guard_why, model_context="%s %s" % (guard_why, hook.NEXT_AFTER_DECLINE))
+        p = hook.Outcome("ask", policy_why)  # policy path sets reason only, no model_context
+        out, _ = self.conclude_stdout(hook, g, p)
+        hso = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecision"], "ask")
+        self.assertIn(policy_why, hso["permissionDecisionReason"])
+        self.assertIn(guard_why, hso["permissionDecisionReason"])
+        ctx = hso["additionalContext"]
+        self.assertIn(policy_why, ctx, "policy reason must reach the model, not only permissionDecisionReason")
+        self.assertIn(guard_why, ctx)
+        self.assertEqual(ctx.count(hook.NEXT_AFTER_DECLINE), 1)
+
+
 class ConcludeTimeout(unittest.TestCase):
     """The policy thread that does not finish inside its deadline (defence in depth; the helper and the Worker call have their own
     timeouts, so it should not happen): the hook still answers, fails open, and tells the user only when it enforces."""

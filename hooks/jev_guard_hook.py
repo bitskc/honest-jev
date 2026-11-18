@@ -895,15 +895,24 @@ def conclude(g, policy):
         }
         # Ask: user sees permissionDecisionReason; model gets safer-route + next-step via additionalContext.
         # Deny: reason already includes next-step; still set additionalContext so -p and interactive agree.
+        # Prefer model_context; fall back to reason so a policy ask (reason only) is not dropped when the
+        # guard also asks with model_context. Keep NEXT_AFTER_DECLINE at most once.
         ctx_parts = []
-        if p.effect == final and getattr(p, "model_context", None):
-            ctx_parts.append(p.model_context)
-        if g.effect == final and getattr(g, "model_context", None):
-            ctx_parts.append(g.model_context)
+        for o in (p, g):
+            if o.effect != final:
+                continue
+            mc = getattr(o, "model_context", None)
+            if mc:
+                ctx_parts.append(mc)
+            elif o.reason:
+                ctx_parts.append(o.reason)
         if not ctx_parts and parts:
-            ctx_parts = [("%s %s" % (" ".join(parts).rstrip(), NEXT_AFTER_DECLINE))]
+            ctx_parts = [" ".join(parts).rstrip()]
         if ctx_parts:
-            hso["additionalContext"] = " ".join(ctx_parts)[:1500]
+            joined = " ".join(ctx_parts).rstrip()
+            if NEXT_AFTER_DECLINE not in joined:
+                joined = "%s %s" % (joined, NEXT_AFTER_DECLINE)
+            hso["additionalContext"] = joined[:1500]
         out["hookSpecificOutput"] = hso
     if notice:
         # for the USER (systemMessage), not the model: fixed text, no command, no path, no instruction
