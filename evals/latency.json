@@ -1,0 +1,151 @@
+{
+  "fingerprint": {
+    "date": "2026-11-18T20:14:52.246Z",
+    "commit": "4f413e1",
+    "dirty_tree": false,
+    "kernel": "Linux 6.18.55-2-cachyos-lts x86_64",
+    "cpu": "AMD Ryzen 5 5500U with Radeon Graphics",
+    "cores": 12,
+    "versions": {
+      "node": "v26.13.0",
+      "python3": "Python 3.14.9",
+      "bun": "1.4.4",
+      "omp": "omp/18.22.2"
+    },
+    "load_before": [
+      4.71,
+      4.91,
+      4.25
+    ],
+    "workerHost": null,
+    "load_after": [
+      5.93,
+      5.17,
+      4.35
+    ],
+    "noisy": false,
+    "noisy_reasons": []
+  },
+  "method": {
+    "quick": false,
+    "n_cold": 30,
+    "n_warm": 50,
+    "warmup": 5,
+    "steady_calls_per_process": 50,
+    "interleaved": true
+  },
+  "rows": [
+    {
+      "title": "Claude hook: `ls` (local rules, allow)",
+      "measure": "process wall",
+      "n": 30,
+      "median": 178.67,
+      "p90": 239.46,
+      "min": 145.09,
+      "max": 308.22,
+      "unit": "ms",
+      "observed": "allow x30",
+      "expected": "allow",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "Claude hook: `cat .env` (local rules, block or ask)",
+      "measure": "process wall",
+      "n": 30,
+      "median": 179.82,
+      "p90": 228.43,
+      "min": 146.47,
+      "max": 433.41,
+      "unit": "ms",
+      "observed": "block x30",
+      "expected": "block or ask",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "Claude hook: `ls` with JEV_GUARD_LOCAL=off, no server (fail-open floor)",
+      "measure": "process wall",
+      "n": 30,
+      "median": 83.67,
+      "p90": 108.37,
+      "min": 60.92,
+      "max": 232.35,
+      "unit": "ms",
+      "observed": "allow x30",
+      "expected": "allow",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "omp hook (stubbed omp import): `ls`",
+      "measure": "import (in-process)",
+      "n": 30,
+      "median": 21.24,
+      "p90": 24.82,
+      "min": 13.31,
+      "max": 35.22,
+      "unit": "ms",
+      "observed": "allow x30",
+      "expected": "allow",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "omp hook (stubbed omp import): `ls`",
+      "measure": "first tool_call",
+      "n": 30,
+      "median": 3.37,
+      "p90": 5.21,
+      "min": 2.72,
+      "max": 23.11,
+      "unit": "ms",
+      "observed": "allow x30",
+      "expected": "allow",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "omp hook (stubbed omp import): `ls`",
+      "measure": "steady median of 50 (per process)",
+      "n": 30,
+      "median": 0.05,
+      "p90": 0.07,
+      "min": 0.04,
+      "max": 0.07,
+      "unit": "ms",
+      "observed": "allow x30",
+      "expected": "allow",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "guardCommand in-process: `ls`",
+      "measure": "call",
+      "n": 50,
+      "median": 0.17,
+      "p90": 0.3,
+      "min": 0.12,
+      "max": 0.62,
+      "unit": "ms",
+      "observed": "allow x50",
+      "expected": "allow",
+      "unexpected": false,
+      "errors": 0
+    },
+    {
+      "title": "guardCommand in-process: `cat .env`",
+      "measure": "call",
+      "n": 50,
+      "median": 0.13,
+      "p90": 0.26,
+      "min": 0.08,
+      "max": 0.71,
+      "unit": "ms",
+      "observed": "block x50",
+      "expected": "block or ask",
+      "unexpected": false,
+      "errors": 0
+    }
+  ]
+}
