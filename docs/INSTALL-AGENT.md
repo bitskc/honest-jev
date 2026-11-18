@@ -14,11 +14,11 @@ Check out the **latest release**, the same thing `jev-update` installs (`main` c
 ```sh
 src="$HOME/.local/src/honest-jev"
 tag=$(curl -fsSL https://api.github.com/repos/bitskc/honest-jev/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
-[ -d "$src/.git" ] || git clone -q https://github.com/bitskc/honest-jev "$src"
-git -C "$src" fetch -q --tags --force && git -C "$src" checkout -q "$tag"
-cd "$src"
+case "$tag" in v[0-9]*) ;; *) echo "could not resolve the latest release (API rate limit? offline?): stop and tell the user" >&2; false;; esac &&
+{ [ -d "$src/.git" ] || git clone -q https://github.com/bitskc/honest-jev "$src"; } &&
+git -C "$src" fetch -q --tags --force && git -C "$src" checkout -q "$tag" && cd "$src"
 ```
-(No git: set `src` and `tag` as above, then `mkdir -p "$src" && curl -fsSL "https://github.com/bitskc/honest-jev/archive/refs/tags/$tag.tar.gz" | tar xz --strip-components=1 -C "$src" && cd "$src"`.)
+If the chain stops (no release tag resolved), do not carry on with whatever is checked out (that would be `main`); report it. (No git: set `src` and `tag` as above, then `mkdir -p "$src" && curl -fsSL "https://github.com/bitskc/honest-jev/archive/refs/tags/$tag.tar.gz" | tar xz --strip-components=1 -C "$src" && cd "$src"`.) A direct install does not write the `jev-update` stamp, so `jev-update --check` reports `installed: none` until the first `jev-update`.
 Needs: `bash`, `python3`, `curl`, and `node` (or `bun`) on the agent's PATH: the guard's local rules run in it, and `install.sh --doctor` fails without one. Self-hosting (Option B) also needs Node >= 22 and `git`.
 
 ## Step 1: detect your host
