@@ -209,6 +209,31 @@ test("line-printing searches that name a secret keep asking in the tree; --exclu
   }
   assert.equal((await g("grep API_KEY .env")).decision, "block");
   assert.equal((await g("grep -n API_KEY src/app.js")).decision, "allow");
-  // tracked files only: a .env is normally untracked (and R9 blocks committing one), so this allows, as it does on main
+  // main allows this (tracked files only) and it still prints matching lines, committed secrets included; the suggestion says so
   assert.equal((await g("git grep -n API_KEY")).decision, "allow");
+});
+
+test("the search suggestion does not claim that every command it names prints no values", () => {
+  const s = R1_SECRET_SEARCH_SUGGESTION;
+  assert.ok(!/without printing values/.test(s));
+  // the no-value commands lead; the line-printing ones come after and are qualified
+  const [noValues, printing] = s.split("Then ");
+  assert.match(noValues, /^Commands that print no values: list the files \(`grep -rl NAME \.` or `rg -l NAME`\)\.\s*$/);
+  assert.match(printing, /`grep -n NAME src\/app\.js`/);
+  assert.match(printing, /`git grep -n NAME` prints matching lines from tracked files, which can include committed secrets/);
+  assert.ok(!noValues.includes("grep -n") && !noValues.includes("git grep"));
+});
+
+test("-L on a secret-store operand prints names only, like -l/-c/-q: allow; line-printing and rg -L still block", async () => {
+  for (const c of [
+    "grep -L API_KEY .env", "grep -rL API_KEY .env", "ag -L API_KEY .env", "grep -L API_KEY ~/.ssh/id_rsa",
+    "ag -L API_KEY ~/.aws/credentials", "grep -L SECRET_X credentials.json",
+    // parity: main already allows the same operands under the other quiet modes
+    "grep -l API_KEY .env", "grep -c API_KEY .env", "rg -l API_KEY .env",
+  ]) {
+    assert.equal((await g(c)).decision, "allow", c);
+  }
+  for (const c of ["grep -n API_KEY .env", "rg -L API_KEY .env", "grep -n API_KEY ~/.ssh/id_rsa"]) {
+    assert.equal((await g(c)).decision, "block", c);
+  }
 });

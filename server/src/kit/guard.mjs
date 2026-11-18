@@ -132,10 +132,11 @@ export const R1_BARE_WORD_SUGGESTION =
   "If this names a secret file, do not print it; load values with `set -a; . ./file; set +a` and confirm with " +
   "`[ -n \"$KEY\" ] && echo 'key loaded'`. If it is only a label or test name, confirm and proceed.";
 // A recursive (or find-fed) grep/rg for a secret NAME: the agent wants to know where the name is used, not to load it. Every command named
-// here is itself an allow (a quiet output mode, one named file, git grep's tracked files); actionable-advice.test.mjs pins that.
+// here is itself an allow; actionable-advice.test.mjs pins that. Only the `-l` forms print no values: the others print matching lines, and the
+// text says so (a tracked file can hold a hard-coded or committed secret).
 export const R1_SECRET_SEARCH_SUGGESTION =
-  "To find where it is used without printing values: list only the files (`grep -rl NAME .` or `rg -l NAME`), then grep one " +
-  "source file by name (`grep -n NAME src/app.js`), or search tracked files only (`git grep -n NAME`).";
+  "Commands that print no values: list the files (`grep -rl NAME .` or `rg -l NAME`). Then read lines only in a file you know is " +
+  "source code (`grep -n NAME src/app.js`); `git grep -n NAME` prints matching lines from tracked files, which can include committed secrets.";
 
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
 const REDIR_SPLIT_RE = /(?<!\d)\d*[<>]+&?/; // (?<!\d): a run of digits is tried from its first digit only (a bare `\d*` start at every digit was quadratic)
