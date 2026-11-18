@@ -272,12 +272,18 @@ export default function jevHonest(pi: ExtensionAPI) {
     try {
       const text = String(e?.text ?? "").trim();
       if (!text || text.startsWith("/")) return undefined;
-      if (/^(stop honest-jev|stop honest jev|normal mode)[.!?\s]*$/i.test(text)) { switchLevel("off", ctx); return { handled: true }; }
+      // "normal mode" is also the documented off phrase of other skills (ponytail): switch off, but let the message reach the model.
+      if (/^normal mode[.!?\s]*$/i.test(text)) { switchLevel("off", ctx); return undefined; }
+      if (/^(stop honest-jev|stop honest jev)[.!?\s]*$/i.test(text)) { switchLevel("off", ctx); return { handled: true }; }
       const m = text.match(/^(?:[a-z0-9-]+:)?(?:honest-jev|jev-honest)(?:\s+(.+))?$/i);
       if (!m) return undefined;
-      const arg = (m[1] ?? "").trim();
-      if (/^rule\b/i.test(arg)) { runRule(arg, ctx); return { handled: true }; }
-      const level = normalize(arg || "standard");
+      const raw = (m[1] ?? "").trim();
+      if (/^rule\b/i.test(raw)) {
+        if (!parseRuleArgs(raw)) return undefined; // prose such as "honest-jev rule of thumb: ..." reaches the model
+        runRule(raw, ctx);
+        return { handled: true };
+      }
+      const level = normalize(raw.replace(/[.!?\s]+$/, "") || "standard");
       if (!level) return undefined;
       switchLevel(level, ctx);
       return { handled: true };

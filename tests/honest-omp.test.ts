@@ -231,3 +231,22 @@ test("omp plain text: honest-jev strict and rule list are handled; slash command
   expect(await input({ text: "stop honest-jev" }, ctx)).toEqual({ handled: true });
   expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
 });
+
+test("omp plain text: normal mode turns Honest Jev off but reaches the model; malformed rule prose passes through; level args tolerate trailing punctuation", async () => {
+  const agent = join(root, "agent-normal-mode");
+  mkdirSync(agent, { recursive: true });
+  const h = await freshHook(agent);
+  const input = h.handlers["input"];
+  const ctx = { ui: {} };
+  expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "normal mode" }, ctx)).toBeUndefined();
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
+  expect(h.sent.at(-1)).toBe("HONEST JEV OFF — confirm in one line.");
+  expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "Normal mode." }, ctx)).toBeUndefined();
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
+  expect(await input({ text: "stop honest-jev" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "honest-jev rule of thumb: always check" }, ctx)).toBeUndefined();
+  expect(await input({ text: "honest-jev strict." }, ctx)).toEqual({ handled: true });
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("strict");
+});
