@@ -34,7 +34,7 @@ ok "$([ -d "$H/.claude/skills/jev-honest" ] && echo yes)" yes "install: jev-hone
 ok "$([ -x "$H/.local/bin/jev-call" ] && [ -x "$H/.local/bin/jev-update" ] && echo yes)" yes "install: jev-call + jev-update executable"
 ok "$([ -x "$H/.local/share/honest-jev/hooks/honest/jev-honest-activate.js" ] && [ -f "$H/.local/share/honest-jev/hooks/omp/jev-honest.ts" ] && echo yes)" yes "install: honest hooks shipped"
 ok "$([ -f "$H/.local/share/honest-jev/hooks/honest/rules.default.json" ] && echo yes)" yes "install: rules.default.json shipped alongside the honest hooks"
-ok "$(node -e "const rt=require('$H/.local/share/honest-jev/hooks/honest/jev-honest-runtime.js'); console.log(rt.rules()[0] && rt.rules()[0].id)")" "pr-gstack-reviewed" "install: default rule resolves from the installed location"
+ok "$(node -e "const rt=require('$H/.local/share/honest-jev/hooks/honest/jev-honest-runtime.js'); console.log(rt.rules().length)")" "0" "install: no built-in rules ship from the installed location"
 jp="$H/.local/bin/jev-policy"; jpu="$tmp/installed-user-policy.json"
 ok "$(cd "$tmp" && HOME=$H JEV_POLICY_USER="$tmp/no-such-policy.json" "$jp" list 2>&1)" "no policy classes (run: jev-policy init --layer repo)" "install: jev-policy launcher runs from the installed tree"
 (cd "$tmp" && HOME=$H JEV_POLICY_USER="$jpu" "$jp" add "$root/examples/policies/pr-merge-gate.json" --layer user --yes >/dev/null 2>&1)
