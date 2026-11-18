@@ -1,6 +1,6 @@
 // Client conformance for the deployed Worker surface, run in-process through the real default export (no network, no deploy).
 // Covers what the docs/CLIENTS.md recipes depend on: bearer auth on /mcp, the Streamable HTTP POST path, the tool list, and /health.
-// It needs server/vendor (the upstream jev tools, built by `npm run vendor`). Locally it skips when vendor/ is absent; in CI the server job builds it first, so a missing vendor fails there.
+// It needs server/vendor (the upstream jev tools, built by `npm run vendor`). It skips when vendor/ is absent, so jobs that run the whole test glob without building the vendor (the ledger job) stay green; the server job builds the vendor before its test run.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -8,10 +8,9 @@ import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 const vendored = existsSync(new URL("../vendor/server.js", import.meta.url));
-const inCi = Boolean(process.env.GITHUB_ACTIONS);
-const skip = vendored || inCi ? false : "server/vendor not built (run npm run vendor)";
+const skip = vendored ? false : "server/vendor not built (run npm run vendor)";
 
-const worker = vendored || inCi ? (await import("../src/index.mjs")).default : null;
+const worker = vendored ? (await import("../src/index.mjs")).default : null;
 
 // Throwaway, generated per run and never a real credential.
 const TOKEN = `conformance-${randomUUID()}`;
