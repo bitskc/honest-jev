@@ -63,7 +63,7 @@ npm run vendor      # clones jkudish/jev-mcp at a pinned commit and builds ./ven
 npm test            # the server suite; must pass (it also writes the rules fingerprint the Worker reports)
 npm run deploy      # vendor + fingerprint + wrangler deploy --keep-vars; prints https://<name>.<subdomain>.workers.dev
 ```
-Use `npm run deploy` for the first deploy and for every redeploy: it rebuilds `vendor/` at the pin and regenerates the rules fingerprint, and `--keep-vars` keeps variables set in the dashboard (harmless on a first deploy). It runs the vendor step again, so after the explicit `npm run vendor` above `vendor/` is built twice: identical output (checked by hash), about 3 s extra.
+Use `npm run deploy` for the first deploy and for every redeploy: it rebuilds `vendor/` at the pin and regenerates the rules fingerprint, and `--keep-vars` keeps variables set in the dashboard (harmless on a first deploy). It runs the vendor step again, so after the explicit `npm run vendor` above `vendor/` is built twice: `build-vendor.sh` has no hash check — every run removes the build tree, re-clones the pin and rebuilds from scratch, so the second build costs the same as the first.
 If the Worker name `jev-mcp` is taken in the account, change `name` in `server/wrangler.jsonc` locally (don't commit it).
 
 Set the secrets. Values are piped via stdin, so they never appear in argv or history:
@@ -87,7 +87,7 @@ From the repo root:
 ./install.sh --claude --wire --project /path/to/repo   # project scope instead of user scope
 ./install.sh --omp --wire --no-hook                    # skip all hooks (MCP only)
 ```
-Without `--wire` it copies the skills, the hook sources (`~/.local/share/honest-jev/hooks/`) and the helpers (`jev-call`, `jev-update`, `jev-report`, `jev-outcome`, `jev-policy` in `~/.local/bin`) and prints manual steps; it writes no config and creates no omp hook files. Make sure `~/.local/bin` is on `PATH`. `PI_CODING_AGENT_DIR` (default `~/.omp/agent`) and `CLAUDE_CONFIG_DIR` (default `~/.claude`) move the user-scope config directories, and `install.sh` honours both.
+Without `--wire` it copies the skills, the hook sources (`~/.local/share/honest-jev/hooks/`) and the helpers (`jev-call`, `jev-update`, `jev-report`, `jev-outcome`, `jev-policy`, `jev-policy-hook` in `~/.local/bin`), refreshes omp hook copies that already exist in `~/.omp/agent/hooks/pre/` (never creating one), and prints manual steps; it writes no config and creates no omp hook files. Make sure `~/.local/bin` is on `PATH`. `PI_CODING_AGENT_DIR` (default `~/.omp/agent`) and `CLAUDE_CONFIG_DIR` (default `~/.claude`) move the user-scope config directories, and `install.sh` honours both.
 
 What `--wire` writes (no secrets, only `${VAR}` references):
 
@@ -100,7 +100,7 @@ If a config file isn't plain JSON, the installer refuses to touch it; merge `con
 
 **Claude Code: plugin or `--wire`, not both.** If the user already installed the plugin (`/plugin marketplace add bitskc/honest-jev`; ask, or check `/plugin`), do not run `--claude --wire`. The plugin registers its hooks from `hooks/claude-plugin-hooks.json` (commands under `${CLAUDE_PLUGIN_ROOT}`) and `--wire` writes the same hooks into `~/.claude/settings.json` from `config/claude-settings-hook.json` (commands under `~/.local/share/honest-jev`). The strings differ, so Claude Code cannot deduplicate them (and it does not deduplicate across settings and plugins even for identical strings: anthropics/claude-code issue 76297); all matching hooks run in parallel, so with both the guard judges every command twice (two decision rows) and the Honest Jev level hooks fire twice. The plugin ships skills and hooks but no MCP entry (`.claude-plugin/plugin.json` has only `hooks`): with the plugin, add the server with a project `.mcp.json` (`config/claude-mcp.json`, `${VAR}` references). Already ran `--claude --wire` and now want the plugin? Remove the `jev-guard-hook.sh` / `jev-honest-*` / `jev-classify-redact.js` / `jev-stop-verify.js` entries from `~/.claude/settings.json` (or restore its `.jev-bak`) first.
 
-**omp needs a restart after `--wire`.** omp runs the hook copies in `~/.omp/agent/hooks/pre/` (made by `--wire`), not the files under `~/.local/share/honest-jev/hooks/omp/`. `/reload-plugins` refreshes skills, slash commands and MCP servers but not hooks (omp docs, marketplace.md: "restart the session for newly installed non-MCP tools, hooks, or extension modules"), so restart omp. Claude Code's hooks point into `~/.local/share/honest-jev/hooks/`, so `jev-update` refreshes them; the omp copies are not touched by `jev-update` (`install.sh` without `--wire` never writes them), so after `jev-update` re-run `./install.sh --omp --wire` from a checkout of that same release (Step 0) and restart omp. To see whether they differ: `cmp ~/.local/share/honest-jev/hooks/omp/jev-guard.ts ~/.omp/agent/hooks/pre/jev-guard.ts` (same for `jev-honest.ts`); `--doctor` does not compare them.
+**omp needs a restart after `--wire`.** omp runs the hook copies in `~/.omp/agent/hooks/pre/` (made by `--wire`), not the files under `~/.local/share/honest-jev/hooks/omp/`. `/reload-plugins` refreshes skills, slash commands and MCP servers but not hooks (omp docs, marketplace.md: "restart the session for newly installed non-MCP tools, hooks, or extension modules"), so restart omp. Claude Code's hooks point into `~/.local/share/honest-jev/hooks/`, so `jev-update` refreshes them; `jev-update` (and `./install.sh` without `--wire`) likewise refreshes omp hook copies that already exist in `~/.omp/agent/hooks/pre/` — it never creates one (only `--wire` does). So after `jev-update`: restart omp to load the refreshed copies; do **not** re-run `./install.sh --omp --wire` just because you updated. Run `--omp --wire` only for a fresh install or when a hook file is absent. To see whether a copy differs from the release: `cmp ~/.local/share/honest-jev/hooks/omp/jev-guard.ts ~/.omp/agent/hooks/pre/jev-guard.ts` (same for `jev-honest.ts`), or `--doctor`, which reports a stale omp hook.
 
 ## Step 4: host-specific notes
 
@@ -142,10 +142,10 @@ ok   /health
 ok   unauthenticated call rejected (401)
 ok   guard rules match the server's (fingerprint <12 hex>)
 ok   tools/list = 16 tools
-ok   skills in <skills dir>        # one per host that has them
+ok   skills in <skills dir>
 ok   jev-call installed
 ```
-The first line is the guard's local rules, which need only `node` or `bun`, no server. `guard rules match the server's` compares the rules fingerprint of this machine with the one the Worker reports; if they differ it is a `FAIL` (see Troubleshooting), and an older Worker that reports none gets a `note` instead. The doctor never prints the token.
+`<share dir>` and `<skills dir>` are placeholders for the real paths; with both hosts installed there is one `skills in …` line per host. The first line is the guard's local rules, which need only `node` or `bun`, no server. `guard rules match the server's` compares the rules fingerprint of this machine with the one the Worker reports; if they differ it is a `FAIL` (see Troubleshooting), and an older Worker that reports none gets a `note` instead. The doctor never prints the token.
 
 `install.sh` reads `~/.config/jev/env` too, and so do the guard hooks and `jev-call`, but only when the process has **neither** `JEV_MCP_URL` nor `JEV_MCP_TOKEN`: one value in the process and the other in the file are never combined (the doctor says `note a value in the process and a value in <path> are not combined, so the hooks do not use the file`). A value found only in the file is shown as `ok   JEV_MCP_URL set (from <path> only)` (same for the token), followed by:
 ```
