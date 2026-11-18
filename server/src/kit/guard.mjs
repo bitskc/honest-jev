@@ -78,8 +78,8 @@ const SECRET_PATH_RES = [
   // secret directories: every path under them is a secret, read or exfiltrated (.pub keys stay safe)
   /(^|\/)\.(ssh|aws|gnupg)(\/|$)/,
   /(^|\/)\.config\/gh(\/|$)/,
-  // the kit's own token file (install.sh --save-env). Not the rest of ~/.config/jev: policy.json is not a secret.
-  /(^|\/)\.config\/jev\/env$/,
+  // the kit's own token file (install.sh --save-env), and a backup or copy named after it. Not the rest of ~/.config/jev: policy.json is not a secret.
+  /(^|\/)\.config\/jev\/env(?![A-Za-z0-9])/,
 ];
 const SAFE_PATH_RES = [
   /\.(example|sample|template|dist|md|rst|txt\.example)$/,
@@ -309,7 +309,7 @@ const SECRET_TAILS = [
     ...CRED_EXTS.flatMap((e) => [`${s}credentials.${e}`, ...CRED_BACKUPS.map((b) => `${s}credentials.${e}.${b}`)])]),
 ];
 const SECRET_DIR_NAMES = [".ssh", ".aws", ".gnupg"];
-const SECRET_DIR_FILES = [[".docker", "config.json"], [".kube", "config"], ["etc", "shadow"], ["etc", "gshadow"], ["jev-kit", "env"], ["airlock", "env"]];
+const SECRET_DIR_FILES = [[".docker", "config.json"], [".kube", "config"], ["etc", "shadow"], ["etc", "gshadow"], ["jev-kit", "env"], ["airlock", "env"], ["jev", "env"]];
 const byLength = (names) => {
   const m = new Map();
   for (const n of names) m.set(n.length, [...(m.get(n.length) ?? []), n]);
@@ -2390,9 +2390,13 @@ const DEVICE_TOOLS = {
   "mdadm": { destructive: (args) => args.some((a) => ["--create", "-C", "--zero-superblock", "-Z"].includes(a)) },
   "blkdiscard": { destructive: () => true },
 };
-function isSecretPathTok(a, home) {
+// The hooks take JEV_MCP_URL and JEV_MCP_TOKEN from this one file (#61). A write that changes it can point the token at another host,
+// so the write is blocked as token exfiltration. It is NOT the READ list (SECRET_PATH_RES): `cp .env.example .env` and `echo X >> .env`
+// are ordinary work and stay as they were.
+const KIT_TOKEN_FILE_RE = /(^|\/)\.config\/jev\/env$/;
+function isKitTokenFileTok(a, home) {
   if (!a || a === "-") return false;
-  return SECRET_PATH_RES.some((r) => r.test(normalizePath(expand(a, home))));
+  return KIT_TOKEN_FILE_RE.test(normalizePath(expand(a, home)));
 }
 function isBlockDeviceTok(a, home) {
   if (a === "-") return false;
@@ -2467,6 +2471,7 @@ function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
   const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
   const block = (reason) => ({ rule: "R7-irreversible", severity: "block", reason, suggestion: R7_IRREVERSIBLE_SUGGESTION });
+  const tokenFile = (reason) => ({ rule: "R1-secret-exfiltration", severity: "block", reason, suggestion: R1_EXFIL_SUGGESTION });
   for (const [si, seg] of ctx.expandedSegments.entries()) {
     const cwds = ctx.expandedCwds[si];
     const [progRaw] = programOf(seg);
@@ -2581,15 +2586,15 @@ function* destructiveMatches(ctx) {
     }
     for (const t of writeRedirectTargets(seg)) {
       if (isBlockDeviceTok(t, ctx.home)) yield block(`\`${prog} ... > ${t}\` overwrites a block device`);
-      else if (isSecretPathTok(t, ctx.home)) yield block(`\`${prog} ... > ${t}\` writes a secret store`);
+      else if (isKitTokenFileTok(t, ctx.home)) yield tokenFile(`\`${prog} ... > ${t}\` rewrites the kit's token file: the hooks send the token to the URL stored there`);
     }
     if (["tee", "cp", "mv", "install"].includes(prog)) {
       const positional = nonRedirPositionals(args).filter((a) => !a.startsWith("-"));
       const dest = positional[positional.length - 1];
       if (dest && isBlockDeviceTok(dest, ctx.home)) {
         yield block(`\`${prog} ${dest}\` overwrites a block device`);
-      } else if (dest && isSecretPathTok(dest, ctx.home)) {
-        yield block(`\`${prog} ${dest}\` writes a secret store`);
+      } else if (dest && isKitTokenFileTok(dest, ctx.home)) {
+        yield tokenFile(`\`${prog} ${dest}\` rewrites the kit's token file: the hooks send the token to the URL stored there`);
       }
     }
     if (prog === "shred") {
