@@ -56,6 +56,9 @@ if command -v node >/dev/null 2>&1 && { git -C "$root" rev-parse --verify --quie
   dg_args=""; if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then dg_args="--check-issues"; fi
   dg_out=$(node "$root/evals/diff-guard.mjs" $dg_args 2>&1); dg_rc=$?
   ok "$dg_rc" 0 "evals/diff-guard.mjs: no un-allowlisted block/ask -> allow vs main, and the wrapper-closure invariant holds (every block stays block in every wrapper)$([ "$dg_rc" -ne 0 ] && printf '\n%s' "$(printf '%s' "$dg_out" | tail -5)")"
+elif [ -n "${CI:-}" ]; then
+  # CI must never silently drop the guard: the workflow fetches the PR base, so a missing base or node is a real failure
+  fail=$((fail+1)); printf 'FAIL evals/diff-guard.mjs: CI has no origin/main or main ref (or no node); the workflow must fetch the PR base\n'
 else
   printf 'SKIP evals/diff-guard.mjs (needs node and an origin/main or main ref in this checkout)\n'
 fi
