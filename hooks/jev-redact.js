@@ -58,10 +58,26 @@ const SECRET_RULES = [
   [/\bnpm_[A-Za-z0-9]{30,}/g, REDACTED],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g, REDACTED],
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, REDACTED],
-  [/\bAKIA[0-9A-Z]{16}\b/g, REDACTED],
+  // AWS long-term (AKIA) and temporary STS (ASIA) access key ids
+  [/\bA(?:KIA|SIA)[0-9A-Z]{16}\b/g, REDACTED],
   [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, REDACTED],
   [/\bAIza[0-9A-Za-z_-]{30,}/g, REDACTED],
   [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, REDACTED],
+  // Vendor tokens with a fixed prefix that carry no name next to them in tool output (GitLab, SendGrid, Slack app-level, Stripe
+  // webhook signing, Hugging Face, Google OAuth access, PyPI, xAI/Groq/Replicate/Linear/Notion, Shopify, DigitalOcean, Doppler,
+  // Atlassian). R9 already treats glpat-/SG. as credentials; redaction now agrees. Each is a fixed prefix + one bounded class: linear.
+  [/\bglpat-[\w-]{20,}/g, REDACTED],
+  [/\bSG\.[\w-]{16,}\.[\w-]{16,}/g, REDACTED],
+  [/\bxapp-\d-[A-Za-z0-9-]{10,}/g, REDACTED],
+  [/\bwhsec_[A-Za-z0-9+/=]{20,}/g, REDACTED],
+  [/\bhf_[A-Za-z0-9]{30,}/g, REDACTED],
+  [/\bya29\.[\w-]{20,}/g, REDACTED],
+  [/\bpypi-AgE[\w-]{50,}/g, REDACTED],
+  [/\b(?:xai-|gsk_|r8_|lin_api_|ntn_)[A-Za-z0-9]{20,}/g, REDACTED],
+  [/\bshp(?:at|ss|ca|pa)_[a-fA-F0-9]{32}\b/g, REDACTED],
+  [/\bdo[opr]_v1_[a-f0-9]{64}\b/g, REDACTED],
+  [/\bdp\.(?:st|pt|ct|sa|scim|audit)\.[\w.-]{20,}/g, REDACTED],
+  [/\bATATT[\w=-]{20,}/g, REDACTED],
 ];
 
 /** Scrub credentials before anything is sent to Jev. Never throws; over-redacts on failure. */
