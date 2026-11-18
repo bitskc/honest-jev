@@ -218,6 +218,14 @@ class HookUnits(unittest.TestCase):
         self.assertIn(self.hook.NEXT_AFTER_DECLINE, block.reason)
         self.assertEqual(block.model_context, block.reason)
 
+    def test_format_guard_why_keeps_a_full_stop_reason_and_the_search_suggestion_apart(self):
+        reason = "`grep` prints every line matching a secret-looking name across many files. Approve only if showing it is acceptable."
+        suggestion = "To find where it is used without printing values: list only the files (`grep -rl NAME .`)."
+        why = self.hook.format_guard_why({"rule": "R1-secret-exposure", "reason": reason, "suggestion": suggestion}, "ask")
+        self.assertEqual(why, "Jev guard [R1-secret-exposure]: " + reason + " Safer: " + suggestion)
+        self.assertNotIn("..", why)
+        self.assertEqual(why.count("Safer:"), 1)
+
 
 class PolicyHook(unittest.TestCase):
     NOTICE = ("Jev policy: a policy gate was not evaluated for this command (the helper is unavailable, the policy file is unusable, or it ran "

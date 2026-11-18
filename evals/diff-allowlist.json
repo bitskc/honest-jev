@@ -517,6 +517,16 @@
         "to": "allow",
         "justification": "Round 36c: Capitalized soft-ask carve-out is a tiny UI-verb allowlist (collect/confirm/approve), not a binary denylist. Cap interpreters/printers (Python3/Node/Paste/…) ask. Not an allowlist of those bypasses.",
         "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g1237",
+          "g1241"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 37: `grep -L` and `ag -L` are --files-without-match(es): they print file names and never a line, so a secret-name search under -L cannot show a value (main already allowed the same search under -l, -c, -q and the long forms; the short -L was the one quiet mode not read). rg's -L is --follow and still asks (g1250). `--exclude` alone does not allow (g1251), a line-printing recursive search still asks (g1246-g1249).",
+        "wrapped": "all"
       }
     ]
   },

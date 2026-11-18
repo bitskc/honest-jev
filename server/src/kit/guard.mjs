@@ -131,6 +131,11 @@ export const R1_STDIN_SCRIPT_SUGGESTION =
 export const R1_BARE_WORD_SUGGESTION =
   "If this names a secret file, do not print it; load values with `set -a; . ./file; set +a` and confirm with " +
   "`[ -n \"$KEY\" ] && echo 'key loaded'`. If it is only a label or test name, confirm and proceed.";
+// A recursive (or find-fed) grep/rg for a secret NAME: the agent wants to know where the name is used, not to load it. Every command named
+// here is itself an allow (a quiet output mode, one named file, git grep's tracked files); actionable-advice.test.mjs pins that.
+export const R1_SECRET_SEARCH_SUGGESTION =
+  "To find where it is used without printing values: list only the files (`grep -rl NAME .` or `rg -l NAME`), then grep one " +
+  "source file by name (`grep -n NAME src/app.js`), or search tracked files only (`git grep -n NAME`).";
 
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
 const REDIR_SPLIT_RE = /(?<!\d)\d*[<>]+&?/; // (?<!\d): a run of digits is tried from its first digit only (a bare `\d*` start at every digit was quadratic)
@@ -944,7 +949,8 @@ function grepFlags(prog, args) {
     if (a.length > 1 && a.startsWith("-")) {
       for (let k = 1; k < a.length; k++) {
         const c = a[k];
-        if (c === "q" || c === "c" || c === "l") quiet = true;
+        // `-L` is --files-without-match for grep and ag; for rg it is --follow (symlinks), which still prints lines, so it stays loud there.
+        if (c === "q" || c === "c" || c === "l" || (c === "L" && prog !== "rg")) quiet = true;
         if (c === "r" || c === "R") recursive = true;
         if (!valueShort.includes(c)) continue;
         const rest = a.slice(k + 1);
@@ -1629,7 +1635,7 @@ function ruleSecret(ctx) {
     if (prog === null) continue;
     if (["grep", "egrep", "rg", "ag"].includes(prog) && quietGrep(prog, args)) continue;
     if (cwds.some((c) => grepNamesSecret(prog, args, c, ctx.home)) && (grepRecursive(prog, args) || ["xargs", "find", "parallel"].includes(bareProg) || (fed ??= consumerFedListings(ctx)).size > 0)) {
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog}\` searches for a secret name across many files (recursive, or fed by find): matching lines carry their values`, suggestion: R1_SUGGESTION };
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog}\` prints every line matching a secret-looking name across many files (recursive, or fed by find). In a file like .env that line is \`NAME=value\`, so the value would land in the transcript. Approve only if showing it is acceptable.`, suggestion: R1_SECRET_SEARCH_SUGGESTION };
     }
     // openssl writes to -out/-outform's file when given one, not to stdout; a bare invocation (no -out)
     // or `-out -` (openssl's own convention for "write to stdout", not a file literally named "-") both
