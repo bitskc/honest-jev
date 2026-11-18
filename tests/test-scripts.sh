@@ -297,6 +297,10 @@ ok "$(notes_of "$doc_set")" "$n_file" "doctor: rules load + server only in the e
 ok "$(printf '%s\n' "$doc_set" | grep -c '^ok   JEV_MCP_URL set (from .* only)$')" 1 "doctor: both from the file -> URL line has the suffix"
 ok "$(printf '%s\n' "$doc_set" | grep -c '^ok   JEV_MCP_TOKEN set (from .* only)$')" 1 "doctor: both from the file -> token line has the suffix"
 ok "$(printf '%s\n' "$doc_set" | grep -c 'jev-call read')" 1 "doctor: both from the file -> the note appears once"
+printf 'JEV_MCP_TOKEN='"'"'t'"'"'\n' > "$envH/.config/jev/env"
+doc_tok_file=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_tok_file" | grep -c 'jev-call read')" 1 "doctor: only the token comes from the file -> the MCP-process note appears too"
+printf 'JEV_MCP_URL='"'"'https://x.example/mcp'"'"'\nJEV_MCP_TOKEN='"'"'t'"'"'\n' > "$envH/.config/jev/env"
 secH="$tmp/sechome"; mkdir -p "$secH/.config/jev"; printf "JEV_MCP_URL='https://sec.example/mcp'\nJEV_MCP_TOKEN='s3cr3t-T0K-9f1x'\n" > "$secH/.config/jev/env"
 doc_sec=$(HOME=$secH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>&1)
 ok "$(printf '%s\n' "$doc_sec" | grep -c 's3cr3t-T0K-9f1x\|sec.example')" 0 "doctor: neither value from the file is printed"
