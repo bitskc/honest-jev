@@ -312,7 +312,7 @@ function md(r) {
     const err = row.errors ? ` (${row.errors} child failures)` : "";
     L.push(`| ${name}${flag}${err} | ${row.n} | ${row.median ?? "-"} | ${row.p90 ?? "-"} | ${row.min ?? "-"} | ${row.max ?? "-"} | ${row.observed} | ${row.expected} |`);
   }
-  L.push("", "A local decision is not a network round trip. The Claude `ls` and warm rows never open a socket; only the worker rows do.", "");
+  L.push("", "A local decision is not a network round trip. The Claude and warm rows run with no server configured, so they make no network call; only the Worker rows, enabled by --url, do.", "");
   return L.join("\n");
 }
 
