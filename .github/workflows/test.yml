@@ -62,6 +62,10 @@ jobs:
         run: npm ci
       - name: hooks test suite
         run: node --test hooks/*.test.mjs "hooks/honest/**/*.test.mjs"
+      - name: bench script syntax and N=1 smoke (no timing gate)
+        run: |
+          node --check scripts/bench-guard.mjs
+          node scripts/bench-guard.mjs --quick > /dev/null
   ledger:
     runs-on: ubuntu-latest
     timeout-minutes: 15
