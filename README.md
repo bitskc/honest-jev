@@ -66,7 +66,7 @@ Full responses carry more (`jev.usage`, `evidence`, `notes`, `threshold`, `ask_a
 | `jev_decide` / `jev_rerank` | Which of 2–6 options wins? Which of ≤250 candidates match? | Jev |
 | + 9 more upstream `jev_*` tools | | |
 
-Every tool's full description (verbatim), required/optional inputs and annotations live in [`docs/TOOLS.md`](docs/TOOLS.md), generated from the Worker's own `tools/list` by `cd server && npm run gen:tools`; `npm test` fails when that file, the pinned upstream tool names, the tool names mentioned here, or `install.sh`'s `EXPECTED_TOOLS` drift from what the Worker serves.
+Every tool's full description (verbatim), required/optional inputs and annotations live in [`docs/TOOLS.md`](docs/TOOLS.md), generated from the Worker's own `tools/list` by `cd server && npm run gen:tools`; `npm test` fails when that file, the pinned upstream tool names, the tool names mentioned here, the "+ N more upstream" count, or `install.sh`'s `EXPECTED_TOOLS` drift from what the Worker serves.
 
 Every fixed tool **fails open with a note** when Jev is unreachable (`kit_decide` applies the failure decision its spec declares, open or closed, and reports which): the deterministic rules still decide the obvious cases, and the rest degrades to "no opinion", never a crash or a silent "safe".
 

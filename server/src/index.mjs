@@ -10,11 +10,16 @@ let handler;
 let currentEnv = {};
 
 // One factory per request: the 12 upstream tools, the 3 fixed kit tools, then the spec-driven kit_decide.
-function factory() {
+// Exported so server/scripts/gen-tools-doc.mjs generates docs/TOOLS.md through this exact chain: the
+// drift test and the deployed Worker cannot register different tools.
+export function composeServer(env = {}) {
   const server = createServer();
-  registerKitTools(server, () => currentEnv);
-  registerDecideTool(server, () => currentEnv);
+  registerKitTools(server, () => env);
+  registerDecideTool(server, () => env);
   return server;
+}
+function factory() {
+  return composeServer(currentEnv);
 }
 
 export default {

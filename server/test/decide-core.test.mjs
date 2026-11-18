@@ -342,7 +342,8 @@ test("the shipped jev-eval suite points at a real module export and a corpus the
 
 test("wiring: the Worker registers kit_decide and the installer's doctor expects the resulting tool count", async () => {
   const index = readFileSync(new URL("../src/index.mjs", import.meta.url), "utf8");
-  assert.match(index, /registerKitTools\(server, \(\) => currentEnv\);\n\s*registerDecideTool\(server, \(\) => currentEnv\);/);
+  assert.match(index, /export function composeServer\(env = \{\}\) \{\n\s*const server = createServer\(\);\n\s*registerKitTools\(server, \(\) => env\);\n\s*registerDecideTool\(server, \(\) => env\);/);
+  assert.match(index, /return composeServer\(currentEnv\);/, "the handler factory goes through the composer docs are generated from");
   const { KIT_TOOL_NAMES } = await import("../src/kit/tools.mjs");
   const { UPSTREAM_TOOL_NAMES } = await import("./helpers/upstream-tools.mjs");
   const install = readFileSync(new URL("../../install.sh", import.meta.url), "utf8");

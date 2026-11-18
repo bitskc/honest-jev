@@ -20,3 +20,9 @@ cp "$SRC"/dist/*.js vendor/
 VER=$(node -p "require('$PWD/$SRC/package.json').version" 2>/dev/null || node -p "require('$SRC/package.json').version")
 sed -i "s|^import { createRequire } from \"node:module\";||; s|^const { version: packageVersion } = .*|const packageVersion = \"$VER\";|" vendor/server.js
 grep -n "packageVersion =" vendor/server.js
+# Provenance stamp: the exact upstream commit this bundle was built from (the pin, a tag resolved by
+# the checkout, or a JEV_MCP_SRC checkout's HEAD). server/scripts/gen-tools-doc.mjs reads it for the
+# docs/TOOLS.md header, so the header can never name a different revision than the bundle beside it.
+RESOLVED=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || printf '%s' "$REF")
+printf '\n// vendorRef: %s (stamped by server/build-vendor.sh)\n' "$RESOLVED" >> vendor/server.js
+grep -n "vendorRef" vendor/server.js

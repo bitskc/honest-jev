@@ -99,7 +99,7 @@ MUTATIONS = [
     # eval target and wiring
     ("eval-target: knob params dropped", [(D + "eval-target.mjs", "knobs: params", "knobs: {}")]),
     ("eval-target: example name unchecked", [(D + "eval-target.mjs", '|| !/^[a-z0-9][a-z0-9-]{0,47}$/.test(input.example)', "")]),
-    ("wiring: kit_decide not registered", [("server/src/index.mjs", "  registerDecideTool(server, () => currentEnv);\n", "")]),
+    ("wiring: kit_decide not registered", [("server/src/index.mjs", "  registerDecideTool(server, () => env);\n", "")]),
     ("wiring: doctor expects the old tool count", [("install.sh", "EXPECTED_TOOLS=16", "EXPECTED_TOOLS=15")]),
 ]
 

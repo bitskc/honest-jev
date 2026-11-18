@@ -78,5 +78,8 @@ jobs:
       - name: install server dependencies
         working-directory: server
         run: npm ci
+      - name: build vendored upstream tools (test-ledger.sh runs the full server suite)
+        working-directory: server
+        run: npm run vendor
       - name: decision-ledger tests (python, node, bun)
         run: bash tests/test-ledger.sh
