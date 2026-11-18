@@ -126,6 +126,15 @@ for l in sys.stdin.read().splitlines():
     if l.startswith("{"): print(len(json.loads(l)["result"]["tools"])); break' 2>/dev/null || true)
     [ "$n" = "$EXPECTED_TOOLS" ] && ok "tools/list = $EXPECTED_TOOLS tools" || bad "tools/list returned '${n:-nothing}' (want $EXPECTED_TOOLS; bad token?)"
   fi
+  # omp loads its hooks from hooks/pre/, a copy made by --wire; a copy older than the installed release keeps running the old rules.
+  # Absent hook: no line (omp is not wired here, or Claude Code only); a symlink is the user's to keep current, so it is compared by content too.
+  for f in jev-guard.ts jev-honest.ts; do
+    rel="$HOME/.local/share/honest-jev/hooks/omp/$f"; cur="$omp_dir/hooks/pre/$f"
+    [ -e "$cur" ] && [ -f "$rel" ] || continue
+    if cmp -s "$rel" "$cur"; then ok "omp hook $f is current ($cur)"
+    elif [ -L "$cur" ]; then bad "omp hook $f is stale ($cur, a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire)"
+    else bad "omp hook $f is stale ($cur); run jev-update or ./install.sh --wire"; fi
+  done
   for d in "$omp_dir/skills" "$claude_dir/skills"; do [ -d "$d/jev-classify" ] && ok "skills in $d"; done
   [ -x "$bin/jev-call" ] && ok "jev-call installed" || bad "jev-call not installed (run ./install.sh)"
   exit "$fail"
@@ -169,8 +178,26 @@ install -m 644 "$here/scripts/jev-policy-hook.mjs" "$share/jev-policy/scripts/je
 printf '#!/bin/sh\nexec node "%s" "$@"\n' "$share/jev-policy/scripts/jev-policy-hook.mjs" > "$bin/jev-policy-hook" && chmod 755 "$bin/jev-policy-hook"
 # shellcheck disable=SC2115
 copy_skills() { mkdir -p "$1"; for d in "$here"/skills/*/; do n=$(basename "$d"); rm -rf "$1/$n"; cp -r "$d" "$1/$n"; done; echo "skills -> $1"; }
+# Without --wire nothing is wired, but a hook copy omp already loads would stay at the version it was wired with (omp loads it from
+# hooks/pre/, not from $share). So replace each one that EXISTS with the release copy; never create one (that is --wire). A symlink is left
+# alone (said only when it is stale). A copy that fails (read-only file or directory) is reported and the install goes on: the hook stays as it was.
+refresh_omp_hooks() {
+  local f
+  for f in jev-guard.ts jev-honest.ts; do
+    if [ -L "$1/$f" ]; then
+      cmp -s "$share/hooks/omp/$f" "$1/$f" || echo "note: omp hook $1/$f is stale and is a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire"
+      continue
+    fi
+    [ -f "$1/$f" ] || continue
+    cmp -s "$share/hooks/omp/$f" "$1/$f" && continue
+    if cp "$share/hooks/omp/$f" "$1/$f"; then echo "hook  -> refreshed $1/$f"; else echo "hook  -> could not refresh $1/$f"; fi
+  done
+}
 if [ "$target" = omp ] || [ "$target" = both ]; then
   if [ -n "$project" ]; then copy_skills "$project/.omp/skills"; else copy_skills "$omp_dir/skills"; fi
+  if [ "$wire" = 0 ]; then
+    if [ -n "$project" ]; then refresh_omp_hooks "$project/.omp/hooks/pre"; else refresh_omp_hooks "$omp_dir/hooks/pre"; fi
+  fi
 fi
 if [ "$target" = claude ] || [ "$target" = both ]; then
   if [ -n "$project" ]; then copy_skills "$project/.claude/skills"; else copy_skills "$claude_dir/skills"; fi
@@ -337,6 +364,7 @@ Next (nothing below was done for you; re-run with --wire to do steps 2-3 automat
     or config/claude-mcp.json (-> .mcp.json), or:
       claude mcp add --transport http jev "\$JEV_MCP_URL" --header "Authorization: Bearer \$JEV_MCP_TOKEN"
  3. Hooks (Honest Jev levels + guard + classify redact + Stop): re-run with --wire, or for Claude Code install the plugin
-      (/plugin marketplace add bitskc/honest-jev). Statusline badge is still manual for settings-file installs; see README.
- 4. Restart the agent (omp: /reload-plugins, then /mcp list, /mcp test jev), then: /honest-jev standard
+      (/plugin marketplace add bitskc/honest-jev), not both: they would register every hook twice. Statusline badge is still
+      manual for settings-file installs; see README.
+ 4. Restart the agent (omp: restart omp to load the hooks; /reload-plugins does not reload them. Then /mcp list, /mcp test jev), then: /honest-jev standard
 MSG
