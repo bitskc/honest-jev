@@ -39,6 +39,15 @@ PKG = "server/package.json"
 WRANGLER = "server/wrangler.jsonc"
 CI = ".github/workflows/test.yml"
 GITIGNORE = ".gitignore"
+GUARD = "server/src/kit/guard.mjs"
+KITT = ["sh", "-c", "cd server && node --test test/kit.test.mjs"]
+
+# The first version of the omp hook kept the fingerprint in a per-path map on the main thread. These two edits put such a memo back (used by the
+# "remembered per rules path" mutations below, each of which then clears it on every worker replacement but one).
+MEMO = [
+    (TS, "export type LocalVerdict", "const memo = new Map<string, string | null>();\nexport type LocalVerdict"),
+    (TS, 'reply.decision !== "block"), fp: judged.fp };', 'reply.decision !== "block"), fp: memo.has(path) ? memo.get(path)! : (memo.set(path, judged.fp), judged.fp) };'),
+]
 
 # (name, [(file, old, new), ...], command). `old` must occur exactly once.
 MUTATIONS = [
@@ -81,7 +90,7 @@ MUTATIONS = [
     # ── omp hook ──
     ("hook-omp: local step disabled", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', "  return null;")], OMPT),
     ("hook-omp: JEV_GUARD_LOCAL=off ignored", [(TS, '  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;', "")], OMPT),
-    ("hook-omp: the masked-reading model question is not unclear", [(TS, 'unclear: by === "fail_open" || (consulted > 0 && reply.decision !== "block"), fp };', 'unclear: by === "fail_open", fp };')], OMPT),
+    ("hook-omp: the masked-reading model question is not unclear", [(TS, 'unclear: by === "fail_open" || (judged.consulted > 0 && reply.decision !== "block"), fp: judged.fp };', 'unclear: by === "fail_open", fp: judged.fp };')], OMPT),
     ("hook-omp: an unclear command is treated as settled", [(TS, "const ruleSettled = local !== null && !local.unclear && (", "const ruleSettled = local !== null && (")], OMPT),
     ("hook-omp: a notice on every call", [(TS, 'local?.unclear && g.code === "client_config" && !noticed ? LOCAL_NOTICE : null;', 'local?.unclear && g.code === "client_config" ? LOCAL_NOTICE : null;')], OMPT),
     ("hook-omp: a new session is never told again", [(TS, 'async () => { noticed = false; downNoticed = false; trustNoticed.clear(); });', 'async () => { downNoticed = false; trustNoticed.clear(); });')], OMPT),
@@ -139,23 +148,41 @@ MUTATIONS = [
     ("server: CI runs the server tests without npm (no pretest)", [(CI, "        working-directory: server\n        run: npm test", '        working-directory: server\n        run: node --test "test/**/*.test.mjs"')], FPT),
     ("fingerprint: a symlinked rule file is hashed through the link", [(FPMOD, "    if (!lstatSync(file).isFile()) throw new Error(`${name} is not a regular file`);\n", "")], RUNT),
     ("runner: a rule file not named guard.mjs is fingerprinted", [(FPMOD, 'if (basename(guardPath) !== "guard.mjs") return { path: guardPath, fp: null };', "")], RUNT),
-    ("hook-omp: a symlinked rule file is hashed through the link", [(TS, "    if (!lstatSync(file).isFile()) throw new Error(`${name} is not a regular file`);\n", "")], OMPT),
+    ("hook-omp: a symlinked rule file is hashed through the link", [(TS, '    if (!lstatSync(file).isFile()) throw new Error(name + " is not a regular file");\n', "")], OMPT),
     ("doctor: rules that cannot be fingerprinted are not a failure", [(INST, 'if [ -z "$lfp" ]; then bad "guard rules cannot be fingerprinted', 'if [ -z "$lfp" ]; then ok "guard rules cannot be fingerprinted')], SCRIPTS),
     ("hook-omp: a rule file not named guard.mjs is fingerprinted", [(TS, 'if (basename(path) === "guard.mjs") {', "if (true) {")], OMPT),
-    ("hook-omp: a different fingerprint still trusts the local allow (trust the local allow on mismatch)", [(TS, 'return theirs === local.fp ? "match" : "mismatch";', 'return "match";')], OMPT),
-    ("hook-omp: an unavailable server fingerprint counts as a match", [(TS, 'if (theirs === null) return "unverified";', 'if (theirs === null) return "match";')], OMPT),
-    ("hook-omp: rules that are not the whole release count as a match", [(TS, 'if (local.fp === null || !FP_RE.test(local.fp)) return "unverified";', 'if (local.fp === null || !FP_RE.test(local.fp)) return "match";')], OMPT),
-    ("hook-omp: a local ask or block is judged by the fingerprint too (stricter is not kept)", [(TS, 'if (ruleSettled && local!.reply.decision === "allow" && (process.env', 'if (ruleSettled && (process.env')], OMPT),
-    ("hook-omp: no notice for a rules mismatch", [(TS, 'if ((trust === "mismatch" || trust === "unverified") && !trustNoticed.has(trust)) {', "if (false) {")], OMPT),
-    ("hook-omp: the rules notice repeats on every call", [(TS, 'if ((trust === "mismatch" || trust === "unverified") && !trustNoticed.has(trust)) {', 'if (trust === "mismatch" || trust === "unverified") {')], OMPT),
+    ("hook-omp: a different fingerprint still trusts the local allow (trust the local allow on mismatch)", [(TS, 'return theirs === null ? "unverified" : "mismatch";', 'return theirs === null ? "unverified" : "match";')], OMPT),
+    ("hook-omp: an unavailable server fingerprint counts as a match", [(TS, 'return theirs === null ? "unverified" : "mismatch";', 'return theirs === null ? "match" : "mismatch";')], OMPT),
+    ("hook-omp: rules that are not the whole release count as a match", [(TS, 'if (local.fp === null || !FP_RE.test(local.fp)) return serverDownCode() ? "down" : "unverified";', 'if (local.fp === null || !FP_RE.test(local.fp)) return "match";')], OMPT),
+    ("hook-omp: a local ask or block is judged by the fingerprint too (stricter is not kept)", [(TS, 'if (ruleSettled && local!.reply.decision === "allow" && mcpToken() !== ""', 'if (ruleSettled && mcpToken() !== ""')], OMPT),
+    ("hook-omp: no notice for a rules mismatch", [(TS, 'if ((trust === "mismatch" || trust === "unverified" || trust === "down") && !trustNoticed.has(trust)) {', "if (false) {")], OMPT),
+    ("hook-omp: the rules notice repeats on every call", [(TS, 'if ((trust === "mismatch" || trust === "unverified" || trust === "down") && !trustNoticed.has(trust)) {', 'if (trust === "mismatch" || trust === "unverified" || trust === "down") {')], OMPT),
     ("hook-omp: a new session never hears the rules notice again", [(TS, "downNoticed = false; trustNoticed.clear(); });", "downNoticed = false; });")], OMPT),
     ("hook-omp: the cached server fingerprint never expires", [(TS, "now - serverFp.at < (serverFp.fp ? FP_TTL_MS : FP_TTL_DOWN_MS)", "true")], OMPT),
     ("hook-omp: 'the server gave none' is remembered as long as a real fingerprint", [(TS, "(serverFp.fp ? FP_TTL_MS : FP_TTL_DOWN_MS)", "FP_TTL_MS")], OMPT),
     ("hook-omp: the fingerprint fetch has no time budget", [(TS, "      signal: AbortSignal.timeout(FP_FETCH_MS),\n", "")], OMPT),
-    ("hook-omp: the fingerprint is fetched without the token", [(TS, 'headers: { authorization: `Bearer ${(process.env.JEV_MCP_TOKEN ?? "").trim()}`, "user-agent": "jev-guard-hook-omp/1.0" },', 'headers: { "user-agent": "jev-guard-hook-omp/1.0" },')], OMPT),
+    ("hook-omp: the fingerprint is fetched without the token", [(TS, 'headers: { authorization: `Bearer ${mcpToken()}`, "user-agent": "jev-guard-hook-omp/1.0" },', 'headers: { "user-agent": "jev-guard-hook-omp/1.0" },')], OMPT),
     ("hook-omp: the fingerprint function misses a file", [(TS, 'export const RULE_FILES = ["guard.mjs", "safere.mjs", "shell.mjs"] as const;', 'export const RULE_FILES = ["guard.mjs", "safere.mjs"] as const;')], OMPT),
-    ("hook-omp: the fingerprint is not length-framed", [(TS, "    h.update(`${name}\\0${bytes.length}\\0`);\n", "")], OMPT),
-    ("hook-omp: the rules are looked up again on every call (a rewritten file takes effect)", [(TS, "  let p = rulesByPath.get(path);\n  if (!p) {", "  let p: Promise<Loaded> | undefined;\n  if (!p) {")], OMPT),
+    ("hook-omp: the fingerprint is not length-framed", [(TS, '    h.update(name + "\\\\0" + bytes.length + "\\\\0");\n', "")], OMPT),
+    ("hook-omp: the rules are looked up again on every call (a rewritten file takes effect)", [(TS, "    let loaded = cache.get(path);\n    if (!loaded) {", "    let loaded;\n    if (!loaded) {")], OMPT),
+    # ── the fingerprint describes what the worker that produced the verdict loaded ──
+    ("hook-omp: the fingerprint is the hash taken before the import only", [(TS, "if (after === before) fp = after;", "fp = before;")], OMPT),
+    ("hook-omp: the fingerprint is the hash taken after the import only", [(TS, "if (after === before) fp = after;", "fp = after;")], OMPT),
+    ("hook-omp: a crashed worker is waited out until the budget", [(TS, '    w.on("exit", onDead);\n    w.postMessage', "    w.postMessage"), (TS, '    w.on("error", onDead);\n', "")], OMPT),
+    ("hook-omp: a rules failure keeps the worker (the next call cannot re-import)", [(TS, "else { dropWorker(w); finish({ ok: false }); }", "else { finish({ ok: false }); }")], OMPT),
+    ("hook-omp: the worker is not forgotten when it exits", [(TS, '    w.on("exit", gone);\n', "")], OMPT),
+    # A per-path memo of the fingerprint on the main thread, as the first version had it (put back here to prove the tests catch each way it goes stale).
+    ("hook-omp: a fingerprint remembered per rules path survives a worker timeout", [*MEMO, (TS, "const onDead = () => finish({ ok: false });", "const onDead = () => { memo.clear(); finish({ ok: false }); };"), (TS, "const gone = () => { if (rulesWorker === w) rulesWorker = null; };", "const gone = () => { memo.clear(); if (rulesWorker === w) rulesWorker = null; };"), (TS, "else { dropWorker(w); finish({ ok: false }); }", "else { memo.clear(); dropWorker(w); finish({ ok: false }); }")], OMPT),
+    ("hook-omp: a fingerprint remembered per rules path survives a worker crash or an uncaught error in it", [*MEMO, (TS, "const timer = setTimeout(() => { dropWorker(w); finish({ notRun: true }); }, localBudgetMs());", "const timer = setTimeout(() => { memo.clear(); dropWorker(w); finish({ notRun: true }); }, localBudgetMs());"), (TS, "else { dropWorker(w); finish({ ok: false }); }", "else { memo.clear(); dropWorker(w); finish({ ok: false }); }")], OMPT),
+    ("hook-omp: a fingerprint remembered per rules path survives a rules failure (a throw in the guard)", [*MEMO, (TS, "const timer = setTimeout(() => { dropWorker(w); finish({ notRun: true }); }, localBudgetMs());", "const timer = setTimeout(() => { memo.clear(); dropWorker(w); finish({ notRun: true }); }, localBudgetMs());"), (TS, "const onDead = () => finish({ ok: false });", "const onDead = () => { memo.clear(); finish({ ok: false }); };"), (TS, "const gone = () => { if (rulesWorker === w) rulesWorker = null; };", "const gone = () => { memo.clear(); if (rulesWorker === w) rulesWorker = null; };")], OMPT),
+    # ── the kit token file (~/.config/jev/env): READ and glob coverage, and the narrow WRITE rule (not the dotenv read list) ──
+    ("guard: a write is judged by the whole read list (cp .env.example .env blocks again)", [(GUARD, "return KIT_TOKEN_FILE_RE.test(normalizePath(expand(a, home)));", "return SECRET_PATH_RES.some((r) => r.test(normalizePath(expand(a, home))));")], KITT),
+    ("guard: a redirect onto the token file is not blocked", [(GUARD, "else if (isKitTokenFileTok(t, ctx.home)) yield tokenFile(", "else if (false) yield tokenFile(")], KITT),
+    ("guard: cp/mv/install onto the token file is not blocked", [(GUARD, "} else if (dest && isKitTokenFileTok(dest, ctx.home)) {", "} else if (false) {")], KITT),
+    ("guard: the token file write is reported as an irreversible overwrite", [(GUARD, 'const tokenFile = (reason) => ({ rule: "R1-secret-exfiltration", severity: "block"', 'const tokenFile = (reason) => ({ rule: "R7-irreversible", severity: "block"')], KITT),
+    ("guard: a backup named after the token file is not a secret store", [(GUARD, "\\.config\\/jev\\/env(?![A-Za-z0-9])/,", "\\.config\\/jev\\/env$/,")], KITT),
+    ("guard: glob spellings of the token file are not covered", [(GUARD, '["airlock", "env"], ["jev", "env"]];', '["airlock", "env"]];')], KITT),
+    ("guard: the whole of ~/.config/jev is a secret store", [(GUARD, "\\.config\\/jev\\/env(?![A-Za-z0-9])/,", "\\.config\\/jev\\//,")], KITT),
     # ── the remembered "server down" window ──
     ("hook-py: the down window is never opened", [(PYH, "        if is_network_error(e):\n            code = _ledger.fail_reason_for(e)", "        if False:\n            code = _ledger.fail_reason_for(e)")], PYT),
     ("hook-py: an HTTPError (the server answered: 5xx with a body) counts as a network error", [(PYH, "        if isinstance(e, urllib.error.HTTPError):\n            return False\n", "        pass\n")], PYT),

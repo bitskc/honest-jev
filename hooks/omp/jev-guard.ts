@@ -12,13 +12,12 @@
 //   - the built-in read tool is named "read" with event.input.path (only used for secret-file reads)
 // Endpoint and token come from JEV_MCP_URL and JEV_MCP_TOKEN, then ~/.config/jev/env; never hardcode them.
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { Worker } from "node:worker_threads";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 // Env is read per call, never at module load: one module instance is shared by every test file in a `bun test` process,
 // so a load-time read freezes whichever file imported the hook first.
@@ -99,45 +98,19 @@ type GuardFn = (args: Record<string, unknown>, deps: { ask: () => Promise<never>
 // The rules fingerprint: sha256 over the rule files the local guard runs (the same function as hooks/jev-rules-fingerprint.mjs, which the
 // Claude Code runner and the Worker's generator use; this file is copied alone, so it carries its own copy and tests/local-first-omp.test.ts
 // pins the two to the same value). Each file is hashed as `<name> NUL <byte length> NUL <bytes>`.
-export const RULE_FILES = ["guard.mjs", "safere.mjs", "shell.mjs"] as const;
-export function rulesFingerprint(kitDir: string): string {
-  const h = createHash("sha256");
-  for (const name of RULE_FILES) {
-    const file = join(kitDir, name);
-    if (!lstatSync(file).isFile()) throw new Error(`${name} is not a regular file`);
-    const bytes = readFileSync(file);
-    h.update(`${name}\0${bytes.length}\0`);
-    h.update(bytes);
-  }
-  return h.digest("hex");
-}
-
-// The module is imported once per path and kept for the life of the process, and its fingerprint is taken just before that import, so it
-// describes the rules that actually run here: a rule file rewritten on disk afterwards changes nothing in this process, and a `jev-update`
-// does not reach it either until omp restarts. The server's fingerprint then no longer matches, and the server decides (see rulesTrust).
+//
+// The copy lives in the rules worker (RULES_WORKER below), not on the main thread: the fingerprint is computed by the same thread that
+// imports the rules, in the same resolved directory, and travels back with each verdict. So it describes the bytes THAT worker loaded, by
+// construction, and no state on the main thread (nothing keyed by path, nothing to clear when a worker is killed, crashes or exits) can
+// say otherwise. The worker imports the module once per path and keeps it for its life: a rule file rewritten on disk afterwards changes
+// nothing in that worker, and a replacement worker re-reads the disk and fingerprints what it then loads.
 // The hash and the import look at the SAME files: Node loads a symlinked guard.mjs from its real path, together with the siblings beside
 // that path, so a link among the rule files would let the three names hash as genuine while other bytes run. A rule file that is not a regular
-// file makes rulesFingerprint throw (no fingerprint: the server decides), and when the three are regular files the directory is resolved
-// (it, or a parent, may legitimately be a link) and both the hash and the import come from the resolved directory. Same as resolveRules in
-// hooks/jev-rules-fingerprint.mjs.
-type Loaded = { from: string; fp: string | null };
-const loadedByPath = new Map<string, Loaded>();
-function loadRules(path: string): Loaded {
-  const hit = loadedByPath.get(path);
-  if (hit) return hit;
-  let fp: string | null = null;
-  let from = path;
-  try {
-    if (basename(path) === "guard.mjs") {
-      const real = realpathSync(dirname(path));
-      fp = rulesFingerprint(real);
-      from = join(real, "guard.mjs");
-    }
-  } catch { /* not verifiable (a link among the rule files, not the whole release, a test's single stub module): nothing to verify */ }
-  const v = { from, fp };
-  loadedByPath.set(path, v);
-  return v;
-}
+// file makes the hash throw (no fingerprint: the server decides), and when the three are regular files the directory is resolved (it, or a
+// parent, may legitimately be a link) and both the hash and the import come from the resolved directory. Same as resolveRules in
+// hooks/jev-rules-fingerprint.mjs. The hash is taken before the import and again after it; a rule file that changed in between has no
+// fingerprint.
+export const RULE_FILES = ["guard.mjs", "safere.mjs", "shell.mjs"] as const;
 
 function localBudgetMs(): number {
   const v = Number(process.env.JEV_GUARD_LOCAL_TIMEOUT ?? "1.5");
@@ -145,24 +118,50 @@ function localBudgetMs(): number {
   return Math.min(1.5, Math.max(0.1, v)) * 1000;
 }
 
-// One worker for the life of the process. A call that misses the budget terminates it; the next call starts a fresh one,
-// which re-reads the rules from disk. The source is a string because this file is copied alone into the omp hooks dir.
+// One worker at a time. A call that misses the budget terminates it, and one that crashes or exits ends it; the next call starts a fresh
+// one, which re-reads the rules from disk and fingerprints what it loads. The source is a string because this file is copied alone into
+// the omp hooks dir.
 const RULES_WORKER = `
 import { parentPort } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+const RULE_FILES = ${JSON.stringify(RULE_FILES)};
+function rulesFingerprint(kitDir) {
+  const h = createHash("sha256");
+  for (const name of RULE_FILES) {
+    const file = join(kitDir, name);
+    if (!lstatSync(file).isFile()) throw new Error(name + " is not a regular file");
+    const bytes = readFileSync(file);
+    h.update(name + "\\0" + bytes.length + "\\0");
+    h.update(bytes);
+  }
+  return h.digest("hex");
+}
 const cache = new Map();
+async function load(path) {
+  let from = path, before = null;
+  try {
+    if (basename(path) === "guard.mjs") {
+      const real = realpathSync(dirname(path));
+      before = rulesFingerprint(real);
+      from = join(real, "guard.mjs");
+    }
+  } catch { before = null; from = path; }
+  const m = await import(pathToFileURL(from).href);
+  if (typeof m.guardCommand !== "function") throw new Error("no guardCommand");
+  let fp = null;
+  if (before !== null) { try { const after = rulesFingerprint(dirname(from)); if (after === before) fp = after; } catch { fp = null; } }
+  return { guard: m.guardCommand, fp };
+}
 parentPort.on("message", async ({ id, path, args }) => {
   try {
-    let guard = cache.get(path);
-    if (!guard) {
-      const m = await import(pathToFileURL(path).href);
-      guard = m.guardCommand;
-      if (typeof guard !== "function") throw new Error("no guardCommand");
-      cache.set(path, guard);
-    }
+    let loaded = cache.get(path);
+    if (!loaded) { loaded = await load(path); cache.set(path, loaded); }
     let consulted = 0;
-    const reply = await guard({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
-    parentPort.postMessage({ id, ok: true, reply, consulted });
+    const reply = await loaded.guard({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
+    parentPort.postMessage({ id, ok: true, reply, consulted, fp: loaded.fp });
   } catch {
     parentPort.postMessage({ id, ok: false });
   }
@@ -172,30 +171,39 @@ let rulesWorker: Worker | null = null;
 let rulesSeq = 0;
 function worker(): Worker {
   if (!rulesWorker) {
-    rulesWorker = new Worker(RULES_WORKER, { eval: true });
-    rulesWorker.on("error", () => { rulesWorker = null; });
+    const w = new Worker(RULES_WORKER, { eval: true });
+    const gone = () => { if (rulesWorker === w) rulesWorker = null; };
+    w.on("error", gone);
+    w.on("exit", gone);
+    rulesWorker = w;
   }
   return rulesWorker;
 }
-function dropWorker(path: string): void {
-  rulesWorker?.terminate();
-  rulesWorker = null;
-  loadedByPath.delete(path);
+function dropWorker(w: Worker): void {
+  void w.terminate();
+  if (rulesWorker === w) rulesWorker = null;
 }
-type WorkerReply = { ok: true; reply: Record<string, unknown>; consulted: number } | { ok: false } | { notRun: true };
+type WorkerReply = { ok: true; reply: Record<string, unknown>; consulted: number; fp: string | null } | { ok: false } | { notRun: true };
 function judgeInWorker(path: string, args: Record<string, unknown>): Promise<WorkerReply> {
   const id = ++rulesSeq;
   const w = worker();
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (v: WorkerReply) => { if (settled) return; settled = true; clearTimeout(timer); w.off("message", onMsg); resolve(v); };
-    const timer = setTimeout(() => { dropWorker(path); finish({ notRun: true }); }, localBudgetMs());
-    const onMsg = (m: { id?: number; ok?: boolean; reply?: Record<string, unknown>; consulted?: number }) => {
+    const finish = (v: WorkerReply) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); w.off("message", onMsg); w.off("error", onDead); w.off("exit", onDead);
+      resolve(v);
+    };
+    const onDead = () => finish({ ok: false }); // crashed or exited: not the budget, and the answer is not waited for
+    const timer = setTimeout(() => { dropWorker(w); finish({ notRun: true }); }, localBudgetMs());
+    const onMsg = (m: { id?: number; ok?: boolean; reply?: Record<string, unknown>; consulted?: number; fp?: string | null }) => {
       if (m.id !== id) return;
-      if (m.ok && m.reply) finish({ ok: true, reply: m.reply, consulted: m.consulted ?? 0 });
-      else finish({ ok: false });
+      if (m.ok && m.reply) finish({ ok: true, reply: m.reply, consulted: m.consulted ?? 0, fp: typeof m.fp === "string" ? m.fp : null });
+      else { dropWorker(w); finish({ ok: false }); } // the rules did not load or threw: a fresh worker re-imports them on the next call
     };
     w.on("message", onMsg);
+    w.on("error", onDead);
+    w.on("exit", onDead);
     w.postMessage({ id, path, args });
   });
 }
@@ -215,13 +223,12 @@ export async function localGuard(args: Record<string, unknown>): Promise<LocalVe
   try {
     const path = guardRulesPath();
     if (!path) return { notRun: true };
-    const { from, fp } = loadRules(path);
-    const judged = await judgeInWorker(from, args);
+    const judged = await judgeInWorker(path, args);
     if (!("ok" in judged) || !judged.ok) return { notRun: true };
     const reply = judged.reply;
     const by = reply.decided_by;
     if (!["allow", "ask", "block"].includes(String(reply.decision)) || !["prefilter", "fail_closed", "fail_open"].includes(String(by))) return { notRun: true };
-    return { reply, unclear: by === "fail_open" || (judged.consulted > 0 && reply.decision !== "block"), fp };
+    return { reply, unclear: by === "fail_open" || (judged.consulted > 0 && reply.decision !== "block"), fp: judged.fp };
   } catch { return { notRun: true }; }
 }
 

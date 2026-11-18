@@ -48,7 +48,7 @@ globalThis.fetch = (async (url: string, init: { body?: string; method?: string; 
   if (guardMode === "rpcerror") return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "Invalid arguments" } }));
   return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(reply) }] } }));
 }) as typeof fetch;
-afterAll(() => { globalThis.fetch = realFetch; });
+afterAll(() => { globalThis.fetch = realFetch; rmSync(dir, { recursive: true, force: true }); rmSync(FAKE_HOME, { recursive: true, force: true }); });
 
 // Dynamic import on purpose: the omp package is stubbed by mock.module above, which a hoisted static import would run before. The rules
 // path is chosen at run time, as in the hook.
@@ -401,14 +401,15 @@ const SERVER_ALLOWS = { decision: "allow", rule: null, reason: "", suggestion: n
 
 test("the omp copy of the fingerprint function is the Claude Code runner's and the Worker generator's, byte for byte", async () => {
   expect([...mod.RULE_FILES]).toEqual([...NODE_RULE_FILES]);
-  expect(mod.rulesFingerprint(KIT)).toBe(RULES_FP);
-  for (const edit of [allowAll, staleRelease]) {
-    const d = dirname(kitCopy(edit));
-    expect(mod.rulesFingerprint(d)).toBe(nodeFingerprint(d));
-    expect(mod.rulesFingerprint(d)).not.toBe(RULES_FP);
-  }
   env();
   expect((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" }) as { fp: string }).fp).toBe(RULES_FP);
+  for (const edit of [allowAll, staleRelease]) {
+    const p = kitCopy(edit);
+    env({ JEV_GUARD_RULES: p });
+    const fp = ((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string }).fp;
+    expect(fp).toBe(nodeFingerprint(dirname(p)));
+    expect(fp).not.toBe(RULES_FP);
+  }
 });
 
 test("a matching fingerprint trusts the local allow; the server's fingerprint is fetched once, with the token, and then remembered", async () => {
@@ -624,17 +625,15 @@ test("only a file named guard.mjs is fingerprinted", async () => {
   expect(((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string | null }).fp).toBeNull();
 });
 
-test("rulesFingerprint refuses a symlink and a non-regular file, as the Node function does (the pin covers the refusal too)", () => {
-  const kit = dirname(kitCopy()), elsewhere = dirname(kitCopy());
-  expect(mod.rulesFingerprint(kit)).toBe(nodeFingerprint(kit));
-  rmSync(join(kit, "shell.mjs"));
-  symlinkSync(join(elsewhere, "shell.mjs"), join(kit, "shell.mjs"));
-  expect(() => mod.rulesFingerprint(kit)).toThrow();
-  expect(() => nodeFingerprint(kit)).toThrow();
+test("a rule file that is a directory has no fingerprint and the rules do not run (the refusal is the Node function's too)", async () => {
+  const kit = dirname(kitCopy());
+  expect(nodeFingerprint(kit)).toBe(RULES_FP);
   rmSync(join(kit, "shell.mjs"));
   mkdirSync(join(kit, "shell.mjs"));
-  expect(() => mod.rulesFingerprint(kit)).toThrow();
   expect(() => nodeFingerprint(kit)).toThrow();
+  env({ JEV_GUARD_RULES: join(kit, "guard.mjs"), ...NO_SERVER });
+  const v = await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" }) as { fp?: string | null; notRun?: boolean };
+  expect(v.fp ?? null).toBeNull();
 });
 
 test("a kit directory reached through a symlink is fine: the fingerprint is that of the resolved directory, which is what runs", async () => {
@@ -643,6 +642,133 @@ test("a kit directory reached through a symlink is fine: the fingerprint is that
   symlinkSync(real, link);
   env({ JEV_GUARD_RULES: join(link, "guard.mjs") });
   expect(((await mod.localGuard({ tool: "Bash", command: "ls", cwd: "/p", home: "/h" })) as { fp: string | null }).fp).toBe(RULES_FP);
+});
+
+// ── the fingerprint describes the bytes of the worker that produced the verdict ──────────────────────────────────────────────────────
+// The worker is killed when a call misses the budget, and ends when a rule module crashes it; the next worker re-reads the rules from disk.
+// Whatever happened in between (the files rewritten, the kit directory or HOME behind a symlink), a verdict's fp must be the hash of the
+// files THAT worker loaded: never the one remembered from the worker before.
+const WRAPPED_HEAD = 'export async function guardCommand(input, deps = {}) {\n  if (input.command === "HANG") for (;;) {}\n  if (input.command === "CRASH") process.exit(3);\n  if (input.command === "THROW") throw new Error("rule bug");\n  return realGuardCommand(input, deps);\n}\nasync function realGuardCommand(input, deps = {}) {';
+const wrapped = (t: string) => t.replace("export async function guardCommand(input, deps = {}) {", WRAPPED_HEAD);
+const GENUINE_GUARD = readFileSync(RULES, "utf8");
+type Judged = { reply: { decision: string }; fp: string | null };
+const judge = async (command: string) => (await mod.localGuard({ tool: "Bash", command, cwd: "/home/u/p", home: "/home/u" })) as Judged & { notRun?: true };
+const rewrite = (guard: string, text: string) => writeFileSync(guard, text);
+const withBudget = (seconds: string | undefined) => { if (seconds === undefined) delete process.env.JEV_GUARD_LOCAL_TIMEOUT; else process.env.JEV_GUARD_LOCAL_TIMEOUT = seconds; };
+
+test("a worker killed for missing the budget leaves no fingerprint behind: the kit directory behind a symlink, rules rewritten after", async () => {
+  const real = dirname(kitCopy(wrapped));
+  const link = join(mkdtempSync(join(dir, "dirlink-")), "kit");
+  symlinkSync(real, link);
+  env({ JEV_GUARD_RULES: join(link, "guard.mjs"), ...NO_SERVER });
+  const fp1 = nodeFingerprint(real);
+  expect((await judge("cat .env")).fp).toBe(fp1);
+  withBudget("0.2");
+  expect(await judge("HANG")).toEqual({ notRun: true }); // the worker is killed here
+  withBudget(undefined);
+  rewrite(join(real, "guard.mjs"), allowAll(GENUINE_GUARD));
+  const v2 = nodeFingerprint(real);
+  expect(v2).not.toBe(fp1);
+  const c = await judge("cat .env");
+  expect(c.reply.decision, "premise: the rewritten rules are what runs now").toBe("allow");
+  expect(c.fp).toBe(v2);
+  // and the same worker keeps what it loaded: a second rewrite changes neither the verdict nor the fingerprint
+  rewrite(join(real, "guard.mjs"), GENUINE_GUARD);
+  const d = await judge("cat .env");
+  expect([d.reply.decision, d.fp]).toEqual(["allow", v2]);
+});
+
+test("a worker killed for missing the budget leaves no fingerprint behind: HOME behind a symlink, no override", async () => {
+  const realHome = mkdtempSync(join(dir, "realhome-"));
+  const kit = join(realHome, ".local", "share", "honest-jev", "jev-policy", "server", "src", "kit");
+  mkdirSync(kit, { recursive: true });
+  for (const f of NODE_RULE_FILES) cpSync(join(KIT, f), join(kit, f));
+  writeFileSync(join(kit, "guard.mjs"), wrapped(GENUINE_GUARD));
+  const linkHome = join(mkdtempSync(join(dir, "homelink-")), "home");
+  symlinkSync(realHome, linkHome);
+  env({ HOME: linkHome, JEV_GUARD_RULES: undefined, ...NO_SERVER });
+  const fp1 = nodeFingerprint(kit);
+  expect((await judge("ls")).fp).toBe(fp1);
+  withBudget("0.2");
+  expect(await judge("HANG")).toEqual({ notRun: true });
+  withBudget(undefined);
+  rewrite(join(kit, "guard.mjs"), allowAll(GENUINE_GUARD));
+  const c = await judge("cat .env");
+  expect(c.reply.decision).toBe("allow");
+  expect(c.fp).toBe(nodeFingerprint(kit));
+  expect(c.fp).not.toBe(fp1);
+});
+
+test("a worker that crashes (process.exit) leaves no fingerprint behind, and the call does not wait for the budget", async () => {
+  const real = dirname(kitCopy(wrapped));
+  const link = join(mkdtempSync(join(dir, "dirlink-")), "kit");
+  symlinkSync(real, link);
+  env({ JEV_GUARD_RULES: join(link, "guard.mjs"), ...NO_SERVER });
+  const fp1 = nodeFingerprint(real);
+  expect((await judge("ls")).fp).toBe(fp1);
+  const t0 = Date.now();
+  expect(await judge("CRASH")).toEqual({ notRun: true });
+  expect(Date.now() - t0, "the dead worker is noticed, not waited out").toBeLessThan(1000);
+  rewrite(join(real, "guard.mjs"), allowAll(GENUINE_GUARD));
+  const c = await judge("cat .env");
+  expect(c.reply.decision, "premise: the rewritten rules are what runs now").toBe("allow");
+  expect(c.fp).toBe(nodeFingerprint(real));
+  expect(c.fp).not.toBe(fp1);
+});
+
+test("a worker that dies of an uncaught error leaves no fingerprint behind", async () => {
+  const real = dirname(kitCopy((t) => `setTimeout(() => { throw new Error("late"); }, 0);\n${t}`));
+  const link = join(mkdtempSync(join(dir, "dirlink-")), "kit");
+  symlinkSync(real, link);
+  env({ JEV_GUARD_RULES: join(link, "guard.mjs"), ...NO_SERVER });
+  const fp1 = nodeFingerprint(real);
+  const a = await judge("ls");
+  expect(a.notRun === true || a.fp === fp1, "the first verdict is the first rules' or none").toBe(true);
+  await new Promise((r) => setTimeout(r, 200)); // the worker has died of the error by now
+  rewrite(join(real, "guard.mjs"), allowAll(GENUINE_GUARD));
+  const c = await judge("cat .env");
+  expect(c.reply.decision, "premise: the rewritten rules are what runs now").toBe("allow");
+  expect(c.fp).toBe(nodeFingerprint(real));
+  expect(c.fp).not.toBe(fp1);
+});
+
+test("a rule that throws: no verdict, and the next call re-imports the rules with the right fingerprint", async () => {
+  const real = dirname(kitCopy(wrapped));
+  const guard = join(real, "guard.mjs");
+  env({ JEV_GUARD_RULES: guard, ...NO_SERVER });
+  const fp1 = nodeFingerprint(real);
+  expect((await judge("ls")).fp).toBe(fp1);
+  expect(await judge("THROW")).toEqual({ notRun: true });
+  rewrite(guard, allowAll(GENUINE_GUARD));
+  const b = await judge("cat .env");
+  expect(b.reply.decision, "premise: the rewritten rules are what runs now").toBe("allow");
+  expect(b.fp).toBe(nodeFingerprint(real));
+  expect(b.fp).not.toBe(fp1);
+});
+
+test("a rule module that throws at import: no verdict, and the next call (rules fixed) recovers with the right fingerprint", async () => {
+  const real = dirname(kitCopy(wrapped));
+  const guard = join(real, "guard.mjs");
+  env({ JEV_GUARD_RULES: guard, ...NO_SERVER });
+  const fp1 = nodeFingerprint(real);
+  expect((await judge("ls")).fp).toBe(fp1);
+  expect(await judge("CRASH")).toEqual({ notRun: true });
+  rewrite(guard, `throw new Error("broken release");\n${GENUINE_GUARD}`);
+  expect(await judge("ls")).toEqual({ notRun: true });
+  rewrite(guard, allowAll(GENUINE_GUARD));
+  const c = await judge("cat .env");
+  expect(c.reply.decision).toBe("allow");
+  expect(c.fp).toBe(nodeFingerprint(real));
+  expect(c.fp).not.toBe(fp1);
+});
+
+test("a rule file rewritten while the rules load has no fingerprint", async () => {
+  // guard.mjs's own body runs after the siblings are loaded and rewrites one of them: neither hash (before or after the import) describes what ran
+  const p = kitCopy((t) => `import { appendFileSync as __rewrite } from "node:fs";\n__rewrite(new URL("./safere.mjs", import.meta.url), "\\n// changed while loading\\n");\n${t}`);
+  env({ JEV_GUARD_RULES: p, ...NO_SERVER });
+  const v = await judge("cat .env");
+  expect(v.reply.decision, "the rules still run").toBe("block");
+  expect(v.fp).toBeNull();
 });
 
 // ── the remembered "server down" window ──────────────────────────────────────────────────────────────────────────────────────
