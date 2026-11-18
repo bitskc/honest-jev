@@ -791,9 +791,19 @@ const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest
 // tiny UI-verb *allowlist* (not a binary denylist): on case-insensitive exec FS, `Python3`/`Node`/
 // `Paste` resolve to real binaries, so Cap words outside the allowlist ask — same as unknown lowercase.
 const BARE_WORD_UI_VERBS = new Set(["collect", "confirm", "approve"]);
-function bareWordContextAsks(prog, args = []) {
-  if (!prog) return false;
+// A word holding a paren, brace, `;` or `=` is source text, not an executable name: `getSession()`, `session.get(x)`, `a.b=c`, `=>`
+// come from the body of an interpreter script (`node -e`, a stdin heredoc) that the walk reads as shell lines, and nothing can
+// print a credential under that name. Neither can `//` or `./` (a directory: the empty basename) or a `#` comment word.
+// Its shape matches (`.env`) still block; only the bare-word soft ask is skipped.
+// A command word that starts a substitution (`$(which cat) token`, `` `which cat` token ``) is a runtime-chosen program: it keeps asking.
+const isNotAProgram = (w) => w === "" || w.startsWith("#") || (!/^[$`]/.test(w) && /[(){};=]/.test(w));
+// `head` is the segment's own first word, `prog` the command resolved behind it. They differ where the head is junk that the resolver
+// peels past (`// fetch token` resolves to `fetch`): the remainder of such a line still asks when it begins with a real reader
+// (`// cat token`), but not for an unknown word, which is script text rather than a printer.
+function bareWordContextAsks(prog, args = [], head = prog) {
+  if (!prog || isNotAProgram(prog)) return false;
   const folded = prog.toLowerCase();
+  if (head !== prog && isNotAProgram(head ?? "")) return READERS.has(folded) || copiesToTerminal(folded, args);
   // `cp`/`install`/`mv`/`rsync` are NON_CONTENT unless they copy onto a print device (`cp token /dev/stdout`).
   if (copiesToTerminal(folded, args)) return true;
   if (NON_CONTENT_PROGS.has(folded) || CREDENTIAL_CONSUMER_PROGS.has(folded)) return false;
@@ -1675,7 +1685,7 @@ function ruleSecret(ctx) {
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
     // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
     if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
-      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args))) {
+      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args, programOf(seg)[0]))) {
       const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
       soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }

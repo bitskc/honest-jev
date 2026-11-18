@@ -189,6 +189,9 @@ export function words(segment) {
     if (ch === "(") {
       // A `(` right after a word that is not a shell keyword is not shell grouping (`name(` is a function head or an
       // interpreter call such as `console.log(process.env.HOME)` inside a `node -e` payload): it stays in the word.
+      // `name()(cmd)`: the `(` right after a complete `name()` head opens the function's subshell body, a grouping paren of its own
+      // (kept glued it would pull the body's closing `)` onto its last word: `.env)` is not `.env`).
+      if (substDepth === 0 && inWord && /^[A-Za-z_][\w.-]*\(\)$/.test(buf)) { flush(); out.push("("); continue; }
       if (substDepth > 0 || (inWord && !PAREN_KEYWORDS.has(buf))) {
         substDepth++; buf += ch; inWord = true; continue;
       }
@@ -389,9 +392,21 @@ export function peelCommand(toksIn, opts = {}) {
       }
       if (!t0 || t0 === ")" || isCaseLabel(t0) || (KEYWORD_SKIP.has(t0) && t0 !== "select") || ASSIGN_RE.test(t0)) { pos++; continue; }
       if (t0 === "time") { pos++; while (pos < toks.length && toks[pos] === "-p") pos++; continue; }
-      // a function header (`f() {`, `f () {`, `function f {`, `function f() {`) is not the command: the body's first command follows it
-      if (/^[A-Za-z_][\w.-]*\(\)$/.test(t0) && toks[pos + 1] === "{") { pos += 2; continue; }
-      if (t0 === "function" && /^[A-Za-z_][\w.-]*(?:\(\))?$/.test(toks[pos + 1] ?? "") && (toks[pos + 2] === "{" || (toks[pos + 1].endsWith("()") && toks[pos + 2] === undefined))) { pos += toks[pos + 2] === "{" ? 3 : 2; continue; }
+      // A function header is never the command; the body's first command follows it and is what the rules must see. Every shape
+      // is peeled, whatever the body opens with: `f() {`, `f(){`, `f () {`, `f() ( cmd )`, `f()(cmd)`, `f() if ...`, `f() cmd`,
+      // `function f {`, `function f() ( cmd )`, `function f(){`. The body is never dropped (`f() ( cat .env )` still reads `cat .env`).
+      const head = FUNC_HEAD_TOKEN_RE.exec(t0);
+      if (head) { if (head[1]) toks[pos] = head[1]; else pos++; continue; }
+      if (FUNC_NAME_RE.test(t0) && !KEYWORD_SKIP.has(t0) && !PAREN_KEYWORDS.has(t0) && toks[pos + 1] === "(" && toks[pos + 2] === ")") { pos += 3; continue; }
+      if (t0 === "function") {
+        const def = FUNC_DEF_NAME_RE.exec(toks[pos + 1] ?? "");
+        if (def) {
+          if (def[1]) { toks[pos + 1] = def[1]; pos++; continue; }
+          pos += 2;
+          if (toks[pos] === "(" && toks[pos + 1] === ")") pos += 2;
+          continue;
+        }
+      }
       break;
     }
     if (pos >= toks.length) return redirs.slice(); // only redirects: the first one stands as the "program" (`> /dev/sda`)
@@ -719,8 +734,13 @@ export function processSubBodies(command) {
   return out;
 }
 
-// `f() { cmd; }` and `function f { cmd; }`: the header segment carries the body's first command after `{`.
-const FUNC_HEADER_RE = /^\s*(?:function\s+[A-Za-z_][\w.-]*\s*(?:\(\s*\))?|[A-Za-z_][\w.-]*\s*\(\s*\))\s*\{\s*(\S.*)$/s;
+// A function-header token: `name()`, optionally glued to a brace (`name(){`); group 1 is what follows `()`. A subshell body's `(` is split off by words().
+const FUNC_HEAD_TOKEN_RE = /^[A-Za-z_][\w.-]*\(\)(\{.*)?$/s;
+const FUNC_NAME_RE = /^[A-Za-z_][\w.-]*$/;
+// The word after `function`: the name, with its `()` and glued opener when present.
+const FUNC_DEF_NAME_RE = /^[A-Za-z_][\w.-]*(?:\(\))?(\{.*)?$/s;
+// `f() { cmd; }`, `f() ( cmd )`, `f() cmd` and `function f { cmd; }`: the header segment carries the body's first command after the opener.
+const FUNC_HEADER_RE = /^\s*(?:function\s+[A-Za-z_][\w.-]*(?![\w.-])\s*(?:\(\s*\))?|[A-Za-z_][\w.-]*\s*\(\s*\))\s*(?:[{(]\s*)?(\S.*)$/s;
 
 
 // ── wrapper unwrap: bash -c/sh -c/eval/xargs/find -exec/su/ssh/..., shared by every rule ──────────────
@@ -909,7 +929,7 @@ export function unwrapScripts(segments, maxDepth = 3) {
       // A function header's body text is script text too: `f() { rm -rf /; }; f` splits its first command
       // onto the header segment, where no rule would read it.
       const fn = FUNC_HEADER_RE.exec(seg);
-      if (fn) { out.push(fn[1]); walk(splitSegments(stripHeredocs(fn[1])), depth + 1); }
+      if (fn && !/^[{(]$/.test(fn[1])) { out.push(fn[1]); walk(splitSegments(stripHeredocs(fn[1])), depth + 1); }
       let [prog, args] = programOf(seg);
       if (prog === null) continue;
       const invoked = indirectInvokes(prog, args);
