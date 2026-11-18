@@ -754,8 +754,16 @@ export async function verifyDone(input, deps = {}) {
       // Only a check in program position can count, whatever `passed` says: a check verb in a commit message, an
       // argument, or a quoted string is text, and a non-check with passed:true must never be a fresh check.
       if (!commandRunsCheck(command)) return null;
-      if (typeof c.passed === "boolean") return { call, passed: c.passed };
       const outcome = runOutcome(command, c.output || "", typeof c.exit_code === "number" ? c.exit_code : undefined);
+      if (typeof c.passed === "boolean") {
+        // `passed` only fills in for an unrecognised run. Failure text or a nonzero exit_code beats every pass signal, the
+        // override included: `passed: true` beside `Tests: 3 failed` or `exit_code: 1` is a failed check, not a verified one.
+        if (c.passed && outcome === "fail") {
+          notes.push(`Check '${call}' was sent passed:true, but its own output or exit_code reports a failure; the failure wins.`);
+          return { call, passed: false };
+        }
+        return { call, passed: c.passed };
+      }
       if (outcome !== "unknown") return { call, passed: outcome === "pass" };
       // No trustworthy result (no recognised summary and no exit_code, or a masked exit status): never a pass.
       notes.push(`Check '${call}' has no trustworthy pass/fail result (no recognised summary and no exit_code, or its exit status is masked by || true or a pipe). Send exit_code or paste the runner's summary lines.`);
