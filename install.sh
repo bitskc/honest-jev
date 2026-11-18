@@ -132,6 +132,7 @@ for l in sys.stdin.read().splitlines():
     rel="$HOME/.local/share/honest-jev/hooks/omp/$f"; cur="$omp_dir/hooks/pre/$f"
     [ -e "$cur" ] && [ -f "$rel" ] || continue
     if cmp -s "$rel" "$cur"; then ok "omp hook $f is current ($cur)"
+    elif [ -L "$cur" ]; then bad "omp hook $f is stale ($cur, a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire)"
     else bad "omp hook $f is stale ($cur); run jev-update or ./install.sh --wire"; fi
   done
   for d in "$omp_dir/skills" "$claude_dir/skills"; do [ -d "$d/jev-classify" ] && ok "skills in $d"; done
@@ -178,14 +179,18 @@ printf '#!/bin/sh\nexec node "%s" "$@"\n' "$share/jev-policy/scripts/jev-policy-
 # shellcheck disable=SC2115
 copy_skills() { mkdir -p "$1"; for d in "$here"/skills/*/; do n=$(basename "$d"); rm -rf "$1/$n"; cp -r "$d" "$1/$n"; done; echo "skills -> $1"; }
 # Without --wire nothing is wired, but a hook copy omp already loads would stay at the version it was wired with (omp loads it from
-# hooks/pre/, not from $share). So replace each one that EXISTS with the release copy; never create one (that is --wire). A symlink is left alone.
+# hooks/pre/, not from $share). So replace each one that EXISTS with the release copy; never create one (that is --wire). A symlink is left
+# alone (said only when it is stale). A copy that fails (read-only file or directory) is reported and the install goes on: the hook stays as it was.
 refresh_omp_hooks() {
   local f
   for f in jev-guard.ts jev-honest.ts; do
-    if [ -L "$1/$f" ]; then echo "note: $1/$f is a symlink; left alone, keep its target current yourself"; continue; fi
+    if [ -L "$1/$f" ]; then
+      cmp -s "$share/hooks/omp/$f" "$1/$f" || echo "note: omp hook $1/$f is stale and is a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire"
+      continue
+    fi
     [ -f "$1/$f" ] || continue
     cmp -s "$share/hooks/omp/$f" "$1/$f" && continue
-    cp "$share/hooks/omp/$f" "$1/$f" && echo "hook  -> refreshed $1/$f"
+    if cp "$share/hooks/omp/$f" "$1/$f"; then echo "hook  -> refreshed $1/$f"; else echo "hook  -> could not refresh $1/$f"; fi
   done
 }
 if [ "$target" = omp ] || [ "$target" = both ]; then

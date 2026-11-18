@@ -583,7 +583,23 @@ ok "$(cat "$cvH/.omp/agent/hooks/pre/jev-guard.ts")" "// old" "hooks refresh: --
 slH="$tmp/symhome"; mkdir -p "$slH/.omp/agent/hooks/pre"; printf '// mine\n' > "$tmp/mine.ts"; ln -s "$tmp/mine.ts" "$slH/.omp/agent/hooks/pre/jev-guard.ts"
 out=$(HOME=$slH bash "$root/install.sh" --omp 2>&1)
 ok "$(cat "$tmp/mine.ts") $([ -L "$slH/.omp/agent/hooks/pre/jev-guard.ts" ] && echo link)" "// mine link" "hooks refresh: a symlinked hook (and its target) is left alone"
-ok "$(printf '%s\n' "$out" | grep -c '^note: .*jev-guard.ts is a symlink; left alone')" 1 "hooks refresh: ... and says so"
+ok "$(printf '%s\n' "$out" | grep -c "^note: omp hook $slH/.omp/agent/hooks/pre/jev-guard.ts is stale and is a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire$")" 1 "hooks refresh: ... and says so, with the same advice as the doctor"
+# a symlink to a CURRENT file is silent; a repeat of the stale one still gets the note
+cp "$rel_g" "$tmp/mine.ts"; out=$(HOME=$slH bash "$root/install.sh" --omp 2>&1)
+ok "$(printf '%s\n' "$out" | grep -c 'omp hook .* symlink' || true)" 0 "hooks refresh: a symlinked hook that is already current says nothing"
+# a failed copy (read-only target) is reported, the install carries on (rc 0, the rest of the output still printed), and each file behaves the same
+if [ "$(id -u)" = 0 ]; then echo "SKIP hooks refresh: read-only targets (root ignores file modes)"; else
+  for ro in jev-guard.ts jev-honest.ts; do
+    other=jev-honest.ts; [ "$ro" = jev-honest.ts ] && other=jev-guard.ts
+    rwH="$tmp/rohome-$ro"; rwD="$rwH/.omp/agent/hooks/pre"; mkdir -p "$rwD"; printf '// old\n' > "$rwD/jev-guard.ts"; printf '// old\n' > "$rwD/jev-honest.ts"; chmod 444 "$rwD/$ro"
+    out=$(HOME=$rwH bash "$root/install.sh" --omp 2>&1); rc=$?
+    ok "$rc" 0 "hooks refresh: read-only $ro -> install.sh still exits 0"
+    ok "$(printf '%s\n' "$out" | grep -c "^hook  -> could not refresh $rwD/$ro$")" 1 "hooks refresh: read-only $ro -> 'could not refresh' line"
+    ok "$(cat "$rwD/$ro")" "// old" "hooks refresh: read-only $ro stays as it was"
+    ok "$(cmp -s "$root/hooks/omp/$other" "$rwD/$other" && echo refreshed)" refreshed "hooks refresh: read-only $ro -> the other hook is still refreshed"
+    ok "$(printf '%s\n' "$out" | grep -c '^helper ')" 1 "hooks refresh: read-only $ro -> the rest of the install still runs"
+  done
+fi
 # (4) doctor: stale -> FAIL + exit 1; current -> ok; absent -> no line
 hdH="$tmp/hookdoc"; mkdir -p "$hdH/.omp/agent/hooks/pre"; HOME=$hdH bash "$root/install.sh" --omp >/dev/null 2>&1
 hook_doctor() { HOME=$hdH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>&1; }
@@ -597,6 +613,12 @@ doc_h=$(hook_doctor); HOME=$hdH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:
 ok "$(printf '%s\n' "$doc_h" | grep "^FAIL omp hook")" "FAIL omp hook jev-guard.ts is stale ($hdH/.omp/agent/hooks/pre/jev-guard.ts); run jev-update or ./install.sh --wire" "doctor: stale omp guard hook -> FAIL line naming the path and the fix"
 ok "$rc" 1 "doctor: stale omp guard hook -> exit 1"
 ok "$(printf '%s\n' "$doc_h" | grep -c 'omp hook jev-honest.ts is current')" 1 "doctor: ... and the current honest hook still reports ok"
+# a stale SYMLINKED hook: the doctor says jev-update leaves links alone and what to do instead
+ln -sf "$tmp/mine.ts" "$hdH/.omp/agent/hooks/pre/jev-guard.ts"; printf '// old\n' > "$tmp/mine.ts"
+doc_h=$(hook_doctor)
+ok "$(printf '%s\n' "$doc_h" | grep "^FAIL omp hook")" "FAIL omp hook jev-guard.ts is stale ($hdH/.omp/agent/hooks/pre/jev-guard.ts, a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire)" "doctor: stale symlinked omp hook -> FAIL with advice that matches jev-update"
+cp "$rel_g" "$tmp/mine.ts"; doc_h=$(hook_doctor)
+ok "$(printf '%s\n' "$doc_h" | grep -c '^ok   omp hook jev-guard.ts is current')" 1 "doctor: a symlinked omp hook that is current -> ok"
 # (5) update.sh end to end (offline curl stub serves this tree as the archive): a stale hook is refreshed, an absent one is not created
 uH="$tmp/updhook"; mkdir -p "$uH/.omp/agent/hooks/pre" "$uH/.claude"; printf '// old\n' > "$uH/.omp/agent/hooks/pre/jev-guard.ts"
 out=$(HOME=$uH PATH="$ustub:$PATH" REPO_ROOT="$root" JEV_REF=main bash "$root/update.sh" --omp 2>&1); rc=$?
@@ -605,6 +627,19 @@ ok "$(cmp -s "$rel_g" "$uH/.omp/agent/hooks/pre/jev-guard.ts" && echo refreshed)
 ok "$(cmp -s "$uH/.local/share/honest-jev/hooks/omp/jev-guard.ts" "$uH/.omp/agent/hooks/pre/jev-guard.ts" && echo same)" same "update: ... to the copy in the share dir"
 ok "$([ -e "$uH/.omp/agent/hooks/pre/jev-honest.ts" ] && echo created || echo none)" none "update: the honest hook was absent and is not created"
 ok "$(printf '%s\n' "$out" | grep -c '^hook  -> refreshed ')" 1 "update: prints one refreshed line"
+# jev-update with a stale symlinked hook and a read-only stale one: same notes as install.sh, the update still completes
+uS="$tmp/updsym"; mkdir -p "$uS/.omp/agent/hooks/pre" "$uS/.claude"; printf '// old\n' > "$tmp/updsym-target.ts"; ln -s "$tmp/updsym-target.ts" "$uS/.omp/agent/hooks/pre/jev-guard.ts"
+out=$(HOME=$uS PATH="$ustub:$PATH" REPO_ROOT="$root" JEV_REF=main bash "$root/update.sh" --omp 2>&1); rc=$?
+ok "$rc" 0 "update: a stale symlinked hook does not fail the update"
+ok "$(printf '%s\n' "$out" | grep -c "^note: omp hook $uS/.omp/agent/hooks/pre/jev-guard.ts is stale and is a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire$")" 1 "update: ... and prints the symlink note"
+ok "$(cat "$tmp/updsym-target.ts")" "// old" "update: ... and the link target is untouched"
+if [ "$(id -u)" != 0 ]; then
+  uR="$tmp/updro"; mkdir -p "$uR/.omp/agent/hooks/pre" "$uR/.claude"; printf '// old\n' > "$uR/.omp/agent/hooks/pre/jev-honest.ts"; chmod 444 "$uR/.omp/agent/hooks/pre/jev-honest.ts"
+  out=$(HOME=$uR PATH="$ustub:$PATH" REPO_ROOT="$root" JEV_REF=main bash "$root/update.sh" --omp 2>&1); rc=$?
+  ok "$rc" 0 "update: a read-only stale hook does not fail the update"
+  ok "$(printf '%s\n' "$out" | grep -c "^hook  -> could not refresh $uR/.omp/agent/hooks/pre/jev-honest.ts$")" 1 "update: ... and says it could not refresh it"
+  ok "$(cat "$uR/.local/share/honest-jev/installed-ref" 2>/dev/null)" "0000000000000000000000000000000000000000" "update: ... and still records the installed ref"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
