@@ -341,7 +341,7 @@ MIT, © 2026 bitskc / Andy Hayes — [`LICENSE`](LICENSE). Built on jkudish/jev-
 
 ## Security
 
-Guard owner policy (issues #7 / #12): metadata verbs and `source`/`. .env` **ask**; well-known vendor/connection names are secret-named; unresolved `credentials*` globs on read-only tools **allow**. Strict-mode `jev_classify` is **redact-or-refuse** (Stop gate + `hooks/jev-classify-redact.js`; see `skills/jev-honest/SKILL.md`).
+Guard owner policy (issues #7 / #12): metadata verbs and `source`/`. .env` **ask**; well-known vendor/connection names are secret-named; unresolved `credentials*` globs on read-only tools **allow**. Strict-mode `jev_classify` is **redact-or-refuse** (Stop gate + `hooks/jev-classify-redact.js`, which runs as a Claude Code `PreToolUse` hook only and returns the redacted call as `hookSpecificOutput.updatedInput`; omp has no equivalent PreToolUse redaction, so skill-initiated classify calls there must redact by hand, see `skills/jev-honest/SKILL.md`).
 
 
 Never commit `.dev.vars`, `.env`, tokens, or your worker URL if you want it private. The endpoint is public and protected only by the bearer token: use a long random value and rotate with `wrangler secret put MCP_BEARER_TOKEN`.

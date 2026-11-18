@@ -4,6 +4,8 @@
 set -u
 hook="$(cd "$(dirname "$0")/../hooks" && pwd)/jev-guard-hook.sh"
 : "${JEV_MCP_TOKEN:?set JEV_MCP_TOKEN}"; : "${JEV_MCP_URL:?set JEV_MCP_URL}"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+export JEV_LEDGER="$tmp/ledger.jsonl"  # decision rows go to a scratch file, never the user's real log
 pass=0; fail=0
 run() { # name expect(decision or none) stdin-json [env assignments...]
   local name="$1" expect="$2" input="$3"; shift 3
