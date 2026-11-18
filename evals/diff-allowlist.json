@@ -509,11 +509,13 @@
       },
       {
         "ids": [
-          "g1226"
+          "g1226",
+          "g1233",
+          "g1234"
         ],
         "from": "ask",
         "to": "allow",
-        "justification": "Round 36b case-fold fix: Capitalized agent/UI verbs that do not fold to a known reader/printer/wrapper/test binary (`Collect token`) stay allow. Paste/Cat/Open/Sudo/Npm ask. Not an allowlist of the Cat/Paste bypass.",
+        "justification": "Round 36c: Capitalized soft-ask carve-out is a tiny UI-verb allowlist (collect/confirm/approve), not a binary denylist. Cap interpreters/printers (Python3/Node/Paste/…) ask. Not an allowlist of those bypasses.",
         "wrapped": "all"
       }
     ]

@@ -780,30 +780,20 @@ const FIND_PREDICATE_OPTS = new Set(["-name", "-iname", "-path", "-ipath", "-reg
 const FIND_EXEC_OPTS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 const TEST_FILTER_OPTS = new Set(["--grep", "--testNamePattern", "-t", "-k", "-m"]);
 const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest", "vitest", "jest", "mocha"]);
-// Soft bare-word asks only when the program can print (or stage/send) the operand.
-// Shape matches (`.env`) still block for any program. Case is folded: on case-insensitive exec FS
-// (macOS APFS, Windows) `Cat`/`Paste`/`Sudo` resolve to real binaries, so Capitalized spellings of
-// known printers/wrappers must ask. Unknown Capitalized words that are not known binaries
-// (`Collect token`) stay allow as agent/UI phrasing. Unknown lowercase tools still ask, as on main.
-const BARE_WORD_ASK_PROGS = new Set(["sort", "uniq", "curl", "wget", "tar", "zip", "unzip", "git", "kubectl", "docker", "podman",
-  "vim", "nvim", "vi", "nano", "emacs", "ed", "view", "ex", "rvim", "vimdiff"]);
-// Wrappers / printers not already covered by READERS / TEST_PROGS / BARE_WORD_ASK_PROGS / PRINTS_STDIN_PROGS.
-// Includes elevation wrappers that programOf only peels when spelled lowercase (`Sudo cat …`).
-const BARE_WORD_WRAPPER_PROGS = new Set([
-  "open", "sudo", "doas", "env", "timeout", "time", "nohup", "nice", "stdbuf", "xargs",
-  "command", "builtin", "exec", "su", "chroot", "eval", "pkexec", "rename",
-]);
+// Soft bare-word asks when the program can print/stage/run the operand. Shape matches (`.env`) still
+// block for any program. Case is folded for NON_CONTENT / copiesToTerminal. Capitalized carve-out is a
+// tiny UI-verb *allowlist* (not a binary denylist): on case-insensitive exec FS, `Python3`/`Node`/
+// `Paste` resolve to real binaries, so Cap words outside the allowlist ask — same as unknown lowercase.
+const BARE_WORD_UI_VERBS = new Set(["collect", "confirm", "approve"]);
 function bareWordContextAsks(prog, args = []) {
   if (!prog) return false;
   const folded = prog.toLowerCase();
   // `cp`/`install`/`mv`/`rsync` are NON_CONTENT unless they copy onto a print device (`cp token /dev/stdout`).
   if (copiesToTerminal(folded, args)) return true;
   if (NON_CONTENT_PROGS.has(folded) || CREDENTIAL_CONSUMER_PROGS.has(folded)) return false;
-  if (READERS.has(folded) || TEST_PROGS.has(folded) || BARE_WORD_ASK_PROGS.has(folded) || COPY_PROGS.has(folded)) return true;
-  if (PRINTS_STDIN_PROGS.has(folded) || BARE_WORD_WRAPPER_PROGS.has(folded)) return true;
-  // Capitalized / Title Case words that are not known binaries: agent/UI phrasing (`Collect token`).
-  if (/^[A-Z]/.test(prog)) return false;
-  // Unknown lowercase tools: ask (safe default; matches main's "every other program can print" tier).
+  // Only verified agent/UI verbs that are not known binaries may skip the soft ask (`Collect token`).
+  if (/^[A-Z]/.test(prog) && BARE_WORD_UI_VERBS.has(folded)) return false;
+  // Safe default: ask for Cap interpreters (`Python3`, `Node`), Cap printers (`Paste`), and unknown lowercase.
   return true;
 }
 const GREP_VALUE_OPTS = new Set(["-A", "-B", "-C", "-m", "-d", "-D", "-g", "-t", "-T", "--include", "--exclude",
@@ -1676,7 +1666,7 @@ function ruleSecret(ctx) {
     }
     if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` on a secret store (${store.hit}) would print its contents`, suggestion: R1_SUGGESTION };
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
-    // Bare credential words ask only for programs that can print/stage the operand (case-folded; `Collect token` may allow).
+    // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
     if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
       && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args))) {
       const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;

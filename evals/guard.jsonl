@@ -1252,4 +1252,12 @@
 {"id":"g1223","expected":"ask","why":"round 36b: lowercase paste still asks.","input":{"command":"paste token","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1224","expected":"ask","why":"round 36b: Sudo is not peeled when Capitalized; bare-word ask still fires.","input":{"command":"Sudo cat token","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1225","expected":"ask","why":"round 36b: Npm folds to npm (test runner).","input":{"command":"Npm test credentials","cwd":"/home/u/proj","home":"/home/u"}}
-{"id":"g1226","expected":"allow","why":"round 36b: unknown Capitalized UI verb that is not a known binary stays allow.","input":{"command":"Collect token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1226","expected":"allow","why":"round 36c: Capitalized UI-verb allowlist (Collect/Confirm/Approve) may skip soft ask; Cap interpreters must ask.","input":{"command":"Collect token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1227","expected":"ask","why":"round 36c: Python3 folds to a real interpreter on case-insensitive exec FS.","input":{"command":"Python3 token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1228","expected":"ask","why":"round 36c: Node folds to node.","input":{"command":"Node token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1229","expected":"ask","why":"round 36c: Ruby Cap interpreter asks.","input":{"command":"Ruby token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1230","expected":"ask","why":"round 36c: Deno Cap interpreter asks.","input":{"command":"Deno token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1231","expected":"ask","why":"round 36c: Wl-copy Cap clipboard tool asks.","input":{"command":"Wl-copy token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1232","expected":"ask","why":"round 36c: lowercase python3 still asks (symmetry control).","input":{"command":"python3 token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1233","expected":"allow","why":"round 36c: Confirm is on the UI-verb allowlist.","input":{"command":"Confirm password","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1234","expected":"allow","why":"round 36c: Approve is on the UI-verb allowlist.","input":{"command":"Approve secrets","cwd":"/home/u/proj","home":"/home/u"}}

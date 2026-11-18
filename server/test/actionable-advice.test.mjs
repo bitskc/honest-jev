@@ -30,7 +30,7 @@ test("bare credential word on a content printer asks with the bare-word suggesti
   }
 });
 
-test("case-folded known printers/wrappers with a bare credential word ask (macOS/Windows exec FS)", async () => {
+test("Capitalized known printers/wrappers/interpreters ask (UI carve-out is an allowlist, not a denylist)", async () => {
   for (const c of [
     "Cat token",
     "CAT token",
@@ -43,6 +43,16 @@ test("case-folded known printers/wrappers with a bare credential word ask (macOS
     "Sudo cat token",
     "Npm test credentials",
     "Rename token",
+    "Python3 token",
+    "Node token",
+    "Ruby token",
+    "Perl token",
+    "Php token",
+    "Sqlite3 token",
+    "Lua token",
+    "Deno token",
+    "Wl-copy token",
+    "Xclip token",
   ]) {
     const r = await g(c);
     assert.equal(r.decision, "ask", c);
@@ -50,14 +60,14 @@ test("case-folded known printers/wrappers with a bare credential word ask (macOS
   }
 });
 
-test("unknown Capitalized UI verbs that are not known binaries still allow", async () => {
+test("Capitalized UI-verb allowlist still allows Collect/Confirm/Approve", async () => {
   for (const c of ["Collect token", "Confirm password", "Approve secrets"]) {
     assert.equal((await g(c)).decision, "allow", c);
   }
 });
 
 test("lowercase unknown tools and editors still ask on a bare credential word", async () => {
-  for (const c of ["vim token", "nano token", "nvim password"]) {
+  for (const c of ["vim token", "nano token", "nvim password", "python3 token", "node token"]) {
     assert.equal((await g(c)).decision, "ask", c);
   }
 });
