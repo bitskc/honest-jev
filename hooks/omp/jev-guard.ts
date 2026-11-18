@@ -1,4 +1,5 @@
-// omp (oh-my-pi) hook: jev-mcp kit_guard_command before every bash tool call.
+// omp (oh-my-pi) hook: the guard rules before every bash/read/grep tool call. The deterministic rules run locally, in this
+// process, first (see "local rules" below); only a command they cannot settle goes to jev-mcp kit_guard_command, if a server is configured.
 // Install:  cp jev-guard.ts ~/.omp/agent/hooks/pre/jev-guard.ts   (user)   or   .omp/hooks/pre/   (project)
 // Try once: omp --hook /abs/path/jev-guard.ts
 //
@@ -9,17 +10,45 @@
 // ASSUMED (not verified; this file has not been run inside omp):
 //   - ctx.ui.confirm(title, message) exists and returns Promise<boolean> (used for "ask"; guarded by typeof check)
 //   - the built-in read tool is named "read" with event.input.path (only used for secret-file reads)
-// Endpoint and token come from the env vars JEV_MCP_URL and JEV_MCP_TOKEN; never hardcode them.
+// Endpoint and token come from JEV_MCP_URL and JEV_MCP_TOKEN, then ~/.config/jev/env; never hardcode them.
 import { isToolCallEventType, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 // Env is read per call, never at module load: one module instance is shared by every test file in a `bun test` process,
 // so a load-time read freezes whichever file imported the hook first.
-const mcpUrl = (): string => (process.env.JEV_MCP_URL ?? "").trim(); // e.g. https://<your-worker>.workers.dev/mcp
+/** Quoted KEY='value' from ~/.config/jev/env, or "". Never executes the file. Same rule as install.sh env_get. */
+export function envFileValue(key: string, env: Record<string, string | undefined> = process.env): string {
+  const home = env.HOME ?? "";
+  if (!home || !isAbsolute(home)) return "";
+  try {
+    const p = join(home, ".config", "jev", "env");
+    const st = statSync(p);
+    if (!st.isFile() || st.size > 65536) return "";
+    let found = "";
+    for (const raw of readFileSync(p, "utf8").split("\n")) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (line.startsWith(key + "=")) found = line.slice(key.length + 1);
+    }
+    if (found.length < 2 || !found.startsWith("'") || !found.endsWith("'")) return "";
+    return found.slice(1, -1).replaceAll("'\\''", "'");
+  } catch {
+    return "";
+  }
+}
+function fromEnvOrFile(key: string): string {
+  const url = (process.env.JEV_MCP_URL ?? "").trim();
+  const tok = (process.env.JEV_MCP_TOKEN ?? "").trim();
+  // A pair, never one from the process and the other from the file (#61).
+  if (!url && !tok) return envFileValue(key).trim();
+  return key === "JEV_MCP_URL" ? url : tok;
+}
+const mcpUrl = (): string => fromEnvOrFile("JEV_MCP_URL"); // e.g. https://<your-worker>.workers.dev/mcp
+const mcpToken = (): string => fromEnvOrFile("JEV_MCP_TOKEN");
 const timeoutMs = (): number => Number(process.env.JEV_GUARD_TIMEOUT ?? "2") * 1000;
 const shadow = (): boolean => process.env.JEV_GUARD_MODE === "shadow";
 const askNoUi = (): string => process.env.JEV_GUARD_ASK_NO_UI ?? "block"; // "block" | "allow" when "ask" but nobody can answer
@@ -34,6 +63,256 @@ export function parseAskAt(raw: string | undefined): number | undefined {
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
 }
 const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT);
+
+// ── local rules (local-first guard) ─────────────────────────────────────────────────────────────────────────────────
+// The deterministic rules (server/src/kit/guard.mjs, shell.mjs, safere.mjs: no npm package) run IN THIS PROCESS before any
+// network call. A command a rule settles is answered from that result and never leaves the machine; only a command the rules
+// cannot settle without a model ("unclear") goes on to the server, and only if one is configured. This file is copied alone
+// into ~/.omp/agent/hooks/pre/, so the rules are found by path at run time: $JEV_GUARD_RULES (an absolute path to guard.mjs;
+// when set it is the only candidate; tests use it), else the install.sh tree ~/.local/share/honest-jev/jev-policy/server/src/kit,
+// else the pre-rename install dir. The module is imported once per path and cached. JEV_GUARD_LOCAL=off skips all of this.
+// The rules run in a worker thread with the same budget as the Claude hook (JEV_GUARD_LOCAL_TIMEOUT, default 1.5 s, clamped
+// to 0.1..1.5). A run that does not finish is killed and treated as "the rules did not run" (#49). The module stays loaded
+// in that worker, so a file rewritten on disk after the first call does not change what this process runs.
+export const LOCAL_NOTICE = "Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
+export const LOCAL_DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
+export const TRUST_NOTICES: Record<"mismatch" | "unverified" | "down", string> = {
+  mismatch: "Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which.",
+  unverified: "Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
+  down: "Honest Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, without a server call. Run install.sh --doctor for details.",
+};
+
+export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
+  const custom = (env.JEV_GUARD_RULES ?? "").trim();
+  if (custom) return isAbsolute(custom) && exists(custom) ? custom : null;
+  const home = (env.HOME ?? "").trim() || homedir();
+  for (const dir of ["honest-jev", "jev-agent-skills"]) {
+    const p = join(home, ".local", "share", dir, "jev-policy", "server", "src", "kit", "guard.mjs");
+    if (exists(p)) return p;
+  }
+  return null;
+}
+
+type GuardFn = (args: Record<string, unknown>, deps: { ask: () => Promise<never>; jevAvailable: boolean }) => Promise<Record<string, unknown>>;
+
+// The rules fingerprint: sha256 over the rule files the local guard runs (the same function as hooks/jev-rules-fingerprint.mjs, which the
+// Claude Code runner and the Worker's generator use; this file is copied alone, so it carries its own copy and tests/local-first-omp.test.ts
+// pins the two to the same value). Each file is hashed as `<name> NUL <byte length> NUL <bytes>`.
+//
+// The copy lives in the rules worker (RULES_WORKER below), not on the main thread: the fingerprint is computed by the same thread that
+// imports the rules, in the same resolved directory, and travels back with each verdict. So it describes the bytes THAT worker loaded, by
+// construction, and no state on the main thread (nothing keyed by path, nothing to clear when a worker is killed, crashes or exits) can
+// say otherwise. The worker imports the module once per path and keeps it for its life: a rule file rewritten on disk afterwards changes
+// nothing in that worker, and a replacement worker re-reads the disk and fingerprints what it then loads.
+// The hash and the import look at the SAME files: Node loads a symlinked guard.mjs from its real path, together with the siblings beside
+// that path, so a link among the rule files would let the three names hash as genuine while other bytes run. A rule file that is not a regular
+// file makes the hash throw (no fingerprint: the server decides), and when the three are regular files the directory is resolved (it, or a
+// parent, may legitimately be a link) and both the hash and the import come from the resolved directory. Same as resolveRules in
+// hooks/jev-rules-fingerprint.mjs. The hash is taken before the import and again after it; a rule file that changed in between has no
+// fingerprint.
+export const RULE_FILES = ["guard.mjs", "safere.mjs", "shell.mjs"] as const;
+
+function localBudgetMs(): number {
+  const v = Number(process.env.JEV_GUARD_LOCAL_TIMEOUT ?? "1.5");
+  if (!Number.isFinite(v)) return 1500;
+  return Math.min(1.5, Math.max(0.1, v)) * 1000;
+}
+
+// One worker at a time. A call that misses the budget terminates it, and one that crashes or exits ends it; the next call starts a fresh
+// one, which re-reads the rules from disk and fingerprints what it loads. The source is a string because this file is copied alone into
+// the omp hooks dir.
+const RULES_WORKER = `
+import { parentPort } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+const RULE_FILES = ${JSON.stringify(RULE_FILES)};
+function rulesFingerprint(kitDir) {
+  const h = createHash("sha256");
+  for (const name of RULE_FILES) {
+    const file = join(kitDir, name);
+    if (!lstatSync(file).isFile()) throw new Error(name + " is not a regular file");
+    const bytes = readFileSync(file);
+    h.update(name + "\\0" + bytes.length + "\\0");
+    h.update(bytes);
+  }
+  return h.digest("hex");
+}
+const cache = new Map();
+async function load(path) {
+  let from = path, before = null;
+  try {
+    if (basename(path) === "guard.mjs") {
+      const real = realpathSync(dirname(path));
+      before = rulesFingerprint(real);
+      from = join(real, "guard.mjs");
+    }
+  } catch { before = null; from = path; }
+  const m = await import(pathToFileURL(from).href);
+  if (typeof m.guardCommand !== "function") throw new Error("no guardCommand");
+  let fp = null;
+  if (before !== null) { try { const after = rulesFingerprint(dirname(from)); if (after === before) fp = after; } catch { fp = null; } }
+  return { guard: m.guardCommand, fp };
+}
+parentPort.on("message", async ({ id, path, args }) => {
+  try {
+    let loaded = cache.get(path);
+    if (!loaded) { loaded = await load(path); cache.set(path, loaded); }
+    let consulted = 0;
+    const reply = await loaded.guard({ ...args }, { jevAvailable: true, ask: async () => { consulted++; throw new Error("no model in the local runner"); } });
+    parentPort.postMessage({ id, ok: true, reply, consulted, fp: loaded.fp });
+  } catch {
+    parentPort.postMessage({ id, ok: false });
+  }
+});
+`;
+let rulesWorker: Worker | null = null;
+let rulesSeq = 0;
+function worker(): Worker {
+  if (!rulesWorker) {
+    const w = new Worker(RULES_WORKER, { eval: true });
+    const gone = () => { if (rulesWorker === w) rulesWorker = null; };
+    w.on("error", gone);
+    w.on("exit", gone);
+    rulesWorker = w;
+  }
+  return rulesWorker;
+}
+function dropWorker(w: Worker): void {
+  void w.terminate();
+  if (rulesWorker === w) rulesWorker = null;
+}
+type WorkerReply = { ok: true; reply: Record<string, unknown>; consulted: number; fp: string | null } | { ok: false } | { notRun: true };
+function judgeInWorker(path: string, args: Record<string, unknown>): Promise<WorkerReply> {
+  const id = ++rulesSeq;
+  const w = worker();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v: WorkerReply) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); w.off("message", onMsg); w.off("error", onDead); w.off("exit", onDead);
+      resolve(v);
+    };
+    const onDead = () => finish({ ok: false }); // crashed or exited: not the budget, and the answer is not waited for
+    const timer = setTimeout(() => { dropWorker(w); finish({ notRun: true }); }, localBudgetMs());
+    const onMsg = (m: { id?: number; ok?: boolean; reply?: Record<string, unknown>; consulted?: number; fp?: string | null }) => {
+      if (m.id !== id) return;
+      if (m.ok && m.reply) finish({ ok: true, reply: m.reply, consulted: m.consulted ?? 0, fp: typeof m.fp === "string" ? m.fp : null });
+      else { dropWorker(w); finish({ ok: false }); } // the rules did not load or threw: a fresh worker re-imports them on the next call
+    };
+    w.on("message", onMsg);
+    w.on("error", onDead);
+    w.on("exit", onDead);
+    w.postMessage({ id, path, args });
+  });
+}
+
+export type LocalVerdict = { reply: Record<string, unknown>; unclear: boolean; fp: string | null };
+/** The rules were enabled and did not run (not found, would not load, threw, answered nonsense, or missed the time budget). */
+export type LocalNotRun = { notRun: true };
+/**
+ * Judge `args` with the local rules. null = switched off (JEV_GUARD_LOCAL=off: the user chose server-only). `{ notRun: true }` = enabled
+ * but did not run: the caller takes the server path unchanged, and says so if no server answers either. `unclear` = the rules would have
+ * asked a model and no rule blocked; `ask` is never answered, it only records the question (reading `decided_by: "fail_open"` alone
+ * misses a question raised only by guardCommand's second, comment-masked reading). `fp` = the fingerprint of the rules that ran (null when
+ * the rule files are not the whole release). Never throws.
+ */
+export async function localGuard(args: Record<string, unknown>): Promise<LocalVerdict | LocalNotRun | null> {
+  if ((process.env.JEV_GUARD_LOCAL ?? "").trim().toLowerCase() === "off") return null;
+  try {
+    const path = guardRulesPath();
+    if (!path) return { notRun: true };
+    const judged = await judgeInWorker(path, args);
+    if (!("ok" in judged) || !judged.ok) return { notRun: true };
+    const reply = judged.reply;
+    const by = reply.decided_by;
+    if (!["allow", "ask", "block"].includes(String(reply.decision)) || !["prefilter", "fail_closed", "fail_open"].includes(String(by))) return { notRun: true };
+    return { reply, unclear: by === "fail_open" || (judged.consulted > 0 && reply.decision !== "block"), fp: judged.fp };
+  } catch { return { notRun: true }; }
+}
+
+// ── local rules against the server's ────────────────────────────────────────────────────────────────────────────────
+// A local ALLOW is final only when the rules in this process are byte-identical to the rules the server runs: the Worker reports the
+// fingerprint of its own rules in the x-jev-rules-fingerprint header of an authenticated GET /health (server/src/health.mjs). It is cached in
+// memory for FP_TTL_MS, so the common command costs no network call. A different fingerprint, or none (an older Worker, no network, a slow
+// answer, this machine's rules not the whole release), means the server decides; a local ask or block is honoured either way.
+const FP_RE = /^[0-9a-f]{64}$/;
+const FP_TTL_MS = 5 * 60_000;
+const FP_TTL_DOWN_MS = 60_000; // "the server gave none" is remembered for a minute, so an offline or older server costs one fetch a minute
+const FP_FETCH_MS = 800;
+export const FP_HEADER = "x-jev-rules-fingerprint";
+export type RulesTrust = "match" | "mismatch" | "unverified" | "down";
+let serverFp: { key: string; fp: string | null; at: number } | null = null;
+/** Forget the cached server fingerprint and the server-down window (tests). */
+export function resetServerFingerprint(): void { serverFp = null; serverDown = null; }
+
+// The remembered "server down" window, in memory. A local ALLOW that cannot be verified normally goes to the Worker; when that call (or the
+// /health fingerprint fetch) fails with a NETWORK-class error (timeout, connection refused or reset, DNS, TLS: failCodeFor says client_timeout or
+// client_network, and a refused redirect is not one) the server is called down for SERVER_DOWN_MS and local allows stand locally, unverified, with
+// no server call. Any successful Worker call (mcpCall) clears it. A 4xx/5xx with a body, a JSON-RPC error and a 401 never open it: the server
+// answered, and a bad token must stay visible. Unclear commands do not open it and are not skipped by it.
+const SERVER_DOWN_MS = 60_000;
+type DownCode = "client_timeout" | "client_network";
+let serverDown: { key: string; code: DownCode; at: number } | null = null;
+/** The closed fail_reason of the failure that opened the window, while it is open for the current server; else null. */
+function serverDownCode(): DownCode | null {
+  const age = Date.now() - (serverDown?.at ?? 0);
+  return serverDown && serverDown.key === mcpUrl() && age >= 0 && age < SERVER_DOWN_MS ? serverDown.code : null;
+}
+function openServerDown(code: DownCode): void { serverDown = { key: mcpUrl(), code, at: Date.now() }; }
+function clearServerDown(): void { serverDown = null; }
+/** The network-class code of a failed fetch, or null (a refused redirect, a parse error: the server answered). */
+function networkCode(e: unknown): DownCode | null {
+  let msg = "";
+  if (e instanceof Error) {
+    msg = e.message.toLowerCase();
+    if (e.cause instanceof Error) msg += ` ${e.cause.message.toLowerCase()}`;
+  }
+  if (msg.includes("redirect")) return null;
+  const code = failCodeFor(e);
+  return code === "client_timeout" || code === "client_network" ? code : null;
+}
+
+async function fetchServerFingerprint(): Promise<string | null> {
+  try {
+    const u = new URL(mcpUrl());
+    u.pathname = `${u.pathname.replace(/\/mcp$/, "").replace(/\/+$/, "")}/health`;
+    u.search = ""; u.hash = "";
+    const res = await fetch(u.href, {
+      method: "GET",
+      redirect: "error", // a 3xx would re-send the bearer wherever it points
+      signal: AbortSignal.timeout(FP_FETCH_MS),
+      headers: { authorization: `Bearer ${mcpToken()}`, "user-agent": "jev-guard-hook-omp/1.0" },
+    });
+    const got = (res.headers.get(FP_HEADER) ?? "").trim().toLowerCase();
+    return res.ok && FP_RE.test(got) ? got : null;
+  } catch (e) {
+    const code = networkCode(e);
+    if (code) openServerDown(code);
+    return null;
+  }
+}
+
+async function serverRulesFingerprint(): Promise<string | null> {
+  const key = mcpUrl(), now = Date.now();
+  if (serverFp && serverFp.key === key && now >= serverFp.at && now - serverFp.at < (serverFp.fp ? FP_TTL_MS : FP_TTL_DOWN_MS)) return serverFp.fp;
+  if (serverDownCode()) return null; // the server is called down: no fetch
+  const fp = await fetchServerFingerprint();
+  serverFp = { key, fp, at: Date.now() };
+  return fp;
+}
+
+/** "match": the rules here are byte-identical to the server's. "mismatch": both known, different. "unverified": this machine's rules are not
+ * the whole release, or the server's fingerprint is unavailable. "down": it could not be verified AND the server is called down for the next
+ * minute: the allow stands locally, unverified, with no server call. "mismatch" and "unverified" mean the server decides a local allow. */
+export async function rulesTrust(local: LocalVerdict): Promise<RulesTrust> {
+  if (local.fp === null || !FP_RE.test(local.fp)) return serverDownCode() ? "down" : "unverified";
+  const theirs = await serverRulesFingerprint();
+  if (theirs === local.fp) return "match";
+  if (serverDownCode()) return "down"; // checked after the lookup: a /health fetch that just failed opens the window
+  return theirs === null ? "unverified" : "mismatch";
+}
 
 // Server-side input caps (server/src/kit/tools.mjs): over these the schema rejects the call, and a rejection must
 // become "ask", never a silent allow.
@@ -53,6 +332,7 @@ export const DECIDED_BY = ["prefilter", "jev", "fail_open", "fail_closed", "poli
 export const FAIL_REASONS = [
   "no_upstream", "upstream_error", "timeout", "invalid_response", "oversize",
   "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error",
+  "local_rules_unavailable", // the hook's local rules did not run (and no server answered)
 ] as const;
 const WORD = /^[a-z][a-z_]{0,31}$/, RULE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/, TOOL = /^[a-z][a-z0-9_]{0,31}$/;
 const TIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/, HOST = /^[a-z0-9][a-z0-9._-]{0,31}$/;
@@ -208,13 +488,13 @@ export function failCodeFor(e: unknown): (typeof FAIL_REASONS)[number] {
   return "client_network";
 }
 
-type GuardReply = { decision?: string; rule?: string; reason?: string; suggestion?: string };
+type GuardReply = { decision?: string; rule?: string; reason?: string; suggestion?: string; decided_by?: string; fail_reason?: string };
 type McpResult<T> = { kind: "reply"; reply: T } | { kind: "rejected"; detail: string } | { kind: "unavailable"; code: (typeof FAIL_REASONS)[number] };
 
 // One JSON-RPC tools/call over the same transport for the guard and the policy call: https only, bearer from the
 // environment, redirects refused, a hard timeout.
 async function mcpCall<T>(tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<McpResult<T>> {
-  const token = (process.env.JEV_MCP_TOKEN ?? "").trim();
+  const token = mcpToken();
   if (!token || !mcpUrl().startsWith("https://")) return { kind: "unavailable", code: "client_config" };
   try {
     const res = await fetch(mcpUrl(), {
@@ -245,6 +525,7 @@ async function mcpCall<T>(tool: string, args: Record<string, unknown>, timeoutMs
       if (msg.result?.isError) return { kind: "rejected", detail: String(msg.result.content?.[0]?.text ?? "tool error").slice(0, 200) };
       const text = msg.result?.content?.[0]?.text;
       if (typeof text !== "string") return { kind: "unavailable", code: "client_parse" };
+      clearServerDown(); // the server answered: a window opened by an earlier failure is over
       return { kind: "reply", reply: JSON.parse(text) as T };
     }
   } catch (e) {
@@ -470,6 +751,9 @@ type ToolCallCtx = { cwd?: string; hasUI?: boolean; ui?: { confirm?: (title: str
 type Verdict = { block: true; reason: string } | undefined;
 
 export default function jevGuard(pi: ExtensionAPI) {
+  let noticed = false; // the "no server configured" notice goes out once per session, kept in memory
+  let downNoticed = false; // so does the "local rules could not run and no server" notice, with its own flag
+  const trustNoticed = new Set<RulesTrust>(); // and each of the two "local rules vs the server's" notices
   // `rowId` is the ledger row for this ask (or null). omp hands us the user's answer, so the outcome is host-observed:
   // approved, denied, or no_ui when nobody could be asked. Ledger writes are deferred with setImmediate: the verdict
   // is returned before any ledger I/O, so a slow filesystem cannot delay the decision. Writes keep FIFO order (the
@@ -492,6 +776,9 @@ export default function jevGuard(pi: ExtensionAPI) {
     setImmediate(() => appendLine(p.row));
     return p.id;
   };
+
+  // a new session may be told once again that the guard has no server
+  pi.on("session_start", async () => { noticed = false; downNoticed = false; trustNoticed.clear(); });
 
   pi.on("tool_call", async (event: ToolCallEvent, ctx: ToolCallCtx): Promise<Verdict> => {
     try {
@@ -521,18 +808,55 @@ export default function jevGuard(pi: ExtensionAPI) {
       }
       const at = askAt();
       if (at !== undefined) args.ask_at = at;
+      const localRaw = await localGuard(args); // a command the rules settle never reaches mcpCall
+      const local = localRaw !== null && "reply" in localRaw ? localRaw : null;
+      const localNotRun = localRaw !== null && !("reply" in localRaw); // enabled, and it did not run
       // The policy path runs concurrently with the guard call. It is opt-in: without a `"trigger"` in the user layer
       // nothing starts. policyDecide never rejects, so a policy failure cannot take the guard's answer down with it.
       const policyCwd = ctx.cwd ?? process.cwd();
       const pending = bash && userLayerHasTrigger(process.env, policyCwd)
         ? policyDecide(String(args.command), policyCwd, tStart, (reply, o) => led(tStart, reply, o), (m) => pi.logger?.warn?.(m)).catch(() => null)
         : Promise.resolve(null);
-      const [g, pol] = await Promise.all([mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()), pending]);
+      const ruleSettled = local !== null && !local.unclear && (local.reply.decided_by === "prefilter" || local.reply.decided_by === "fail_closed");
+      // A local ask or block stands whatever the server's rules are (stricter than the server is safe). A local allow stands when there is no
+      // server to ask, or when the rules in this process are the ones the server runs; otherwise the server decides, and the user is told once.
+      let trust: RulesTrust | null = null;
+      if (ruleSettled && local!.reply.decision === "allow" && mcpToken() !== "" && mcpUrl().startsWith("https://")) trust = await rulesTrust(local!);
+      const settled = ruleSettled && (trust === null || trust === "match");
+      if ((trust === "mismatch" || trust === "unverified" || trust === "down") && !trustNoticed.has(trust)) {
+        trustNoticed.add(trust);
+        try { if (typeof ctx.ui?.notify === "function") ctx.ui.notify(TRUST_NOTICES[trust], "warning"); else pi.logger?.warn?.(TRUST_NOTICES[trust]); } catch { /* a notice never changes a decision */ }
+      }
+      // trust "down": the server is called down for the next minute, so the allow stands locally with no server call. The call's result is then
+      // the unavailable result of the failure that opened the window, so the row is the usual fail_open one with that closed code.
+      const [answered, pol] = await Promise.all([
+        settled ? Promise.resolve<McpResult<GuardReply>>({ kind: "reply", reply: local!.reply as GuardReply })
+          : trust === "down" ? Promise.resolve<McpResult<GuardReply>>({ kind: "unavailable", code: serverDownCode() ?? "client_network" })
+          : mcpCall<GuardReply>("kit_guard_command", args, timeoutMs()),
+        pending,
+      ]);
+      // a network-class failure of the call made only because a local allow could not be verified opens the window (an unclear command never does)
+      if ((trust === "mismatch" || trust === "unverified") && answered.kind === "unavailable" && (answered.code === "client_timeout" || answered.code === "client_network")) openServerDown(answered.code);
+      // `unclear` can hold while the local reply is already an ask (a rule asked on one reading, the model question came from the other):
+      // if the server cannot be consulted, that ask is the decision, through the same branch a settled local reply takes. Never an
+      // allow only because nobody answered the model question.
+      const g: McpResult<GuardReply> = answered.kind === "unavailable" && local?.unclear && local.reply.decision !== "allow" ? { kind: "reply", reply: local.reply as GuardReply } : answered;
 
       // the guard's own effect and reason (rows and shadow notes exactly as before)
       let ge: Effect = "allow", gWhy = "", gRow: string | null = null;
       if (g.kind === "unavailable") {
-        led(t0, undefined, { decision: "allow", decidedBy: "fail_open", failReason: g.code }); // fail open
+        // fail open. A command the local rules flagged keeps the rule id on its row (an id, never text).
+        const flagged = local?.unclear && typeof local.reply.rule === "string" ? local.reply.rule : undefined;
+        // the local step was on and did not run, and there is no server either: nothing checked this command. Its own closed reason, so the log
+        // tells it from "unclear, no server" (those rows come with a reply from the rules; these have none).
+        const nothingRan = localNotRun && g.code === "client_config";
+        led(t0, undefined, { decision: "allow", decidedBy: "fail_open", failReason: nothingRan ? "local_rules_unavailable" : g.code, rule: flagged });
+        // once per session each, for the user: fixed words, never the model
+        const say = nothingRan ? (downNoticed ? null : LOCAL_DOWN_NOTICE) : local?.unclear && g.code === "client_config" && !noticed ? LOCAL_NOTICE : null;
+        if (say !== null) {
+          if (nothingRan) downNoticed = true; else noticed = true;
+          try { if (typeof ctx.ui?.notify === "function") ctx.ui.notify(say, "warning"); else pi.logger?.warn?.(say); } catch { /* a notice never changes a decision */ }
+        }
       } else if (g.kind === "rejected") {
         gRow = led(t0, undefined, { decision: "ask", decidedBy: "fail_closed", failReason: "client_rejected", enforced: !shadow(), wouldHave: shadow() ? "ask" : null });
         gWhy = `Jev guard could not judge this call (server rejected it: ${g.detail}); confirm it by hand.`;
@@ -540,7 +864,8 @@ export default function jevGuard(pi: ExtensionAPI) {
       } else {
         const r = g.reply;
         const would = shadow() && (r.decision === "ask" || r.decision === "block") ? r.decision : null;
-        gRow = led(t0, r, { decision: r.decision, enforced: would === null, wouldHave: would });
+        const ruleError = r.decided_by === "fail_closed" && r.fail_reason === "rule_error" ? "rule_error" : undefined; // a server reply carries this in its record; a local reply has none
+        gRow = led(t0, r, { decision: r.decision, enforced: would === null, wouldHave: would, failReason: ruleError });
         if (r.decision === "ask" || r.decision === "block") {
           gWhy = `Jev guard${r.rule ? ` [${r.rule}]` : ""}: ${r.reason}${r.suggestion ? ` ${r.suggestion}` : ""}`;
           if (shadow()) pi.logger?.warn?.(`(shadow) would ${r.decision}: ${gWhy}`); else ge = r.decision === "block" ? "deny" : "ask";

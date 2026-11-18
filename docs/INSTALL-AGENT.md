@@ -44,7 +44,7 @@ export JEV_MCP_TOKEN=... # ask the user
 ./install.sh --save-env  # writes ~/.config/jev/env with mode 0600
 unset JEV_MCP_TOKEN
 ```
-Then load for this session: `set -a; . ~/.config/jev/env; set +a`. Tell the user the agent process needs those two variables at launch (e.g. `. ~/.config/jev/env` in `~/.bashrc`/`~/.zshrc`, or the service unit); offer to add that line, don't add it silently.
+The guard hooks and `jev-call` read `~/.config/jev/env` when the process does not already have the two variables. MCP entries that expand `${JEV_MCP_URL}` / `${JEV_MCP_TOKEN}` still need them in the agent process (`set -a; . ~/.config/jev/env; set +a` in the launcher). Offer to add that line; don't add it silently.
 
 ### Option B: self-host on Cloudflare Workers
 Requirements, ask the user for whatever is missing:
@@ -106,7 +106,7 @@ If a config file isn't plain JSON, the installer refuses to touch it; merge `con
 ### 4b. Claude Code
 - Equivalent CLI (stores the *expanded* token in `~/.claude.json`, so prefer `--wire`, which stores references): `claude mcp add --transport http jev "$JEV_MCP_URL" --header "Authorization: Bearer $JEV_MCP_TOKEN"`.
 - Tools show up as `mcp__jev__<tool>`. Restart Claude Code after wiring; verify with `/mcp`.
-- Hooks from `--wire`: SessionStart / SubagentStart / UserPromptSubmit (Honest Jev levels), `PreToolUse` on `Bash|Read|NotebookRead|Grep` (`jev-guard-hook.sh`, fails open; `JEV_GUARD_MODE=shadow` logs only), `PreToolUse` on `jev_classify` (`jev-classify-redact.js`), and Stop (`jev-stop-verify.js`, off until `JEV_STOP_GATE`/`stopGate` is set).
+- Hooks from `--wire`: SessionStart / SubagentStart / UserPromptSubmit (Honest Jev levels), `PreToolUse` on `Bash|Read|NotebookRead|Grep` (`jev-guard-hook.sh`: the deterministic rules run **locally first** through `hooks/jev-guard-local.mjs` (one `node` process, rules from `~/.local/share/honest-jev/jev-policy/server/src/kit`, no npm install needed), so a command they settle never touches the network; only a command they cannot settle goes to the Worker, and only if `JEV_MCP_URL`/`JEV_MCP_TOKEN` are set; fails open; `JEV_GUARD_MODE=shadow` logs only; `JEV_GUARD_LOCAL=off` restores send-everything-to-the-server), `PreToolUse` on `jev_classify` (`jev-classify-redact.js`), and Stop (`jev-stop-verify.js`, off until `JEV_STOP_GATE`/`stopGate` is set).
 
 ### 4c. Codex, Cursor and everything else (manual, generic)
 1. **Skills**: `./install.sh` already copied them to `~/.omp/agent/skills` / `~/.claude/skills`. Copy `skills/*/` (each a `SKILL.md`) to the host's skills directory if it has one (Codex: `~/.codex/skills/`; check the host's docs), or paste the `description` + body into its rules file (`.cursor/rules/`, `AGENTS.md`, ...).
@@ -123,7 +123,7 @@ Load the env first (`set -a; . ~/.config/jev/env; set +a`), then:
 ```sh
 ./install.sh --doctor
 ```
-Expected: every line `ok`, ending with `tools/list = 16 tools`. It checks env vars, `/health`, that an unauthenticated call is rejected with 401, and the tool count; it never prints the token.
+Expected: every line `ok`, ending with `tools/list = 16 tools`. It checks env vars, `/health`, that an unauthenticated call is rejected with 401, and the tool count; it never prints the token. A value found only in `~/.config/jev/env` is shown as `ok   JEV_MCP_URL set (from <path> only)`, followed by a `note` that the hooks read these two variables from the agent's environment, not from the file: start the agent from a shell that loaded it, or the guard will not reach the server.
 
 Then in the host (after restart/reload):
 1. List MCP tools (omp: `/mcp test jev`; Claude Code: `/mcp`). Expect **16**: 12 `jev_*` + `kit_guard_command`, `kit_size_dispatch`, `kit_verify_done`, `kit_decide`.
@@ -145,8 +145,12 @@ Finish with a short report to the user: host(s) detected, option used (A/B), fil
 | `/health` fails | Wrong URL (must end in `/mcp` for `JEV_MCP_URL`; `/health` is derived from it) or the Worker isn't deployed. |
 | 403 from Cloudflare with a custom script | Python's default urllib User-Agent is blocked; set another User-Agent. |
 | `npm run vendor` fails | Needs `git`, network, Node >= 22. `JEV_MCP_SRC=/path/to/jev-mcp npm run vendor` uses a local checkout. |
-| Jev tools fail, guard still works | No `AI_GATEWAY_API_KEY`/`TYPESAFE_API_KEY` on the Worker (the guard's deterministic rules need none). Set one with `wrangler secret put`. |
-| Hook blocks or slows every command | `JEV_GUARD_MODE=shadow` to log only; or remove the hook entry. It fails open on timeout (2 s). |
+| Jev tools fail, guard still works | No `AI_GATEWAY_API_KEY`/`TYPESAFE_API_KEY` on the Worker (the guard's deterministic rules need none; the hooks run them locally anyway). Set one with `wrangler secret put`. |
+| Hook blocks or slows every command | `JEV_GUARD_MODE=shadow` to log only; or remove the hook entry. The server path fails open on timeout (2 s). `JEV_GUARD_LOCAL=off` makes the hook send every call to the server instead of settling rule-decided commands locally. |
+| "no server is configured" (the guard says its local rules are unverified) | Neither the process nor `~/.config/jev/env` has an `https://` `JEV_MCP_URL` and a `JEV_MCP_TOKEN` (the file value must be single-quoted, the form `--save-env` writes). Commands the rules block or ask on are still judged locally. `./install.sh --doctor` shows whether the local rules load and whether each value came from the environment or only from the env file. |
+| "the rules on this machine differ from the server's" / "could not confirm that the rules on this machine match the server's" | The local rules are not byte-identical to the Worker's (or the Worker could not say). The guard did the safe thing: a command the local rules would allow was sent to the server to decide, and a local block or ask was kept. `./install.sh --doctor` prints both rules fingerprints (`FAIL guard rules differ from the server's (here ..., server ...)`). If the server is newer: `jev-update`, then restart the agent (omp keeps the rules it first loaded until it restarts). If this machine is newer: deploy the Worker (`cd server && npx wrangler deploy --keep-vars`; wrangler's build step regenerates the rules fingerprint, so a plain deploy of an edited working tree cannot report a stale one). "Could not confirm" with a note that the server did not report a fingerprint means an older Worker: deploy it first. |
+| "the server did not answer, so for the next minute commands the local rules would allow stand locally" | The Worker timed out, refused or reset the connection (or DNS/TLS failed) while the guard was verifying a local allow. For 60 s local allows stand with no server call (log rows: `fail_open`, `client_timeout` / `client_network`); local blocks and asks and unclear commands are unchanged. Check the URL and that the Worker is up (`curl -s <worker>/health`); a wrong or revoked token is a 401 and never opens this window (it shows as a prompt). Any successful call ends the window early. |
+| "the local rules could not run and no server is configured" | Nothing checked the commands: both the local rules and the server are off. Run `./install.sh --doctor`: `FAIL guard rules do not load locally` means no `node`/`bun` on the agent's PATH, or the rules were not installed (re-run `./install.sh`). Decision-log rows for this state have `fail_reason: local_rules_unavailable`. Fix the rules, or configure a server (export `JEV_MCP_URL` / `JEV_MCP_TOKEN` before launching the agent); `JEV_GUARD_LOCAL=off` is the choice to use only the server and says nothing. |
 | Skills not showing | Restart the agent or `/reload-plugins` (omp); check the skills dir for your host in Step 3. |
 | `refusing to edit ...: not plain JSON` | The file has comments or trailing commas. Merge `config/*.json` by hand. |
 | Undo | Restore the `*.jev-bak` files, remove `~/.omp/agent/skills/jev-*`, `~/.claude/skills/jev-*`, `fast-file-search`, `~/.local/share/honest-jev`, `~/.local/bin/jev-call`. |

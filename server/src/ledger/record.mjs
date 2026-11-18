@@ -9,6 +9,7 @@ export const DECIDED_BY = Object.freeze(["prefilter", "jev", "fail_open", "fail_
 export const FAIL_REASONS = Object.freeze([
   "no_upstream", "upstream_error", "timeout", "invalid_response", "oversize",
   "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error",
+  "local_rules_unavailable", // written by the guard hooks' own rows only (hooks/jev_ledger.py, hooks/omp/jev-guard.ts); the Worker never emits it
 ]);
 export const MAX_RECORD_BYTES = 2048; // a record over this is dropped, never truncated
 export const COST_SOURCES = Object.freeze(["upstream", "configured", "unknown"]);

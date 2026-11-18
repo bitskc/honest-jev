@@ -294,7 +294,7 @@ test("canonicalJson and specHash ignore key order and change with content", asyn
 });
 
 test("FAIL_REASONS is pinned (a shared closed list with the ledger)", () => {
-  assert.deepEqual([...FAIL_REASONS], ["no_upstream", "upstream_error", "timeout", "invalid_response", "oversize", "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error"]);
+  assert.deepEqual([...FAIL_REASONS], ["no_upstream", "upstream_error", "timeout", "invalid_response", "oversize", "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error", "local_rules_unavailable"]);
 });
 
 // ── worked examples behave as documented ────────────────────────────────────

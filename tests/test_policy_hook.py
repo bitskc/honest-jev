@@ -90,7 +90,7 @@ class Env:
         self.ledger = os.path.join(self.home, "ledger.jsonl")
         self.env = {"PATH": os.path.join(TMP, "bin") + os.pathsep + os.environ["PATH"], "HOME": self.home, "SSL_CERT_FILE": CERT,
                     "JEV_MCP_TOKEN": "stub-token", "JEV_POLICY_USER": self.layer, "JEV_POLICY_HOOK": HELPER, "JEV_LEDGER": self.ledger,
-                    "STUB_GH_LOG": self.gh_log, **extra}
+                    "STUB_GH_LOG": self.gh_log, "JEV_GUARD_LOCAL": "off", **extra}  # the policy path rides on the server path here; tests/test_local_first.py covers both together
 
     def run(self, command, tool="Bash", **over):
         ev = json.dumps({"tool_name": tool, "tool_input": {"command": command}, "cwd": self.repo, "hook_event_name": "PreToolUse"})
@@ -214,6 +214,21 @@ class PolicyHook(unittest.TestCase):
         self.assertEqual((pr[0]["decision"], pr[0]["rule"], pr[0]["decided_by"], pr[0]["enforced"], pr[0]["source"]), ("ask_user", "R1-unreviewed-merge", "jev", True, "server"))
         self.assertRegex(pr[0]["policy_version"], r"^[0-9a-f]{12}$")
         self.assertEqual(len([r for r in e.rows() if r["tool"] == "kit_guard_command"]), 1, "the guard still wrote its own row")
+
+    def test_with_the_local_rules_on_the_policy_path_still_runs_beside_them(self):
+        # local-first guard: the guard half of this command is settled by the local rules (no kit_guard_command call, a client-sourced
+        # prefilter row); the policy half is untouched: one kit_decide call, the class's ask, its own server row
+        log = os.path.join(TMP, "w1-local.log")
+        e = Env([class_doc()], JEV_MCP_URL=url(start_stub(log=log)), STUB_GH="unreviewed", JEV_GUARD_LOCAL=None)
+        p, _ = e.run("gh pr merge 12 --squash")
+        self.assertEqual(decision_of(p), "ask", p.stderr)
+        self.assertIn("Jev policy [pr-merge-gate/R1-unreviewed-merge]", reason_of(p))
+        with open(log) as f:
+            self.assertEqual(len([json.loads(l) for l in f]), 1, "exactly one kit_decide call, and no guard call to log")
+        guard = [r for r in e.rows() if r["tool"] == "kit_guard_command"]
+        self.assertEqual([(r["decided_by"], r["source"], r["server_decision_id"]) for r in guard], [("prefilter", "client", None)])
+        pr = policy_rows(e)
+        self.assertEqual([(r["decision"], r["rule"], r["source"]) for r in pr], [("ask_user", "R1-unreviewed-merge", "server")])
 
     def test_reviewed_merge_passes_silently_in_a_comment_or_a_review(self):
         for state in ("reviewed", "reviewed_in_review"):

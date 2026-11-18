@@ -7,6 +7,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 pass=0; fail=0
 ok() { if [ "$1" = "$2" ]; then pass=$((pass+1)); printf 'PASS %s\n' "$3"; else fail=$((fail+1)); printf 'FAIL %s\n     expected: %s\n     got:      %s\n' "$3" "$2" "$1"; fi; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# the guard hook tests below run the real hook: its decision log and its once-per-session notice marker go to a private state dir, never the real one
+export XDG_STATE_HOME="$tmp/xdg-state"
 export JEV_LEDGER="$tmp/ledger.jsonl"  # every hook and script below writes its decision rows here, never the user's real log
 
 # ── statusline badge ────────────────────────────────────────────────────────────
@@ -143,14 +145,19 @@ cat >/dev/null; echo '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text
 EOF
 ok "$(PATH="$stub:$PATH" JEV_MCP_TOKEN=secret-token-value JEV_MCP_URL=https://x/mcp bash "$jc" x '{}' 2>/dev/null | tr -d ' \n')" '{"decision":"allow"}' "jev-call: result printed"
 ok "$(cd "$tmp" && PATH="$stub:$PATH" JEV_MCP_TOKEN=t JEV_MCP_URL=https://x/mcp bash "$jc" x '{}' 2>/dev/null | tr -d ' \n')" '{"decision":"allow"}' "jev-call: runs from a bare checkout path, outside the repo cwd"
+jcH="$tmp/jchome"; mkdir -p "$jcH/.config/jev"; printf "JEV_MCP_URL='https://file.example/mcp'\nJEV_MCP_TOKEN='file-token'\n" > "$jcH/.config/jev/env"
+ok "$(HOME=$jcH PATH="$stub:$PATH" env -u JEV_MCP_URL -u JEV_MCP_TOKEN bash "$jc" x '{}' 2>/dev/null | tr -d ' \n')" '{"decision":"allow"}' "jev-call: URL and token from the env file when the process has neither"
+touchf="$tmp/jev-call-ran"; printf "JEV_MCP_URL='https://file.example/mcp'\nJEV_MCP_TOKEN=\$(touch %s)\n" "$touchf" > "$jcH/.config/jev/env"
+HOME=$jcH PATH="$stub:$PATH" env -u JEV_MCP_URL -u JEV_MCP_TOKEN bash "$jc" x '{}' >/dev/null 2>&1 || true
+ok "$([ -e "$touchf" ] && echo yes || echo no)" no "jev-call: unquoted \$(...) in the env file is never executed"
 
 # ── guard hook local decisions (no network needed) ──────────────────────────────
 hook="$root/hooks/jev-guard-hook.sh"
 ev() { python3 -c 'import json,sys;print(json.dumps({"tool_name":sys.argv[1],"tool_input":json.loads(sys.argv[2]),"cwd":"/tmp"}))' "$1" "$2"; }
-dec() { python3 -c 'import json,sys;d=sys.stdin.read();print(json.loads(d)["hookSpecificOutput"]["permissionDecision"] if d.strip() else "none")'; }
+dec() { python3 -c 'import json,sys;d=sys.stdin.read();print(json.loads(d).get("hookSpecificOutput", {}).get("permissionDecision", "none") if d.strip() else "none")'; }
 big=$(python3 -c 'import json;print(json.dumps({"tool_name":"Bash","tool_input":{"command":"cat ~/.ssh/id_rsa #"+"x"*20001},"cwd":"/tmp"}))')
 ok "$(printf '%s' "$big" | JEV_MCP_TOKEN=t JEV_MCP_URL=https://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" ask "guard: oversized command -> ask, no call"
-ok "$(ev Bash '{"command":"cat .env"}' | JEV_MCP_TOKEN=t JEV_MCP_URL=http://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" none "guard: http:// URL -> fail open, token never sent"
+ok "$(ev Bash '{"command":"curl -X POST https://example.com/api -d x"}' | JEV_MCP_TOKEN=t JEV_MCP_URL=http://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" none "guard: http:// URL -> fail open, token never sent"
 ok "$(ev Bash '{"command":"ls"}' | JEV_MCP_TOKEN=t JEV_MCP_URL=https://127.0.0.1:9/mcp JEV_GUARD_TIMEOUT=0.3 bash "$hook" 2>/dev/null | dec)" none "guard: unreachable server -> fail open"
 bigpattern=$(python3 -c 'import json;print(json.dumps({"tool_name":"Grep","tool_input":{"pattern":"x"*20001,"output_mode":"content"},"cwd":"/tmp"}))')
 ok "$(printf '%s' "$bigpattern" | JEV_MCP_TOKEN=t JEV_MCP_URL=https://127.0.0.1:9/mcp bash "$hook" 2>/dev/null | dec)" ask "guard: Grep output_mode=content -> judged (oversized pattern asks)"
@@ -170,7 +177,7 @@ spec.loader.exec_module(mod)
 # The redirect handler must raise a distinguishable exception, not a bare network-class error.
 exc = None
 try:
-    mod._NoRedirect().redirect_request(None, None, 302, "Found", {}, "http://evil.example/steal")
+    [h for h in mod._http()[2].handlers if type(h).__name__ == "_NoRedirect"][0].redirect_request(None, None, 302, "Found", {}, "http://evil.example/steal")
 except Exception as e:
     exc = e
 assert exc is not None, "redirect_request did not raise"
@@ -178,6 +185,7 @@ assert isinstance(exc, mod.RedirectRefused), "redirect must raise RedirectRefuse
 
 # main()'s exception routing must treat a redirect refusal as ask, never a silent fail-open allow.
 mod.call_guard = lambda args: (_ for _ in ()).throw(mod.RedirectRefused("redirect refused (302 -> http://evil.example/steal)"))
+os.environ["JEV_GUARD_LOCAL"] = "off"  # this case is about the server path: with the local rules on, `rm -rf /` would never reach call_guard
 sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}, "cwd": "/tmp"}))
 out = io.StringIO()
 sys.stdout = out
@@ -210,7 +218,7 @@ spec.loader.exec_module(mod)
 def classify(status):
     def fake_open(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, status, "err", {}, io.BytesIO(b""))
-    mod._opener.open = fake_open
+    mod._http()[2].open = fake_open  # the opener the hook builds on first use
     try:
         mod.call_guard({"tool": "Bash", "command": "x"})
         return "no-error"
@@ -253,12 +261,82 @@ ok "$(HOME=$envH bash -c 'set -a; . "$HOME/.config/jev/env"; set +a; printf %s "
 ok "$([ -e "$pwn" ] && echo yes || echo no)" no "save-env: sourcing the env file does not execute the token"
 ok "$(HOME=$envH bash -c 'set -a; . "$HOME/.config/jev/env"; set +a; printf %s "$JEV_MCP_URL"')" "$url" "save-env: URL round-trips"
 ok "$(HOME=$envH JEV_MCP_URL=$'https://x/mcp\nevil' JEV_MCP_TOKEN=t bash "$root/install.sh" --save-env >/dev/null 2>&1; echo $?)" 2 "save-env: newline in value -> exit 2"
-d=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | head -2)
-ok "$d" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set')" "doctor: reads both keys from env file"
+d=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | sed -n 2,3p)
+ef="$envH/.config/jev/env"
+ok "$d" "$(printf 'ok   JEV_MCP_URL set (from %s only)\nok   JEV_MCP_TOKEN set (from %s only)' "$ef" "$ef")" "doctor: reads both keys from env file and says they came from the file only"
 pwn2="$tmp/pwned-doc"; printf 'JEV_MCP_URL=$(touch %s)\nJEV_MCP_TOKEN=x\n' "$pwn2" > "$envH/.config/jev/env"
-d2=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | head -1)
+d2=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null | sed -n 2p)
 ok "$([ -e "$pwn2" ] && echo yes || echo no)" no "doctor: unquoted \$(...) in env file never executed"
 ok "$d2" "FAIL JEV_MCP_URL not set" "doctor: unquoted env value rejected as data"
+# the local-rules line leads the doctor output (it is the part of the guard that needs no server), and the no-server note appears only when URL or token is missing
+doc_full=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_full" | head -1)" "ok   guard rules load locally ($root/server/src/kit/guard.mjs)" "doctor: first line says the guard rules load locally, and from where"
+ok "$(printf '%s\n' "$doc_full" | grep -c '^note guard runs on local rules only, not checked against any server; unclear commands are allowed without a model check$')" 1 "doctor: no server configured -> the local-rules-only note, which says the rules are not checked against a server"
+printf 'JEV_MCP_URL='"'"'https://x.example/mcp'"'"'\nJEV_MCP_TOKEN='"'"'t'"'"'\n' > "$envH/.config/jev/env"
+doc_set=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_set" | grep -c '^note guard runs on local rules only' || true)" 0 "doctor: URL and token only in the env file -> the hooks read that file, so not local-rules-only"
+doc_set_env=$(HOME=$envH JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=t PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_set_env" | grep -c '^note guard runs on local rules only' || true)" 0 "doctor: URL and token in the environment -> no local-rules-only note"
+# a runner that cannot load the rules is a FAIL line and exit 1; a missing runtime too
+brokenH="$tmp/brokenhome"; mkdir -p "$brokenH/.local/share/honest-jev/hooks"; printf 'process.exit(3)\n' > "$brokenH/.local/share/honest-jev/hooks/jev-guard-local.mjs"
+doc_broken=$(HOME=$brokenH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null); rc=$?
+ok "$(printf '%s\n' "$doc_broken" | head -1)" "FAIL guard rules do not load locally (runner: $brokenH/.local/share/honest-jev/hooks/jev-guard-local.mjs)" "doctor: an installed runner that fails -> FAIL line"
+ok "$rc" 1 "doctor: the local rules not loading -> exit 1"
+nonode="$tmp/nonode"; mkdir -p "$nonode"; for t in bash env dirname cat head sed grep tr mktemp rm mkdir python3 curl; do p=$(command -v "$t") && ln -sf "$p" "$nonode/$t"; done
+doc_nonode_full=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$nonode" "$nonode/bash" "$root/install.sh" --doctor 2>/dev/null)
+doc_nonode=$(printf '%s\n' "$doc_nonode_full" | head -1)
+ok "$doc_nonode" "FAIL guard rules do not load locally: no node or bun on PATH" "doctor: no node or bun -> FAIL line"
+# the `note` line says what the guard is doing right now, so it depends on BOTH the rules check and whether a server is configured
+# (the doctor's separate note about a Worker that reports no rules fingerprint is another line, tested on its own below)
+notes_of() { printf '%s\n' "$1" | grep '^note ' | grep -v '^note the server did not report its rules fingerprint' || true; }
+n_local="note guard runs on local rules only, not checked against any server; unclear commands are allowed without a model check"
+n_none="note the guard is not checking commands: the local rules do not load and no server is configured"
+n_srv="note the local rules do not load; every command is sent to the server"
+n_file="note the guard hooks and jev-call read $envH/.config/jev/env themselves. An MCP entry that uses \${JEV_MCP_URL} / \${JEV_MCP_TOKEN} still needs those variables in the agent process"
+ok "$(notes_of "$doc_full")" "$n_local" "doctor: rules load + no server -> the local-rules-only note, and no other note"
+ok "$(notes_of "$doc_broken")" "$n_none" "doctor: rules do not load + no server -> says the guard is not checking commands (not 'local rules only')"
+doc_broken_srv=$(HOME=$brokenH JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=t PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(notes_of "$doc_broken_srv")" "$n_srv" "doctor: rules do not load + server configured -> every command is sent to the server"
+ok "$(notes_of "$doc_set")" "$n_file" "doctor: rules load + server only in the env file -> the MCP-process note, and the hooks do see that server"
+ok "$(printf '%s\n' "$doc_set" | grep -c '^ok   JEV_MCP_URL set (from .* only)$')" 1 "doctor: both from the file -> URL line has the suffix"
+ok "$(printf '%s\n' "$doc_set" | grep -c '^ok   JEV_MCP_TOKEN set (from .* only)$')" 1 "doctor: both from the file -> token line has the suffix"
+ok "$(printf '%s\n' "$doc_set" | grep -c 'jev-call read')" 1 "doctor: both from the file -> the note appears once"
+printf 'JEV_MCP_TOKEN='"'"'t'"'"'\n' > "$envH/.config/jev/env"
+doc_tok_file=$(HOME=$envH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_tok_file" | grep -c 'jev-call read')" 1 "doctor: only the token comes from the file -> the MCP-process note appears too"
+printf 'JEV_MCP_URL='"'"'https://x.example/mcp'"'"'\nJEV_MCP_TOKEN='"'"'t'"'"'\n' > "$envH/.config/jev/env"
+secH="$tmp/sechome"; mkdir -p "$secH/.config/jev"; printf "JEV_MCP_URL='https://sec.example/mcp'\nJEV_MCP_TOKEN='s3cr3t-T0K-9f1x'\n" > "$secH/.config/jev/env"
+doc_sec=$(HOME=$secH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>&1)
+ok "$(printf '%s\n' "$doc_sec" | grep -c 's3cr3t-T0K-9f1x\|sec.example')" 0 "doctor: neither value from the file is printed"
+# the process environment wins over the file, with no suffix and no note
+doc_env=$(HOME=$envH JEV_MCP_URL=https://env.example/mcp JEV_MCP_TOKEN=envtok PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_env" | grep '^ok   JEV_MCP_' | head -2)" "$(printf 'ok   JEV_MCP_URL set\nok   JEV_MCP_TOKEN set')" "doctor: both from the environment -> lines unchanged, no suffix"
+ok "$(notes_of "$doc_env")" "" "doctor: both from the environment -> no note"
+# one from each: only the file-sourced one is marked, and the note appears once
+doc_urlenv=$(HOME=$envH env -u JEV_MCP_TOKEN JEV_MCP_URL=https://env.example/mcp PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+n_mix="note a value in the process and a value in $ef are not combined, so the hooks do not use the file"
+ok "$(printf '%s\n' "$doc_urlenv" | grep -E '^(ok   JEV_MCP_|FAIL JEV_MCP_)' | head -2)" "$(printf 'ok   JEV_MCP_URL set\nFAIL JEV_MCP_TOKEN not set')" "doctor: URL from the environment, token only in the file -> the token is not taken from the file"
+ok "$(notes_of "$doc_urlenv")" "$(printf '%s\n%s' "$n_mix" "$n_local")" "doctor: URL in the process, token in the file -> not combined, local rules only"
+doc_tokenv=$(HOME=$envH env -u JEV_MCP_URL JEV_MCP_TOKEN=envtok PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+ok "$(printf '%s\n' "$doc_tokenv" | grep -E '^(ok   JEV_MCP_|FAIL JEV_MCP_)' | head -2)" "$(printf 'FAIL JEV_MCP_URL not set\nok   JEV_MCP_TOKEN set')" "doctor: token from the environment, URL only in the file -> the URL is not taken from the file"
+ok "$(notes_of "$doc_tokenv")" "$(printf '%s\n%s' "$n_mix" "$n_local")" "doctor: token in the process, URL in the file -> not combined, local rules only"
+ok "$(notes_of "$doc_nonode_full")" "$(printf '%s\n%s' "$n_file" "$n_srv")" "doctor: no node or bun + a server only in the env file -> the file note, and every command is sent to the server"
+fbH="$tmp/filebroken"; mkdir -p "$fbH/.local/share/honest-jev/hooks" "$fbH/.config/jev"; cp "$envH/.config/jev/env" "$fbH/.config/jev/env"
+printf 'process.exit(3)\n' > "$fbH/.local/share/honest-jev/hooks/jev-guard-local.mjs"
+doc_file_broken=$(HOME=$fbH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null)
+n_file_fb="note the guard hooks and jev-call read $fbH/.config/jev/env themselves. An MCP entry that uses \${JEV_MCP_URL} / \${JEV_MCP_TOKEN} still needs those variables in the agent process"
+ok "$(notes_of "$doc_file_broken")" "$(printf '%s\n%s' "$n_file_fb" "$n_srv")" "doctor: rules do not load + server only in the env file -> the file note, then every command is sent to the server"
+ok "$(printf '%s\n' "$doc_file_broken" | grep -c 'every command is sent to the server')" 1 "doctor: rules do not load + server only in the env file -> the hooks see that server"
+ok "$(notes_of "$doc_set")" "$n_file" "doctor: rules load + server only in the env file -> the file note, and no local-rules-only note"
+doc_http_log="$tmp/doc-http.log"; httpstub="$tmp/httpstub"; mkdir -p "$httpstub"
+printf '#!/bin/sh\necho called >> "$HTTP_LOG"\n' > "$httpstub/curl"; chmod +x "$httpstub/curl"
+doc_http=$(HOME=$envH HTTP_LOG="$doc_http_log" JEV_MCP_URL=http://plain-host.example/mcp JEV_MCP_TOKEN=t PATH="$httpstub:$PATH" bash "$root/install.sh" --doctor 2>/dev/null); rc=$?
+ok "$(printf '%s\n' "$doc_http" | grep '^FAIL JEV_MCP_URL')" "FAIL JEV_MCP_URL is not an https:// URL; the hooks refuse any other scheme, so they never reach the server" "doctor: a non-https URL is named as that, not as unset"
+ok "$(printf '%s\n' "$doc_http" | grep -c 'JEV_MCP_URL not set')" 0 "doctor: a non-https URL is not reported as unset"
+ok "$rc" 1 "doctor: a non-https URL -> exit 1"
+ok "$(printf '%s\n' "$doc_http" | grep -c 'plain-host.example')" 0 "doctor: the rejected URL is not printed"
+ok "$([ -e "$doc_http_log" ] && echo called || echo none)" none "doctor: a non-https URL is never contacted"
+ok "$(notes_of "$doc_http")" "$n_local" "doctor: a non-https URL in the environment is no server to the hooks -> local rules only"
 
 # ── merge_json: first backup kept, atomic write, non-JSON left alone ─────────────
 mj="$tmp/mjhome"; mkdir -p "$mj/.claude"; printf '{"keep":1}\n' > "$mj/.claude.json"
@@ -415,8 +493,9 @@ dstub="$tmp/doctorstub"; mkdir -p "$dstub"; dlog="$tmp/doctor.log"
 cat > "$dstub/curl" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "${DOCTOR_ARGV_LOG:-/dev/null}"
-prev=""; hf=""; for a in "$@"; do [ "$prev" = -D ] && hf=$a; prev=$a; done; [ -n "$hf" ] && : > "$hf"
+prev=""; hf=""; for a in "$@"; do [ "$prev" = -D ] && hf=$a; prev=$a; done; [ -n "$hf" ] && [ "$hf" != - ] && : > "$hf"
 case " $* " in
+  *" -D - "*) cat > /dev/null; printf 'HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n'; [ -n "${STUB_FP:-}" ] && printf 'X-Jev-Rules-Fingerprint: %s\r\n' "$STUB_FP"; printf '\r\n';;
   *" --config "*) cfg=$(cat); printf '%s\n' "$cfg" >> "${DOCTOR_CFG_LOG:-/dev/null}"; body=$(printf '%s\n' "$@" | grep -F '{"jsonrpc"' || true)
     case "$body" in
       *'"method":"initialize"'*) echo initialize >> "$DOCTOR_LOG"; [ -n "$hf" ] && printf 'HTTP/1.1 200 OK\r\nMcp-Session-Id: sess-123\r\n\r\n' > "$hf"; echo '{"jsonrpc":"2.0","id":1,"result":{}}';;
@@ -442,6 +521,27 @@ HOME=$dH bash "$root/install.sh" --doctor --wire >/dev/null 2>&1; ok "$?" 2 "fla
 : > "$tmp/doctor-cfg.log"; : > "$tmp/doctor-argv.log"; run_doctor "$want" >/dev/null 2>&1
 ok "$(grep -c 'Mcp-Session-Id: sess-123' "$tmp/doctor-cfg.log")" 2 "doctor: session id from initialize sent on notifications and tools/list"
 ok "$(grep -c 'sess-123' "$tmp/doctor-argv.log" || true)" 0 "doctor: session id never in curl argv"
+# the rules fingerprint check: the Worker's value comes from the X-Jev-Rules-Fingerprint header of an authenticated GET /health (the stub answers it for `-D -`)
+real_fp=$(node "$root/hooks/jev-guard-local.mjs" --fingerprint)
+ok "$(printf '%s' "$real_fp" | grep -c '^[0-9a-f]\{64\}$')" 1 "doctor: the runner reports a 64-hex rules fingerprint"
+: > "$tmp/doctor-argv.log"
+STUB_FP="$real_fp" run_doctor "$want" >"$tmp/doc-fp.out" 2>&1; rc=$?
+ok "$rc" 0 "doctor: the server's fingerprint equals the local one -> exit 0"
+ok "$(grep -c "^ok   guard rules match the server's (fingerprint ${real_fp:0:12})$" "$tmp/doc-fp.out")" 1 "doctor: ... and says the rules match"
+ok "$(grep -c 'Bearer' "$tmp/doctor-argv.log" || true)" 0 "doctor: the fingerprint request keeps the token out of argv"
+other_fp=$(printf 'b%.0s' $(seq 1 64))
+STUB_FP="$other_fp" run_doctor "$want" >"$tmp/doc-fp.out" 2>&1; rc=$?
+ok "$rc" 1 "doctor: the server's fingerprint differs -> exit 1"
+ok "$(grep '^FAIL guard rules differ' "$tmp/doc-fp.out")" "FAIL guard rules differ from the server's (here ${real_fp:0:12}, server bbbbbbbbbbbb); commands the local rules would allow are sent to the server to decide. Run jev-update if the server is newer, or deploy the Worker if this machine is" "doctor: ... and says both fingerprints and what to do"
+STUB_FP="" run_doctor "$want" >"$tmp/doc-fp.out" 2>&1; rc=$?
+ok "$rc" 0 "doctor: a Worker that reports no fingerprint (an older one) -> a note, not a failure"
+ok "$(grep -c '^note the server did not report its rules fingerprint (an older Worker, or it refused the token); commands the local rules would allow are sent to the server to decide$' "$tmp/doc-fp.out")" 1 "doctor: ... and says what that means"
+# a rule file that is a symlink cannot be fingerprinted (Node would load the siblings from the link's target): the installed rules still load, the doctor says why they are unverifiable
+lnH="$tmp/linkhome"; mkdir -p "$lnH"; HOME=$lnH bash "$root/install.sh" --claude >/dev/null 2>&1
+lnK="$lnH/.local/share/honest-jev/jev-policy/server/src/kit"; mkdir -p "$tmp/linkelsewhere"; cp "$lnK/shell.mjs" "$tmp/linkelsewhere/shell.mjs"; rm "$lnK/shell.mjs"; ln -s "$tmp/linkelsewhere/shell.mjs" "$lnK/shell.mjs"
+doc_ln=$(HOME=$lnH DOCTOR_LOG="$dlog" DOCTOR_CFG_LOG="$tmp/doctor-cfg.log" DOCTOR_ARGV_LOG="$tmp/doctor-argv.log" STUB_FP="$real_fp" PATH="$dstub:$PATH" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=tok STUB_TOOLS="$want" bash "$root/install.sh" --doctor 2>&1); rc=$?
+ok "$(printf '%s\n' "$doc_ln" | grep -c '^FAIL guard rules cannot be fingerprinted (the rule files are incomplete, or one of them is a symlink)')" 1 "doctor: a symlinked rule file -> FAIL, cannot be fingerprinted"
+ok "$rc" 1 "doctor: a symlinked rule file -> exit 1"
 # the header dump is created once and removed on exit: no file may survive a run, pass or fail
 dtd=$(mktemp -d)
 HOME=$dH TMPDIR="$dtd" DOCTOR_LOG="$dlog" DOCTOR_CFG_LOG="$tmp/doctor-cfg.log" DOCTOR_ARGV_LOG="$tmp/doctor-argv.log" PATH="$dstub:$PATH" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=tok STUB_TOOLS=15 bash "$root/install.sh" --doctor >/dev/null 2>&1

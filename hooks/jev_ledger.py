@@ -21,10 +21,8 @@ Env: JEV_LEDGER=<absolute path> overrides the location (a relative path is refus
 import json
 import os
 import re
-import socket
 import stat
 import time
-import urllib.error
 import uuid
 
 VERSION = 1
@@ -35,6 +33,7 @@ DECIDED_BY = ("prefilter", "jev", "fail_open", "fail_closed", "policy")
 FAIL_REASONS = (
     "no_upstream", "upstream_error", "timeout", "invalid_response", "oversize",
     "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error",
+    "local_rules_unavailable",  # the hook's local rules did not run (and no server answered): see hooks/jev_guard_hook.py
 )
 COST_SOURCES = ("upstream", "configured", "unknown")
 
@@ -71,9 +70,21 @@ def ledger_path():
     return os.path.join(base, "jev", "ledger.jsonl")
 
 
+def state_dir():
+    """The private directory the ledger lives in (its parent when a ledger path is set; the default state dir when the ledger is off)."""
+    p = ledger_path()
+    if p:
+        return os.path.dirname(p) or "."
+    xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+    return os.path.join(xdg if xdg and os.path.isabs(xdg) else os.path.join(os.path.expanduser("~"), ".local", "state"), "jev")
+
+
 def fail_reason_for(exc):
     """Map an exception to a closed code. The exception's text is never read."""
     try:
+        # imported here, not at module top: a hook that never reaches the network never pays for socket/urllib (tempfile, shutil, ...)
+        import socket
+        import urllib.error
         if isinstance(exc, (TimeoutError, socket.timeout)):
             return "client_timeout"
         if isinstance(exc, urllib.error.HTTPError):
@@ -274,3 +285,34 @@ def record(tool, host, reply=None, **kw):
         return append(build_row(rec, tool=tool, host=host, source=source or "client", **kw))
     except Exception:
         return False
+
+
+MARKER_MAX_AGE = 14 * 24 * 3600
+_MARKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$")
+
+
+def mark_once(name):
+    """True exactly once per `name`, across processes: the first caller creates state_dir()/<name> (O_EXCL, 0600, in the same
+    private directory as the ledger); every later caller finds it and gets False. Any failure to remember also returns False,
+    because a notice that cannot be remembered must not repeat on every call. Never raises. Markers older than 14 days are
+    removed whenever a new one is made, so the directory does not grow without bound."""
+    try:
+        if not isinstance(name, str) or not _MARKER_NAME.match(name):
+            return False
+        d = state_dir()
+        if not _owned_dir(d):
+            return False
+        os.close(os.open(os.path.join(d, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600))
+    except Exception:
+        return False
+    try:
+        now = time.time()
+        prefix = name.split("-", 1)[0] + "-"
+        for n in os.listdir(d):
+            if n.startswith(prefix) and n != name:
+                p = os.path.join(d, n)
+                if now - os.lstat(p).st_mtime > MARKER_MAX_AGE:
+                    os.unlink(p)
+    except Exception:
+        pass
+    return True
