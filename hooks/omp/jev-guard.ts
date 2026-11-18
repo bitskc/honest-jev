@@ -759,16 +759,18 @@ export default function jevGuard(pi: ExtensionAPI) {
   // is returned before any ledger I/O, so a slow filesystem cannot delay the decision. Writes keep FIFO order (the
   // decision row is queued before its outcome). Residual: a synchronous write still blocks the event loop after the
   // verdict has been delivered. recordOutcome never throws.
+  // After a decline / no-UI block: tell the agent not to re-issue the same command.
+  const NEXT_AFTER_DECLINE = "Do not run the same command again; use the safer route above, or ask the user what they want.";
   const ask = async (ctx: ToolCallCtx, why: string, rowId: string | null = null, alsoRowId: string | null = null): Promise<Verdict> => {
     if (shadow()) { pi.logger?.warn?.(`(shadow) would ask: ${why}`); return; }
     const ids = [rowId, alsoRowId].filter((x): x is string => !!x); // the guard's row, the policy's row, or both
     if (ctx.hasUI && typeof ctx.ui?.confirm === "function") {
       const ok = await ctx.ui.confirm("Jev guard: run this command?", why);
       for (const id of ids) setImmediate(() => recordOutcome(id, ok ? "approved" : "denied"));
-      return ok ? undefined : { block: true, reason: `${why} (declined by user)` };
+      return ok ? undefined : { block: true, reason: `${why} (declined by user). ${NEXT_AFTER_DECLINE}` };
     }
     for (const id of ids) setImmediate(() => recordOutcome(id, "no_ui"));
-    return askNoUi() === "allow" ? undefined : { block: true, reason: `${why} Needs human approval; ask the user and retry.` };
+    return askNoUi() === "allow" ? undefined : { block: true, reason: `${why} Needs human approval. ${NEXT_AFTER_DECLINE}` };
   };
   const led = (t0: number, reply: unknown, o: Omit<Parameters<typeof buildRow>[1], "host" | "latencyMs">): string | null => {
     const p = prepareDecision(reply, { ...o, host: "omp", latencyMs: Date.now() - t0 });
@@ -867,7 +869,13 @@ export default function jevGuard(pi: ExtensionAPI) {
         const ruleError = r.decided_by === "fail_closed" && r.fail_reason === "rule_error" ? "rule_error" : undefined; // a server reply carries this in its record; a local reply has none
         gRow = led(t0, r, { decision: r.decision, enforced: would === null, wouldHave: would, failReason: ruleError });
         if (r.decision === "ask" || r.decision === "block") {
-          gWhy = `Jev guard${r.rule ? ` [${r.rule}]` : ""}: ${r.reason}${r.suggestion ? ` ${r.suggestion}` : ""}`;
+          // Keep reason and safer-route suggestion distinct so the agent can follow the route, not re-issue the command.
+          let head = `Jev guard${r.rule ? ` [${r.rule}]` : ""}: ${(r.reason || "").trimEnd()}`;
+          if (r.suggestion) {
+            if (!/[.!?]$/.test(head)) head += ".";
+            head += ` Safer: ${r.suggestion}`;
+          }
+          gWhy = head;
           if (shadow()) pi.logger?.warn?.(`(shadow) would ${r.decision}: ${gWhy}`); else ge = r.decision === "block" ? "deny" : "ask";
         }
       }
@@ -879,7 +887,7 @@ export default function jevGuard(pi: ExtensionAPI) {
       }
       const pe: Effect = shadow() || !pol ? "allow" : pol.effect;
       const gRank = EFFECT_RANK[ge], pRank = EFFECT_RANK[pe];
-      if (pRank === 0 || gRank > pRank) return ge === "deny" ? { block: true, reason: gWhy } : ge === "ask" ? ask(ctx, gWhy, gRow) : undefined;
+      if (pRank === 0 || gRank > pRank) return ge === "deny" ? { block: true, reason: `${gWhy} ${NEXT_AFTER_DECLINE}` } : ge === "ask" ? ask(ctx, gWhy, gRow) : undefined;
       if (pRank > gRank) return pe === "deny" ? { block: true, reason: pol!.reason } : ask(ctx, pol!.reason, pol!.rowId);
       if (pe === "deny") return { block: true, reason: pol!.reason }; // equal and non-allow: the policy's reason
       return ask(ctx, `${gWhy} ${pol!.reason}`, gRow, pol!.rowId); // both ask: one prompt, both reasons, both rows get the outcome

@@ -192,6 +192,32 @@ class HookUnits(unittest.TestCase):
             finally:
                 os.environ.pop("JEV_POLICY_USER", None)
 
+    def test_format_guard_why_separates_safer_route_and_reply_outcome_sets_model_context(self):
+        why = self.hook.format_guard_why(
+            {"rule": "R1-secret-exposure", "reason": "node reads its script from stdin; confirm it is intended",
+             "suggestion": "Write the script to a file"},
+            "ask",
+        )
+        self.assertIn("Safer: Write the script to a file", why)
+        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, why)
+        ask = self.hook.reply_outcome({
+            "decision": "ask", "rule": "R1-secret-exposure",
+            "reason": "node reads its script from stdin; confirm it is intended",
+            "suggestion": "Write the script to a file", "decided_by": "prefilter",
+        })
+        self.assertEqual(ask.effect, "ask")
+        self.assertIn("Safer:", ask.reason)
+        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, ask.reason)
+        self.assertIn(self.hook.NEXT_AFTER_DECLINE, ask.model_context)
+        block = self.hook.reply_outcome({
+            "decision": "block", "rule": "R1-secret-exposure",
+            "reason": "prints a secret", "suggestion": "Do not print a secret", "decided_by": "prefilter",
+        })
+        self.assertEqual(block.effect, "deny")
+        self.assertIn("Safer: Do not print a secret", block.reason)
+        self.assertIn(self.hook.NEXT_AFTER_DECLINE, block.reason)
+        self.assertEqual(block.model_context, block.reason)
+
 
 class PolicyHook(unittest.TestCase):
     NOTICE = ("Jev policy: a policy gate was not evaluated for this command (the helper is unavailable, the policy file is unusable, or it ran "
@@ -511,6 +537,49 @@ class PolicyNotice(unittest.TestCase):
         e = Env([class_doc()], JEV_MCP_URL=url(start_stub()), STUB_GH="reviewed")
         p, _ = e.run("gh pr merge 12")
         self.assertEqual(p.stdout.strip(), "")
+
+
+class ConcludeAdditionalContext(unittest.TestCase):
+    """When guard+policy both ask, additionalContext must carry the policy reason even if only the guard set model_context."""
+
+    def load_hook(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("jev_guard_hook_ctx", os.path.join(ROOT, "hooks", "jev_guard_hook.py"))
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        return hook
+
+    def conclude_stdout(self, hook, g, p):
+        import contextlib
+        import io
+
+        class Done(object):
+            outcome = p
+            deadline = time.monotonic() + 1
+
+            def join(self, _t):
+                return None
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            hook.conclude(g, Done())
+        return out.getvalue(), err.getvalue()
+
+    def test_both_ask_includes_policy_reason_and_next_step_once(self):
+        hook = self.load_hook()
+        guard_why = "Jev guard [R1]: `cat token` is a bare credential word. Safer: Confirm the path is not a secret."
+        policy_why = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+        g = hook.Outcome("ask", guard_why, model_context="%s %s" % (guard_why, hook.NEXT_AFTER_DECLINE))
+        p = hook.Outcome("ask", policy_why)  # policy path sets reason only, no model_context
+        out, _ = self.conclude_stdout(hook, g, p)
+        hso = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecision"], "ask")
+        self.assertIn(policy_why, hso["permissionDecisionReason"])
+        self.assertIn(guard_why, hso["permissionDecisionReason"])
+        ctx = hso["additionalContext"]
+        self.assertIn(policy_why, ctx, "policy reason must reach the model, not only permissionDecisionReason")
+        self.assertIn(guard_why, ctx)
+        self.assertEqual(ctx.count(hook.NEXT_AFTER_DECLINE), 1)
 
 
 class ConcludeTimeout(unittest.TestCase):

@@ -123,6 +123,14 @@ export const R1_SUGGESTION =
   "Do not print a secret. Load it into the environment in the same shell as the command that needs it " +
   "(`set -a; . ./.env; set +a`) and confirm it is present without revealing it " +
   "(`[ -n \"$KEY\" ] && echo 'key loaded'`). If output might contain a key, pipe it through sed to redact it.";
+// Interpreter fed from a pipe / `< file` / `<(...)`: the guard cannot see the script. Tell the agent how to make it visible.
+export const R1_STDIN_SCRIPT_SUGGESTION =
+  "Write the script to a file and run it as `node path/script.js` (or `python path/script.py`), or pass it inline with " +
+  "`node -e '...'` / `python -c '...'`, so the guard can read it. Do not feed the interpreter from a pipe, `< file`, or `<(...)`.";
+// Bare credential word on a content-printing program: may be a store or only a label.
+export const R1_BARE_WORD_SUGGESTION =
+  "If this names a secret file, do not print it; load values with `set -a; . ./file; set +a` and confirm with " +
+  "`[ -n \"$KEY\" ] && echo 'key loaded'`. If it is only a label or test name, confirm and proceed.";
 
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
 const REDIR_SPLIT_RE = /(?<!\d)\d*[<>]+&?/; // (?<!\d): a run of digits is tried from its first digit only (a bare `\d*` start at every digit was quadratic)
@@ -772,6 +780,22 @@ const FIND_PREDICATE_OPTS = new Set(["-name", "-iname", "-path", "-ipath", "-reg
 const FIND_EXEC_OPTS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 const TEST_FILTER_OPTS = new Set(["--grep", "--testNamePattern", "-t", "-k", "-m"]);
 const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest", "vitest", "jest", "mocha"]);
+// Soft bare-word asks when the program can print/stage/run the operand. Shape matches (`.env`) still
+// block for any program. Case is folded for NON_CONTENT / copiesToTerminal. Capitalized carve-out is a
+// tiny UI-verb *allowlist* (not a binary denylist): on case-insensitive exec FS, `Python3`/`Node`/
+// `Paste` resolve to real binaries, so Cap words outside the allowlist ask — same as unknown lowercase.
+const BARE_WORD_UI_VERBS = new Set(["collect", "confirm", "approve"]);
+function bareWordContextAsks(prog, args = []) {
+  if (!prog) return false;
+  const folded = prog.toLowerCase();
+  // `cp`/`install`/`mv`/`rsync` are NON_CONTENT unless they copy onto a print device (`cp token /dev/stdout`).
+  if (copiesToTerminal(folded, args)) return true;
+  if (NON_CONTENT_PROGS.has(folded) || CREDENTIAL_CONSUMER_PROGS.has(folded)) return false;
+  // Only verified agent/UI verbs that are not known binaries may skip the soft ask (`Collect token`).
+  if (/^[A-Z]/.test(prog) && BARE_WORD_UI_VERBS.has(folded)) return false;
+  // Safe default: ask for Cap interpreters (`Python3`, `Node`), Cap printers (`Paste`), and unknown lowercase.
+  return true;
+}
 const GREP_VALUE_OPTS = new Set(["-A", "-B", "-C", "-m", "-d", "-D", "-g", "-t", "-T", "--include", "--exclude",
   "--exclude-dir", "--max-count", "--label", "--glob", "--type", "--type-not", "--context", "--after-context",
   "--before-context", "--directories", "--devices", "--binary-files", "--exclude-from", "--max-depth", "--threads", "--iglob", "--pre", "--sort", "--sortr"]);
@@ -841,7 +865,7 @@ function pathArgs(prog, args, stdinFed = true) {
 const PRINT_DEVICE_RE = /^\/dev\/(?:stdout|stderr|tty|console|fd\/[12]|pts\/\d+)$|^\/proc\/(?:self|\d+)\/fd\/[12]$/;
 const COPY_PROGS = new Set(["cp", "install", "rsync", "mv"]);
 function copiesToTerminal(prog, args) {
-  if (!COPY_PROGS.has(prog)) return false;
+  if (!COPY_PROGS.has(String(prog).toLowerCase())) return false;
   const operands = args.filter((a) => !a.startsWith("-"));
   return operands.length >= 2 && PRINT_DEVICE_RE.test(normalizePath(operands[operands.length - 1]));
 }
@@ -1542,7 +1566,7 @@ function ruleSecret(ctx) {
   if (/\b(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl|php|pwsh|powershell)\b/.test(ctx.command) && /[<|]/.test(ctx.command)) {
     stdinFindings = stdinScriptFindings(ctx);
     if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${stdinFindings.leak.prog}\` reads a script from stdin that ${stdinFindings.leak.why}`, suggestion: R1_SUGGESTION };
-    if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${stdinFindings.unseen}\` reads its script from stdin (a pipe, a file or \`<(...)\`), and the guard cannot see what that script does with the environment; confirm it is intended`, suggestion: R1_SUGGESTION };
+    if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${stdinFindings.unseen}\` reads its script from stdin (a pipe, a file or \`<(...)\`), and the guard cannot see what that script does with the environment; confirm it is intended`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
   for (const [si, seg] of secretSegs.entries()) {
     const cwds = ctx.expandedCwds[si] ?? ctx.allCwds;
@@ -1642,8 +1666,11 @@ function ruleSecret(ctx) {
     }
     if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` on a secret store (${store.hit}) would print its contents`, suggestion: R1_SUGGESTION };
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
-    if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))) {
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion: R1_SUGGESTION };
+    // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
+    if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
+      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args))) {
+      const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }
     if (READERS.has(prog)) {
       const amb = ambiguousPathIn(pathArgs(prog, args));
@@ -3129,6 +3156,8 @@ function ruleCommitSecret(ctx) {
 
 // ── R10: general risk, the catch-all (prefilter; Jev scores) ─────────────────
 export const R10_SUGGESTION = "Reaches outside the working tree; not blocked. Check it was asked for.";
+export const R10_OPAQUE_SUGGESTION =
+  "Simplify the command (fewer nestings or substitutions) so the guard can analyze it, or confirm with the user that it is intended.";
 export const R10_RISK_LEVELS = [
   "none: read-only, or fully reversible inside the working directory given in `cwd` or a temporary directory. Nothing outside this checkout is changed. Writing a file under cwd, running a container that only reads, listing a database.",
   "low: changes something outside the working directory, but it is recreatable in minutes with no outside consequence: a cache, a scratch container, a local index, a file the tool that wrote it would rebuild.",
@@ -3610,13 +3639,13 @@ async function guardOnceCore(input, deps, failures) {
   let depthBudget = 400000;
   const tooDeep = (text) => { if (depthBudget <= 0) return false; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
   if (!softAsk && SHELL_TOOLS.has(tool) && (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body)))) {
-    softAsk = { rule: "R10-general-risk", reason: `the command nests grouping (parentheses or braces) more than ${MAX_GROUPING_DEPTH} deep, which the guard does not analyze; confirm it is intended`, suggestion: null };
+    softAsk = { rule: "R10-general-risk", reason: `the command nests grouping (parentheses or braces) more than ${MAX_GROUPING_DEPTH} deep, which the guard does not analyze; confirm it is intended`, suggestion: R10_OPAQUE_SUGGESTION };
   }
   // Past these limits the guard stops analyzing inner bodies (see substitutedSegments and processSubBodies), so a command
   // that no rule blocked asks instead of passing.
   if (!softAsk && SHELL_TOOLS.has(tool)) {
-    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `the command holds more than ${MAX_SUBSTITUTIONS} command substitutions, which the guard does not fully analyze; confirm it is intended`, suggestion: null };
-    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "the command nests process substitutions (`<(`, `>(`) too deeply for the guard to analyze every body; confirm it is intended", suggestion: null };
+    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `the command holds more than ${MAX_SUBSTITUTIONS} command substitutions, which the guard does not fully analyze; confirm it is intended`, suggestion: R10_OPAQUE_SUGGESTION };
+    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "the command nests process substitutions (`<(`, `>(`) too deeply for the guard to analyze every body; confirm it is intended", suggestion: R10_OPAQUE_SUGGESTION };
   }
   if (softAsk) {
     out.decision = "ask"; out.score = 0.7;

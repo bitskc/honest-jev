@@ -1239,3 +1239,25 @@
 {"id":"g1210","expected":"ask","why":"round 35 a variable in option position and a command that may not print (#191 P3).","input":{"command":"docker run $OPTS -e DB_PASS alpine","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1211","expected":"allow","why":"round 35 control: a variable in option position but no secret passed (#191 P3).","input":{"command":"docker run $OPTS -e HOME alpine env","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1212","expected":"allow","why":"round 35 control: a variable image and no command (#191 P3).","input":{"command":"docker run -e DB_PASS $IMG","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1213","expected":"ask","why":"round 36b: Paste is a real binary (/usr/bin/paste) and a stdin printer; Capitalized spelling still asks (case-insensitive exec FS).","input":{"command":"Paste token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1214","expected":"ask","why":"round 36b: Paste + bare password word asks (same gate as g1213).","input":{"command":"Paste password","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1215","expected":"ask","why":"round 36b: Open is a real binary on macOS; Capitalized Open + secrets asks.","input":{"command":"Open secrets","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1216","expected":"ask","why":"round 36 control: content reader + bare credential word still asks.","input":{"command":"cat token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1217","expected":"ask","why":"round 36 control: less + bare TOKEN still asks.","input":{"command":"less TOKEN","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1218","expected":"ask","why":"round 36 control: stdin-fed node still asks (suggestion is stdin-script, decision unchanged).","input":{"command":"cat script.js | node","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1219","expected":"block","why":"round 36 control: Capitalized verb + secret shape still blocks.","input":{"command":"Paste .env","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1220","expected":"ask","why":"round 36b: Cat folds to cat (reader) on case-insensitive exec FS.","input":{"command":"Cat token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1221","expected":"ask","why":"round 36b: CAT folds to cat.","input":{"command":"CAT token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1222","expected":"ask","why":"round 36b: Paste credentials (Capitalized real binary).","input":{"command":"Paste credentials","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1223","expected":"ask","why":"round 36b: lowercase paste still asks.","input":{"command":"paste token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1224","expected":"ask","why":"round 36b: Sudo is not peeled when Capitalized; bare-word ask still fires.","input":{"command":"Sudo cat token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1225","expected":"ask","why":"round 36b: Npm folds to npm (test runner).","input":{"command":"Npm test credentials","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1226","expected":"allow","why":"round 36c: Capitalized UI-verb allowlist (Collect/Confirm/Approve) may skip soft ask; Cap interpreters must ask.","input":{"command":"Collect token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1227","expected":"ask","why":"round 36c: Python3 folds to a real interpreter on case-insensitive exec FS.","input":{"command":"Python3 token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1228","expected":"ask","why":"round 36c: Node folds to node.","input":{"command":"Node token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1229","expected":"ask","why":"round 36c: Ruby Cap interpreter asks.","input":{"command":"Ruby token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1230","expected":"ask","why":"round 36c: Deno Cap interpreter asks.","input":{"command":"Deno token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1231","expected":"ask","why":"round 36c: Wl-copy Cap clipboard tool asks.","input":{"command":"Wl-copy token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1232","expected":"ask","why":"round 36c: lowercase python3 still asks (symmetry control).","input":{"command":"python3 token","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1233","expected":"allow","why":"round 36c: Confirm is on the UI-verb allowlist.","input":{"command":"Confirm password","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1234","expected":"allow","why":"round 36c: Approve is on the UI-verb allowlist.","input":{"command":"Approve secrets","cwd":"/home/u/proj","home":"/home/u"}}
