@@ -781,14 +781,18 @@ const FIND_EXEC_OPTS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 const TEST_FILTER_OPTS = new Set(["--grep", "--testNamePattern", "-t", "-k", "-m"]);
 const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest", "vitest", "jest", "mocha"]);
 // Soft bare-word asks only when the program can print (or stage/send) the operand.
-// Unknown verbs like `Paste token` are not file readers; shape matches (`.env`) still block for any program.
+// Shape matches (`.env`) still block for any program. Capitalized command words (`Paste token`) are agent/UI
+// phrasing, not filesystem readers — allow those. Unknown lowercase tools (vim, nano, …) still ask, as on main.
+const BARE_WORD_ASK_PROGS = new Set(["sort", "uniq", "curl", "wget", "tar", "zip", "unzip", "git", "kubectl", "docker", "podman",
+  "vim", "nvim", "vi", "nano", "emacs", "ed", "view", "ex", "rvim", "vimdiff"]);
 function bareWordContextAsks(prog) {
   if (!prog) return false;
   if (NON_CONTENT_PROGS.has(prog) || CREDENTIAL_CONSUMER_PROGS.has(prog)) return false;
-  if (READERS.has(prog) || TEST_PROGS.has(prog)) return true;
-  if (prog === "sort" || prog === "uniq" || prog === "curl" || prog === "wget" || prog === "tar" || prog === "zip" || prog === "unzip") return true;
-  if (prog === "git" || prog === "kubectl" || prog === "docker" || prog === "podman") return true;
-  return false;
+  if (READERS.has(prog) || TEST_PROGS.has(prog) || BARE_WORD_ASK_PROGS.has(prog)) return true;
+  // Capitalized / Title Case command words are not shell readers (`Paste token`, `Open secrets`).
+  if (/^[A-Z]/.test(prog)) return false;
+  // Unknown lowercase tools: ask (safe default; matches main's "every other program can print" tier).
+  return true;
 }
 const GREP_VALUE_OPTS = new Set(["-A", "-B", "-C", "-m", "-d", "-D", "-g", "-t", "-T", "--include", "--exclude",
   "--exclude-dir", "--max-count", "--label", "--glob", "--type", "--type-not", "--context", "--after-context",

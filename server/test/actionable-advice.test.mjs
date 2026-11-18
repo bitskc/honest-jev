@@ -30,10 +30,16 @@ test("bare credential word on a content printer asks with the bare-word suggesti
   }
 });
 
-test("unknown non-printer verbs with a bare credential word allow (Paste token false-positive)", async () => {
+test("Capitalized agent/UI verbs with a bare credential word allow (Paste token false-positive)", async () => {
   for (const c of ["Paste token", "Paste password", "Open secrets", "Rename token"]) {
     const r = await g(c);
     assert.equal(r.decision, "allow", c);
+  }
+});
+
+test("lowercase unknown tools and editors still ask on a bare credential word", async () => {
+  for (const c of ["paste token", "vim token", "nano token", "nvim password"]) {
+    assert.equal((await g(c)).decision, "ask", c);
   }
 });
 

@@ -495,7 +495,7 @@
         ],
         "from": "ask",
         "to": "allow",
-        "justification": "Round 36 actionable-advice: soft bare-credential-word asks only fire for programs that can print/stage the operand (readers, test runners, git/curl/sort, …). Unknown verbs like Paste-token / Open-secrets are not file readers; shape matches (.env) still block for any program. wrapped:all because piping/substituting an unknown verb still does not make it a content reader of the bare word. Corpus labels set to allow before the differential.",
+        "justification": "Round 36 actionable-advice: soft bare-credential-word asks stay for readers, editors, test runners, git/curl/sort, and other lowercase tools. Capitalized agent/UI verbs (Paste-token, Open-secrets) are not filesystem readers and allow; shape matches still block. wrapped:all because piping/substituting a Capitalized verb still does not make it a content reader of the bare word. Corpus labels set to allow before the differential.",
         "wrapped": "all"
       },
       {
