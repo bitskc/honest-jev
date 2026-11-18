@@ -80,7 +80,7 @@ const mod = await import(process.env.JEV_HOOK_PATH as string);
 let handler: any;
 mod.default({ on(n: string, f: any) { if (n === "tool_call") handler = f; }, registerCommand() {}, sendMessage() {} });
 const t1 = performance.now();
-const event = { type: "tool_call", toolName: "bash", toolCallId: "1", input: { command: "ls" } };
+const event = { type: "tool_call", toolName: "bash", toolCallId: "1", input: { command: process.env.JEV_COMMAND as string } };
 const ctx = { hasUI: false, cwd: process.env.JEV_REPO as string, ui: { notify() {}, confirm: async () => false } };
 const first = await handler(event, ctx);
 const t2 = performance.now();
@@ -116,8 +116,10 @@ function claudeDecision(stdout) {
   return "allow";
 }
 
-function ompRun() {
-  const r = spawnSync("bun", [OMP_CHILD], { env: childEnv({ JEV_REPO: REPO, JEV_HOOK_PATH: HOOK_OMP }), cwd: REPO, timeout: 60000, encoding: "utf8" });
+// Each omp child gets the repo's guard rules through JEV_GUARD_RULES. Its HOME is empty, so without this the hook finds no rules and allows everything.
+// The cat .env scenario expects block, so a fall-through fails the run instead of showing up as a faster number.
+function ompRun(command) {
+  const r = spawnSync("bun", [OMP_CHILD], { env: childEnv({ JEV_REPO: REPO, JEV_HOOK_PATH: HOOK_OMP, JEV_GUARD_RULES: GUARD_MJS, JEV_COMMAND: command }), cwd: REPO, timeout: 60000, encoding: "utf8" });
   if (r.error || r.status !== 0) return { error: `bun child exited ${r.status}: ${r.error ? r.error.message : r.stderr.trim().slice(0, 200)}` };
   const last = r.stdout.trim().split("\n").pop();
   let j;
@@ -137,6 +139,24 @@ async function warmRun(command) {
   return { values: { wall: [ms] }, observed: reply.decision };
 }
 
+// MCP over streamable HTTP: the reply is JSON or one SSE event. A tool error arrives as HTTP 200 with isError set, so the check reads the result, not the status.
+function mcpResult(text) {
+  const t = text.trim();
+  const frames = t.startsWith("{") ? [t] : t.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim());
+  for (const f of frames) {
+    try {
+      const j = JSON.parse(f);
+      if (j.result) return j.result;
+      if (j.error) return null;
+    } catch { /* not a JSON frame */ }
+  }
+  return null;
+}
+function guardDecision(result) {
+  if (!result || result.isError) return "tool error";
+  try { return JSON.parse(result.content[0].text).decision; } catch { return "unparsed"; }
+}
+
 async function workerRun(kind) {
   const t = performance.now();
   const headers = { authorization: `Bearer ${TOKEN}`, "user-agent": "jev-bench/1.0" };
@@ -153,8 +173,8 @@ async function workerRun(kind) {
     } else {
       res = await fetch(new URL("/health", workerUrl), { headers, signal: AbortSignal.timeout(5000) });
     }
-    observed = `http ${res.status}`;
-    await res.text();
+    const text = await res.text();
+    observed = !res.ok ? `http ${res.status}` : kind === "guard" ? guardDecision(mcpResult(text)) : "http 200";
   } catch (e) {
     observed = `error ${e.name}`;
   }
@@ -168,6 +188,7 @@ function scenario(title, expect, metrics, run) {
 }
 
 const HAS_BUN = sh("bun", ["--version"]) !== "not found";
+if (!HAS_BUN) process.stderr.write("bench-guard: omp rows skipped: bun not found\n");
 const COLD = [
   scenario("Claude hook: `ls` (local rules, allow)", ["allow"], [{ key: "wall", label: "process wall" }],
     async () => { const r = claudeRun("ls", {}); return r.error ? { error: r.error } : { values: { wall: [r.ms] }, observed: r.observed }; }),
@@ -177,15 +198,19 @@ const COLD = [
     async () => { const r = claudeRun("ls", { JEV_GUARD_LOCAL: "off" }); return r.error ? { error: r.error } : { values: { wall: [r.ms] }, observed: r.observed }; }),
   ...(HAS_BUN ? [scenario("omp hook (stubbed omp import): `ls`", ["allow"],
     [{ key: "import", label: "import (in-process)" }, { key: "first", label: "first tool_call" }, { key: "steady", label: "steady median of 50 (per process)" }],
-    async () => ompRun())] : []),
+    async () => ompRun("ls")),
+  scenario("omp hook (stubbed omp import): `cat .env` (rules must load, so block)", ["block"],
+    [{ key: "import", label: "import (in-process)" }, { key: "first", label: "first tool_call" }, { key: "steady", label: "steady median of 50 (per process)" }],
+    async () => ompRun("cat .env"))] : []),
 ];
 const WARM = [
   scenario("guardCommand in-process: `ls`", ["allow"], [{ key: "wall", label: "call" }], async () => warmRun("ls")),
   scenario("guardCommand in-process: `cat .env`", ["block", "ask"], [{ key: "wall", label: "call" }], async () => warmRun("cat .env")),
 ];
+// Worker rows: the guard row must return an allow decision from a well-formed MCP result. /health answers 200 even with a wrong token, so that row shows reachability only.
 const WORKER = workerUrl ? [
-  scenario("Worker: kit_guard_command `ls` (POST /mcp)", ["http 200"], [{ key: "wall", label: "round trip" }], async () => workerRun("guard")),
-  scenario("Worker: GET /health", ["http 200"], [{ key: "wall", label: "round trip" }], async () => workerRun("health")),
+  scenario("Worker: kit_guard_command `ls` (POST /mcp)", ["allow"], [{ key: "wall", label: "round trip" }], async () => workerRun("guard")),
+  scenario("Worker: GET /health (reachability only)", ["http 200"], [{ key: "wall", label: "round trip" }], async () => workerRun("health")),
 ] : [];
 
 // Interleaved phase: each round runs every scenario once, starting from a different one; the first `warmup` rounds are discarded.
@@ -218,15 +243,21 @@ function tally(xs) {
 }
 
 function sh(cmd, a) {
-  const r = spawnSync(cmd, a, { encoding: "utf8", timeout: 5000 });
+  const r = spawnSync(cmd, a, { encoding: "utf8", timeout: 5000, env: childEnv() });
   if (r.error || r.status !== 0) return "not found";
   return (r.stdout || r.stderr).trim().split("\n")[0];
+}
+
+function shortSha(a) {
+  const s = sh("git", a);
+  return s === "not found" ? s : s.slice(0, 7);
 }
 
 const startLoad = loadavg();
 const fp = {
   date: new Date().toISOString(),
   commit: sh("git", ["-C", REPO, "rev-parse", "--short", "HEAD"]),
+  base: shortSha(["-C", REPO, "merge-base", "HEAD", "origin/main"]),
   dirty_tree: !["", "not found"].includes(sh("git", ["-C", REPO, "status", "--porcelain"])),
   kernel: `${sh("uname", ["-s"])} ${release()} ${sh("uname", ["-m"])}`,
   cpu: cpus()[0]?.model ?? "unknown",
@@ -296,7 +327,7 @@ function md(r) {
   if (f.noisy) L.push(`> **NOISY RUN.** ${f.noisy_reasons.join("; ")}. Read these as upper bounds, not a clean baseline.`, "");
   L.push("## Host fingerprint", "");
   L.push(`- date: ${f.date}`);
-  L.push(`- commit: ${f.commit}${f.dirty_tree ? " (working tree dirty: this run is not from a clean commit)" : ""}`);
+  L.push(`- commit: ${f.commit} (merge-base with origin/main: ${f.base})${f.dirty_tree ? " (working tree dirty: this run is not from a clean commit)" : ""}`);
   L.push(`- kernel: ${f.kernel}`);
   L.push(`- cpu: ${f.cpu}, ${f.cores} cores`);
   L.push(`- load average (1 / 5 / 15 min) before: ${f.load_before.join(" / ")}; after: ${f.load_after.join(" / ")}`);
