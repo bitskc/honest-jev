@@ -210,6 +210,8 @@ jev-update --timer    # weekly systemd user timer
 
 `jev-update` never follows `main`: it resolves the latest release tag to an immutable commit through the GitHub API and downloads that archive, so a moved tag or a bad push can't change what lands on your hosts. `JEV_REF=main jev-update` opts out explicitly. Claude Code plugin installs are updated by Claude Code itself.
 
+`jev-update` runs `install.sh` without `--wire`, so it never wires anything new, but it does replace an omp hook copy that already exists (`hooks/pre/jev-guard.ts`, `hooks/pre/jev-honest.ts`, under `PI_CODING_AGENT_DIR` or `--project DIR/.omp`) with the release copy, because omp loads the copy in `hooks/pre/`, not the one in `~/.local/share/honest-jev/`. A hook file that is not there is not created (that is `--wire`); a symlinked one is left alone (with a note when it is stale: update the link target or run `./install.sh --wire`); a copy that fails (read-only file) is reported as `hook  -> could not refresh <path>` and the update carries on. Claude Code's hooks point into the share directory and are current after every update. `./install.sh --doctor` reports `FAIL omp hook <name> is stale` when the omp copy differs from the installed release; restart omp after an update so it loads the new hook (`/reload-plugins` does not reload hooks).
+
 `jev-update --timer` re-runs that same resolve-and-install every week, so it extends trust to whatever release is latest at each run, not just the one you installed.
 
 ## Configure the client
