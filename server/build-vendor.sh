@@ -6,6 +6,11 @@
 set -e
 cd "$(dirname "$0")"
 REF="${JEV_MCP_REF:-4a9b331509752b1f23b3a73c4f274521d4a16020}"   # jkudish/jev-mcp v0.14.6
+case "$REF" in
+  ""|-*|*[!A-Za-z0-9._/-]*)
+    echo "build-vendor.sh: refusing JEV_MCP_REF: use a commit SHA or a tag/branch of [A-Za-z0-9._/-] (no newline, no leading '-')" >&2
+    exit 1 ;;
+esac
 if [ -n "${JEV_MCP_SRC:-}" ]; then
   SRC="$JEV_MCP_SRC"
 else
@@ -20,9 +25,14 @@ cp "$SRC"/dist/*.js vendor/
 VER=$(node -p "require('$PWD/$SRC/package.json').version" 2>/dev/null || node -p "require('$SRC/package.json').version")
 sed -i "s|^import { createRequire } from \"node:module\";||; s|^const { version: packageVersion } = .*|const packageVersion = \"$VER\";|" vendor/server.js
 grep -n "packageVersion =" vendor/server.js
-# Provenance stamp: the exact upstream commit this bundle was built from (the pin, a tag resolved by
-# the checkout, or a JEV_MCP_SRC checkout's HEAD). server/scripts/gen-tools-doc.mjs reads it for the
-# docs/TOOLS.md header, so the header can never name a different revision than the bundle beside it.
-RESOLVED=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || printf '%s' "$REF")
+# Provenance stamp: the upstream commit this bundle was built from. The clone path stamps the pin
+# (resolved by the checkout). A JEV_MCP_SRC checkout stamps its HEAD when it is a git repo; a non-git
+# JEV_MCP_SRC has no provable revision, so it is stamped unknown rather than the default pin.
+# server/scripts/gen-tools-doc.mjs reads the stamp for the docs/TOOLS.md header.
+if [ -n "${JEV_MCP_SRC:-}" ]; then
+  RESOLVED=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo "unknown (local JEV_MCP_SRC)")
+else
+  RESOLVED=$(git -C "$SRC" rev-parse HEAD)
+fi
 printf '\n// vendorRef: %s (stamped by server/build-vendor.sh)\n' "$RESOLVED" >> vendor/server.js
 grep -n "vendorRef" vendor/server.js

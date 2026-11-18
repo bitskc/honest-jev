@@ -14,7 +14,7 @@
   },
   "scripts": {
     "vendor": "sh build-vendor.sh",
-    "gen:tools": "node scripts/gen-tools-doc.mjs",
+    "gen:tools": "npm run fingerprint && node scripts/gen-tools-doc.mjs",
     "fingerprint": "node scripts/gen-rules-fingerprint.mjs",
     "pretest": "npm run fingerprint",
     "test": "node --test \"test/**/*.test.mjs\"",

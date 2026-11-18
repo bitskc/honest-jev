@@ -14,6 +14,7 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 
 export const TOOLS_MD_URL = new URL("../../docs/TOOLS.md", import.meta.url);
 const VENDOR_JS_URL = new URL("../vendor/server.js", import.meta.url);
+const FINGERPRINT_URL = new URL("../src/rules-fingerprint.mjs", import.meta.url);
 
 // Lazy on purpose: this module must import cleanly without server/vendor so the drift test can skip
 // with the remedy printed instead of failing at load. Nothing touches the bundle until a list is asked.
@@ -23,10 +24,13 @@ async function composeServer() {
     if (!existsSync(VENDOR_JS_URL)) {
       throw new Error("server/vendor is missing - run `npm run vendor` first (build-vendor.sh clones jkudish/jev-mcp at the pinned commit)");
     }
+    if (!existsSync(FINGERPRINT_URL)) {
+      throw new Error("server/src/rules-fingerprint.mjs is missing - run `npm run fingerprint` (generated and gitignored; `npm test` and `npm run gen:tools` run it first)");
+    }
     try {
       ({ composeServer: composer } = await import("../src/index.mjs"));
     } catch (cause) {
-      throw new Error(`the Worker's tool chain failed to load - run \`npm run vendor\` to rebuild server/vendor (${cause.message})`, { cause });
+      throw new Error(`the Worker's tool chain failed to load (${cause.message}) - rebuild with \`npm run vendor && npm run fingerprint\``, { cause });
     }
   }
   return composer;
