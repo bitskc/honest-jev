@@ -24,20 +24,11 @@ function normalize(v: unknown): Level | null {
 }
 
 // ── rules (user-authored standing checks) ──────────────────────────────────
-// Three layers merge in id order, later wins: built-in examples (embedded below, since this file is installed
-// standalone with no sibling rules.default.json) -> user global (rules.json in userConfigDir(): PI_CODING_AGENT_DIR/jev
-// if set, else XDG_CONFIG_HOME/jev, else ~/.config/jev) -> repo
-// (.jev/rules.json in the cwd). A {"id":...,"disabled":true} entry at a later layer removes an earlier layer's
-// same-id rule. Malformed entries are skipped individually; never crashes the hook.
+// Three layers merge in id order, later wins: built-in (none ship by default; opt-in examples are in examples/rules/)
+// -> user global (rules.json in userConfigDir(): PI_CODING_AGENT_DIR/jev if set, else XDG_CONFIG_HOME/jev, else
+// ~/.config/jev) -> repo (.jev/rules.json in the cwd). A {"id":...,"disabled":true} entry at a later layer removes an
+// earlier layer's same-id rule. Malformed entries are skipped individually; never crashes the hook.
 type Rule = { id: string; when: string; ask: string; evidence: string };
-const DEFAULT_RULES: Rule[] = [
-  {
-    id: "pr-gstack-reviewed",
-    when: "presenting a pull request as ready to merge or calling it reviewed/clean/mergeable",
-    ask: "Has a real gstack /review run on THIS PR and is it clean?",
-    evidence: "review record or Automated Code Review comment on this PR number with a CLEAN verdict and 0 unresolved threads; Auto-review bot comments, Devin checks, reviews on other PRs, or a self-review do not count",
-  },
-];
 const ID_RE = /^[a-z0-9-]{2,48}$/;
 // Isolation note (mirrors the Claude Code side's userConfigDir() fix): agentDir() already follows
 // PI_CODING_AGENT_DIR, so a sandboxed omp session expects rules.json/config.json to follow it too — before
@@ -89,7 +80,6 @@ function cleanRuleText(v: unknown): string {
 }
 function rules(): Rule[] {
   const merged = new Map<string, Rule>();
-  for (const r of DEFAULT_RULES) merged.set(r.id, r);
   const layers: [string, number][] = [[userRulesPath(), Infinity], [repoRulesPath(), REPO_RULES_MAX_BYTES]];
   for (const [file, maxBytes] of layers) {
     for (const entry of readRulesFile(file, maxBytes)) {
@@ -246,29 +236,58 @@ type HookCtx = { ui?: { setStatus?: (key: string, text: string) => void; notify?
 export default function jevHonest(pi: ExtensionAPI) {
   const setStatus = (ctx: HookCtx | undefined) => { try { ctx?.ui?.setStatus?.("jev-honest", badge(readLevel())); } catch { /* no UI */ } };
 
+  const runRule = (arg: string, ctx: HookCtx) => {
+    const cmd = parseRuleArgs(arg);
+    if (!cmd) {
+      try { ctx?.ui?.notify?.('usage: /honest-jev rule add "<when>" -> "<ask>" [evidence: "<evidence>"] | rule list | rule remove <id> | rule disable <id>', "warning"); } catch { /* */ }
+      return;
+    }
+    pi.sendMessage?.({ customType: "jev-honest", content: applyRuleCommand(cmd), display: true });
+  };
+  const switchLevel = (level: Level, ctx: HookCtx) => {
+    writeLevel(level);
+    setStatus(ctx);
+    pi.sendMessage?.({
+      customType: "jev-honest",
+      content: level === "off" ? "HONEST JEV OFF — confirm in one line." : `HONEST JEV LEVEL CHANGED — level: ${level}. Confirm in one line and apply it from this reply on.\n\n${instructions(level)}`,
+      display: true,
+    });
+  };
+
   pi.registerCommand("honest-jev", {
     description: "Honest Jev level: soft | standard | strict | off",
     handler: async (args: string, ctx: HookCtx) => {
       const a = String(args ?? "").trim();
-      if (/^rule\b/i.test(a)) {
-        const cmd = parseRuleArgs(a);
-        if (!cmd) {
-          try { ctx?.ui?.notify?.('usage: /honest-jev rule add "<when>" -> "<ask>" [evidence: "<evidence>"] | rule list | rule remove <id> | rule disable <id>', "warning"); } catch { /* */ }
-          return;
-        }
-        pi.sendMessage?.({ customType: "jev-honest", content: applyRuleCommand(cmd), display: true });
-        return;
-      }
+      if (/^rule\b/i.test(a)) return runRule(a, ctx);
       const level = normalize(a || "standard");
       if (!level) { try { ctx?.ui?.notify?.("usage: /honest-jev soft|standard|strict|off", "warning"); } catch { /* */ } return; }
-      writeLevel(level);
-      setStatus(ctx);
-      pi.sendMessage?.({
-        customType: "jev-honest",
-        content: level === "off" ? "HONEST JEV OFF — confirm in one line." : `HONEST JEV LEVEL CHANGED — level: ${level}. Confirm in one line and apply it from this reply on.\n\n${instructions(level)}`,
-        display: true,
-      });
+      switchLevel(level, ctx);
     },
+  });
+
+  // Plain-text entry via the input event: `honest-jev strict`, `honest-jev rule list`, `stop honest-jev`. Text starting
+  // with "/" belongs to the command registry; anything else that is not one of these forms passes through untouched.
+  // Interactive and RPC input are intercepted; print-mode and ACP input are not on this event (see examples/rules/README.md).
+  pi.on("input", async (e: { text?: string }, ctx: HookCtx) => {
+    try {
+      const text = String(e?.text ?? "").trim();
+      if (!text || text.startsWith("/")) return undefined;
+      // "normal mode" is also the documented off phrase of other skills (ponytail): switch off, but let the message reach the model.
+      if (/^normal mode[.!?\s]*$/i.test(text)) { switchLevel("off", ctx); return undefined; }
+      if (/^(stop honest-jev|stop honest jev)[.!?\s]*$/i.test(text)) { switchLevel("off", ctx); return { handled: true }; }
+      const m = text.match(/^(?:[a-z0-9-]+:)?(?:honest-jev|jev-honest)(?:\s+(.+))?$/i);
+      if (!m) return undefined;
+      const raw = (m[1] ?? "").trim();
+      if (/^rule\b/i.test(raw)) {
+        if (!parseRuleArgs(raw)) return undefined; // prose such as "honest-jev rule of thumb: ..." reaches the model
+        runRule(raw, ctx);
+        return { handled: true };
+      }
+      const level = normalize(raw.replace(/[.!?\s]+$/, "") || "standard");
+      if (!level) return undefined;
+      switchLevel(level, ctx);
+      return { handled: true };
+    } catch { return undefined; }
   });
 
   pi.on("session_start", async (_e: unknown, ctx: HookCtx) => {

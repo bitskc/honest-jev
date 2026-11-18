@@ -32,18 +32,19 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-// An in-process hook instance with the registered command captured. Used for rules() only.
+// An in-process hook instance: the registered command, the captured event handlers, and the messages it sent.
 async function freshHook(agentDir: string) {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const mod = await import(`${HOOK_URL}?agent=${encodeURIComponent(agentDir)}`);
   const cmds: Record<string, { handler: (args: string, ctx: unknown) => Promise<void> }> = {};
+  const handlers: Record<string, (e: unknown, ctx: unknown) => Promise<unknown>> = {};
   const sent: string[] = [];
   mod.default({
-    on: () => {},
+    on: (name: string, fn: (e: unknown, ctx: unknown) => Promise<unknown>) => { handlers[name] = fn; },
     registerCommand: (name: string, opts: { handler: (args: string, ctx: unknown) => Promise<void> }) => { cmds[name] = opts; },
     sendMessage: (m: { content: string }) => { sent.push(m.content); },
   });
-  return { cmds, sent };
+  return { cmds, handlers, sent };
 }
 
 // One omp session start in a fresh process: returns the notices the hook sent through ctx.ui.notify.
@@ -188,4 +189,64 @@ test("PI_CODING_AGENT_DIR changed after import is honoured: the level flag lands
   await h.cmds["honest-jev"].handler("strict", { ui: {} });
   expect(readFileSync(join(b, ".jev-honest-active"), "utf8").trim()).toBe("strict");
   expect(existsSync(join(a, ".jev-honest-active"))).toBe(false);
+});
+
+// The shipped opt-in example and the line the hook injects for it. Tests key on the "- [id] When" line, not the bare id,
+// because SKILL.md itself mentions the id.
+const EXAMPLE_PATH = new URL("../examples/rules/migration-prod-safe.json", import.meta.url);
+const MIGRATION_LINE = "- [migration-prod-safe] When describing a database migration as safe: Was it run against a copy of prod data? — Evidence: the command and its output";
+
+test("omp injection: the opt-in migration example is injected only once copied to the user layer; a repo mask removes it", async () => {
+  const agent = join(root, "agent-inject");
+  mkdirSync(join(agent, "jev"), { recursive: true });
+  const h = await freshHook(agent);
+  await h.cmds["honest-jev"].handler("standard", { ui: {} });
+  const beforeCopy = (await h.handlers["before_agent_start"]({}, { ui: {} })) as { message: { content: string } };
+  expect(beforeCopy.message.content).not.toContain("- [migration-prod-safe] When");
+  writeFileSync(join(agent, "jev", "rules.json"), readFileSync(EXAMPLE_PATH, "utf8"));
+  const injected = (await h.handlers["before_agent_start"]({}, { ui: {} })) as { message: { content: string } };
+  expect(injected.message.content).toContain(MIGRATION_LINE);
+  const repoMask = join(REPO, ".jev", "rules.json");
+  writeFileSync(repoMask, JSON.stringify([{ id: "migration-prod-safe", disabled: true }]));
+  try {
+    const masked = (await h.handlers["before_agent_start"]({}, { ui: {} })) as { message: { content: string } };
+    expect(masked.message.content).not.toContain("- [migration-prod-safe] When");
+  } finally {
+    rmSync(repoMask, { force: true });
+  }
+});
+
+test("omp plain text: honest-jev strict and rule list are handled; slash commands, other prompts, and unknown words pass through", async () => {
+  const agent = join(root, "agent-input");
+  mkdirSync(agent, { recursive: true });
+  const h = await freshHook(agent);
+  const input = h.handlers["input"];
+  const ctx = { ui: {} };
+  expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("strict");
+  expect(await input({ text: "honest-jev rule list" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "/honest-jev strict" }, ctx)).toBeUndefined();
+  expect(await input({ text: "hello there" }, ctx)).toBeUndefined();
+  expect(await input({ text: "honest-jev please" }, ctx)).toBeUndefined();
+  expect(await input({ text: "stop honest-jev" }, ctx)).toEqual({ handled: true });
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
+});
+
+test("omp plain text: normal mode turns Honest Jev off but reaches the model; malformed rule prose passes through; level args tolerate trailing punctuation", async () => {
+  const agent = join(root, "agent-normal-mode");
+  mkdirSync(agent, { recursive: true });
+  const h = await freshHook(agent);
+  const input = h.handlers["input"];
+  const ctx = { ui: {} };
+  expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "normal mode" }, ctx)).toBeUndefined();
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
+  expect(h.sent.at(-1)).toBe("HONEST JEV OFF — confirm in one line.");
+  expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "Normal mode." }, ctx)).toBeUndefined();
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
+  expect(await input({ text: "stop honest-jev" }, ctx)).toEqual({ handled: true });
+  expect(await input({ text: "honest-jev rule of thumb: always check" }, ctx)).toBeUndefined();
+  expect(await input({ text: "honest-jev strict." }, ctx)).toEqual({ handled: true });
+  expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("strict");
 });
