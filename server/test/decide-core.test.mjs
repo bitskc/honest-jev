@@ -344,9 +344,9 @@ test("wiring: the Worker registers kit_decide and the installer's doctor expects
   const index = readFileSync(new URL("../src/index.mjs", import.meta.url), "utf8");
   assert.match(index, /registerKitTools\(server, \(\) => currentEnv\);\n\s*registerDecideTool\(server, \(\) => currentEnv\);/);
   const { KIT_TOOL_NAMES } = await import("../src/kit/tools.mjs");
-  const upstream = 12; // jkudish/jev-mcp jev_* tools, pinned in server/build-vendor.sh
+  const { UPSTREAM_TOOL_NAMES } = await import("./helpers/upstream-tools.mjs");
   const install = readFileSync(new URL("../../install.sh", import.meta.url), "utf8");
-  assert.equal(Number(/^EXPECTED_TOOLS=(\d+)$/m.exec(install)[1]), upstream + KIT_TOOL_NAMES.length + 1);
+  assert.equal(Number(/^EXPECTED_TOOLS=(\d+)$/m.exec(install)[1]), UPSTREAM_TOOL_NAMES.length + KIT_TOOL_NAMES.length + 1);
 });
 
 test("knobs on a noul threshold: a finite override replaces it, a non-finite one is ignored", () => {

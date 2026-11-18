@@ -58,13 +58,15 @@ Full responses carry more (`jev.usage`, `evidence`, `notes`, `threshold`, `ask_a
 
 | Tool | Question it answers | Decided by |
 |---|---|---|
-| `kit_guard_command` | Is this shell command / file read safe? | 10 deterministic rules first (secret reads, `rm -rf ~`, `sudo`, staging secrets, `curl \| sh` …), Jev only for the grey area |
+| `kit_guard_command` | Is this shell command / file read safe? | Deterministic rules first (secret reads, `rm -rf ~`, `sudo`, staging secrets, `curl \| sh` …), Jev only for the grey area |
 | `kit_size_dispatch` | Is this sub-agent model the right size for the task? | Jev task-kind judgement against a 6-rung ladder; blocks top-tier dispatch without a stated prior failure |
 | `kit_verify_done` | Did a check actually pass after the last change? | Runner summaries (node:test, Jest, pytest, cargo, go, vitest, bun, mocha, …) or `exit_code`; a bare command name is never evidence |
 | `kit_decide` | What should this agent do, given my rule table? | Your own spec: ordered rules over facts you pass and yes/no or pick-one questions Jev answers; fact-only rules decide with no model call; failure follows the spec's own `on_unavailable` decision. See [`examples/decisions/`](examples/decisions/README.md) |
 | `jev_classify` | Which bucket is each of these ≤64 items? | Jev, with `auto` / `review` decisions and per-class probabilities |
 | `jev_decide` / `jev_rerank` | Which of 2–6 options wins? Which of ≤250 candidates match? | Jev |
 | + 9 more upstream `jev_*` tools | | |
+
+Every tool's full description (verbatim), required/optional inputs and annotations live in [`docs/TOOLS.md`](docs/TOOLS.md), generated from the Worker's own `tools/list` by `cd server && npm run gen:tools`; `npm test` fails when that file, the pinned upstream tool names, the tool names mentioned here, or `install.sh`'s `EXPECTED_TOOLS` drift from what the Worker serves.
 
 Every fixed tool **fails open with a note** when Jev is unreachable (`kit_decide` applies the failure decision its spec declares, open or closed, and reports which): the deterministic rules still decide the obvious cases, and the rest degrades to "no opinion", never a crash or a silent "safe".
 
@@ -278,7 +280,7 @@ curl -s -X POST "$JEV_MCP_URL" -H "authorization: Bearer $JEV_MCP_TOKEN" \
 
 ## Tests
 
-- `cd server && npm test` — offline, mocked Jev (guard rules, tier resolution, verify evidence rules).
+- `cd server && npm test` — offline, mocked Jev (guard rules, tier resolution, verify evidence rules). Needs `npm run vendor` first: the tool-surface drift test (`test/tools-doc.test.mjs`) compares the live `tools/list` against the pinned names, `docs/TOOLS.md`, this README and `install.sh`'s `EXPECTED_TOOLS`.
 - `node --test "hooks/honest/**/*.test.mjs"` — Honest Jev hook runtime: level parsing, command parsing, skill filtering, flag file, `userConfigDir()`/rules/config path tiering.
 - `node --test "hooks/jev-stop-verify.test.mjs"` — the Stop gate: verify/honest/both/off gating, the strict-level auto-engage, the loop guard, fail-open on timeout/error/malformed transcript, claim splitting, evidence scoping. Runs in-process against an injected `fetchImpl` stub, no real network call.
 - `node --test hooks/jev-guard-local.test.mjs` — the local rules runner (runs in the CI "hooks test suite" job, about 8 s): every row of `evals/guard.jsonl` through `judgeStdin`, the function the entry uses for its stdin, compared with a direct `guardCommand` call; a fixed sample of 20 rows (block, ask, allow, unclear, Read) through real one-process-per-call spawns of the entry; the "unclear" verdict (including the comment-masked second reading); where the rules are found (installed tree, plugin checkout, pre-rename dir) with three kit files and no `node_modules`; the private compile cache; the rules fingerprint (`--fingerprint`, `rules_fp` in every reply) and the rule that a symlinked rule file has none (a `guard.mjs` link beside a tampered `shell.mjs` is planted and must not hash as genuine).
