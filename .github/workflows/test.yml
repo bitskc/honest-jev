@@ -39,6 +39,9 @@ jobs:
       - name: install server dependencies
         working-directory: server
         run: npm ci
+      - name: build the upstream tool vendor (the conformance test imports it)
+        working-directory: server
+        run: npm run vendor
       - name: server test suite
         working-directory: server
         run: npm test
