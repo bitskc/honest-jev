@@ -364,6 +364,7 @@ Next (nothing below was done for you; re-run with --wire to do steps 2-3 automat
     or config/claude-mcp.json (-> .mcp.json), or:
       claude mcp add --transport http jev "\$JEV_MCP_URL" --header "Authorization: Bearer \$JEV_MCP_TOKEN"
  3. Hooks (Honest Jev levels + guard + classify redact + Stop): re-run with --wire, or for Claude Code install the plugin
-      (/plugin marketplace add bitskc/honest-jev). Statusline badge is still manual for settings-file installs; see README.
- 4. Restart the agent (omp: /reload-plugins, then /mcp list, /mcp test jev), then: /honest-jev standard
+      (/plugin marketplace add bitskc/honest-jev), not both: they would register every hook twice. Statusline badge is still
+      manual for settings-file installs; see README.
+ 4. Restart the agent (omp: restart omp to load the hooks; /reload-plugins does not reload them. Then /mcp list, /mcp test jev), then: /honest-jev standard
 MSG
