@@ -192,6 +192,32 @@ class HookUnits(unittest.TestCase):
             finally:
                 os.environ.pop("JEV_POLICY_USER", None)
 
+    def test_format_guard_why_separates_safer_route_and_reply_outcome_sets_model_context(self):
+        why = self.hook.format_guard_why(
+            {"rule": "R1-secret-exposure", "reason": "node reads its script from stdin; confirm it is intended",
+             "suggestion": "Write the script to a file"},
+            "ask",
+        )
+        self.assertIn("Safer: Write the script to a file", why)
+        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, why)
+        ask = self.hook.reply_outcome({
+            "decision": "ask", "rule": "R1-secret-exposure",
+            "reason": "node reads its script from stdin; confirm it is intended",
+            "suggestion": "Write the script to a file", "decided_by": "prefilter",
+        })
+        self.assertEqual(ask.effect, "ask")
+        self.assertIn("Safer:", ask.reason)
+        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, ask.reason)
+        self.assertIn(self.hook.NEXT_AFTER_DECLINE, ask.model_context)
+        block = self.hook.reply_outcome({
+            "decision": "block", "rule": "R1-secret-exposure",
+            "reason": "prints a secret", "suggestion": "Do not print a secret", "decided_by": "prefilter",
+        })
+        self.assertEqual(block.effect, "deny")
+        self.assertIn("Safer: Do not print a secret", block.reason)
+        self.assertIn(self.hook.NEXT_AFTER_DECLINE, block.reason)
+        self.assertEqual(block.model_context, block.reason)
+
 
 class PolicyHook(unittest.TestCase):
     NOTICE = ("Jev policy: a policy gate was not evaluated for this command (the helper is unavailable, the policy file is unusable, or it ran "

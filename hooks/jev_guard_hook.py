@@ -268,12 +268,29 @@ POLICY_TRIGGER = '"trigger"'
 POLICY_LAYER_MAX = 16384
 
 
+# After ask auto-deny (-p) or an enforced deny: tell the model not to re-issue the same command.
+NEXT_AFTER_DECLINE = "Do not run the same command again; use the safer route above, or ask the user what they want."
+
+
+def format_guard_why(r, decision):
+    """Separate reason from suggestion so the agent gets a clear safer route (`Safer: …`)."""
+    head = "%s%s" % (
+        "Jev guard [%s]: " % r["rule"] if r.get("rule") else "Jev guard: ",
+        (r.get("reason") or "").rstrip(),
+    )
+    if r.get("suggestion") and decision != "allow":
+        if not head.endswith((".", "!", "?")):
+            head += "."
+        head += " Safer: " + r["suggestion"]
+    return head
+
+
 class Outcome(object):
     """One party's result: its effect (allow|ask|deny), the reason shown if it asks or denies, and the ledger row to write.
     Writing the row is deferred until the decision has been printed (a stalled ledger can never cost the decision)."""
 
-    def __init__(self, effect="allow", reason="", reply=None, row=None, stderr=None, tool=None, notice=None):
-        self.effect, self.reason, self.reply, self.row, self.stderr, self.tool, self.notice = effect, reason, reply, row, stderr, tool, notice
+    def __init__(self, effect="allow", reason="", reply=None, row=None, stderr=None, tool=None, notice=None, model_context=None):
+        self.effect, self.reason, self.reply, self.row, self.stderr, self.tool, self.notice, self.model_context = effect, reason, reply, row, stderr, tool, notice, model_context
 
     def write(self):
         if self.row is None:
@@ -670,17 +687,21 @@ def reply_outcome(r):
     row = {"decision": decision, "enforced": would is None, "would_have": would}
     if r.get("decided_by") == "fail_closed" and r.get("fail_reason") == "rule_error":
         row["fail_reason"] = "rule_error"  # a server reply carries this in its record; a local reply has none
-    why = "%s%s%s" % (
-        "Jev guard [%s]: " % r["rule"] if r.get("rule") else "Jev guard: ",
-        r.get("reason", ""),
-        (" " + r["suggestion"]) if r.get("suggestion") and decision != "allow" else "",
-    )
+    why = format_guard_why(r, decision)
+    # Ask: user sees permissionDecisionReason; model gets safer-route + next-step via additionalContext.
+    # Deny: permissionDecisionReason goes to the model, so next-step is inlined there too.
+    model_ctx = why
+    if decision == "block":
+        why = why.rstrip() + " " + NEXT_AFTER_DECLINE
+        model_ctx = why
+    elif decision == "ask":
+        model_ctx = why.rstrip() + " " + NEXT_AFTER_DECLINE
     note("%s score=%s rule=%s decided_by=%s" % (decision, r.get("score"), r.get("rule"), r.get("decided_by")))
     if decision not in ("ask", "block"):
         return Outcome("allow", reply=r, row=row)  # allow (including the server's own fail-open)
     if MODE == "shadow":
         return Outcome("allow", reply=r, row=row, stderr="jev-guard (shadow): would %s: %s\n" % (decision, why[:300]))
-    return Outcome("deny" if decision == "block" else "ask", why, reply=r, row=row)
+    return Outcome("deny" if decision == "block" else "ask", why, reply=r, row=row, model_context=model_ctx)
 
 
 # ── policy path (openspec add-policy-hook-adapter) ──────────────────────────────────────────────────────────────────
@@ -867,11 +888,23 @@ def conclude(g, policy):
             parts.append(p.reason)
         if g.effect == final and g.reason:
             parts.append(g.reason)
-        out["hookSpecificOutput"] = {
+        hso = {
             "hookEventName": "PreToolUse",
             "permissionDecision": final,
             "permissionDecisionReason": " ".join(parts)[:1500],
         }
+        # Ask: user sees permissionDecisionReason; model gets safer-route + next-step via additionalContext.
+        # Deny: reason already includes next-step; still set additionalContext so -p and interactive agree.
+        ctx_parts = []
+        if p.effect == final and getattr(p, "model_context", None):
+            ctx_parts.append(p.model_context)
+        if g.effect == final and getattr(g, "model_context", None):
+            ctx_parts.append(g.model_context)
+        if not ctx_parts and parts:
+            ctx_parts = [("%s %s" % (" ".join(parts).rstrip(), NEXT_AFTER_DECLINE))]
+        if ctx_parts:
+            hso["additionalContext"] = " ".join(ctx_parts)[:1500]
+        out["hookSpecificOutput"] = hso
     if notice:
         # for the USER (systemMessage), not the model: fixed text, no command, no path, no instruction
         out["systemMessage"] = notice

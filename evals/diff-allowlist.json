@@ -486,6 +486,37 @@
         "from": "block",
         "to": "allow",
         "justification": "Round 35 (#188): a prefix assignment behind `!` or `time` (`! VAR=/tmp/x rm -rf $VAR`), or inside a heredoc or process-substitution body of its own, was hidden on main by the leading word or the missing body scope; it is read now and the decision equals the unwrapped row (allow). An assignment inside a subshell, group, branch, loop or function never proves a variable safe (it can only make one unsafe), so those forms keep their main decision."
+      },
+      {
+        "ids": [
+          "g1213",
+          "g1214",
+          "g1215"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 36 actionable-advice: soft bare-credential-word asks only fire for programs that can print/stage the operand (readers, test runners, git/curl/sort, …). Unknown verbs like Paste-token / Open-secrets are not file readers; shape matches (.env) still block for any program. wrapped:all because piping/substituting an unknown verb still does not make it a content reader of the bare word. Corpus labels set to allow before the differential.",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g285~subst",
+          "g371~subst",
+          "g405~subst",
+          "g434~subst",
+          "g436~subst",
+          "g437~subst",
+          "g459~subst",
+          "g460~subst",
+          "g461~subst",
+          "g462~subst",
+          "g463~subst",
+          "g464~subst",
+          "g465~subst"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 36 bare-word printer gate: main asked on `$(…)` wrappers of already-allow commands because `$()` tokenization fabricated a bare-credential operand (`$(rg token`, `$(git credentials`). The plain rows stay allow; head only soft-asks when the real program is a content printer / test runner / git-curl-sort context, so these wrapper false positives go allow."
       }
     ]
   },
