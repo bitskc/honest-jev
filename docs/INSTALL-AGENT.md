@@ -125,6 +125,8 @@ Load the env first (`set -a; . ~/.config/jev/env; set +a`), then:
 ```
 Expected: every line `ok`, ending with `tools/list = 16 tools`. It checks env vars, `/health`, that an unauthenticated call is rejected with 401, and the tool count; it never prints the token. A value found only in `~/.config/jev/env` is shown as `ok   JEV_MCP_URL set (from <path> only)`, followed by a `note` that the hooks read these two variables from the agent's environment, not from the file: start the agent from a shell that loaded it, or the guard will not reach the server.
 
+With omp wired, the doctor also compares `hooks/pre/jev-guard.ts` and `jev-honest.ts` (under `PI_CODING_AGENT_DIR`, default `~/.omp/agent`) with the installed release: `ok   omp hook <name> is current` or `FAIL omp hook <name> is stale (<path>); run jev-update or ./install.sh --wire` (for a symlinked hook: `FAIL omp hook <name> is stale (<path>, a symlink: jev-update leaves links alone; update the link target or run ./install.sh --wire)`). No line when the file is not there. `jev-update` refreshes an omp hook file that already exists; it never creates one (only `--wire` does), leaves a symlinked one alone, reports `hook  -> could not refresh <path>` for a copy that fails (read-only) and carries on, and omp must be restarted to load the new copy (`/reload-plugins` does not reload hooks).
+
 Then in the host (after restart/reload):
 1. List MCP tools (omp: `/mcp test jev`; Claude Code: `/mcp`). Expect **16**: 12 `jev_*` + `kit_guard_command`, `kit_size_dispatch`, `kit_verify_done`, `kit_decide`.
 2. Call a cheap deterministic tool, which needs no model call:
