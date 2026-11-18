@@ -13,7 +13,7 @@ You are a coding agent. A user gave you this repo URL. Follow this file top to b
 Check out the **latest release**, the same thing `jev-update` installs (`main` can be ahead of any release). Use a source directory of its own: `install.sh` copies the repo into `~/.local/share/honest-jev`, so running it from a checkout *inside* that directory deletes the checkout's own `skills/` and fails.
 ```sh
 src="$HOME/.local/src/honest-jev"
-tag=$(curl -fsSL https://api.github.com/repos/bitskc/honest-jev/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+tag=$(curl -fsSL https://api.github.com/repos/bitskc/honest-jev/releases/latest 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)
 case "$tag" in v[0-9]*) ;; *) echo "could not resolve the latest release (API rate limit? offline?): stop and tell the user" >&2; false;; esac &&
 { [ -d "$src/.git" ] || git clone -q https://github.com/bitskc/honest-jev "$src"; } &&
 git -C "$src" fetch -q --tags --force && git -C "$src" checkout -q "$tag" && cd "$src"
