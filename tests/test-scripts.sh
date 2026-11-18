@@ -549,5 +549,24 @@ ok "$(ls -A "$dtd" | wc -l | tr -d ' ')" 0 "doctor: no temp file left in TMPDIR 
 HOME=$dH TMPDIR="$dtd" DOCTOR_LOG="$dlog" DOCTOR_CFG_LOG="$tmp/doctor-cfg.log" DOCTOR_ARGV_LOG="$tmp/doctor-argv.log" PATH="$dstub:$PATH" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=tok STUB_TOOLS=14 bash "$root/install.sh" --doctor >/dev/null 2>&1
 ok "$(ls -A "$dtd" | wc -l | tr -d ' ')" 0 "doctor: no temp file left in TMPDIR after a failing run"
 rm -rf "$dtd"
+# ── docs that tell a reader to write the env file: the documented form must be one the hooks read ──
+# The README's "Configure the client" heredoc is extracted verbatim (placeholders <...> filled in) and written as ~/.config/jev/env;
+# install.sh --doctor (env_get, the same reader rule as the hooks and jev-call) must see both values, from the file.
+rd_body=$(sed -n "/<<'ENV'/,/^ENV\$/p" "$root/README.md" | sed '1d;$d' | sed 's/<your-worker>/rd.example/; s/<[^>]*>/rd-token/')
+ok "$(printf '%s\n' "$rd_body" | grep -c '^JEV_MCP_\(URL\|TOKEN\)=')" 2 "README env file: the documented block has the URL and the token line"
+rdH="$tmp/readme-env"; mkdir -p "$rdH/.config/jev"; printf '%s\n' "$rd_body" > "$rdH/.config/jev/env"
+: > "$dlog"; rd_out=$(HOME=$rdH DOCTOR_LOG="$dlog" PATH="$dstub:$PATH" STUB_TOOLS="$want" env -u JEV_MCP_URL -u JEV_MCP_TOKEN bash "$root/install.sh" --doctor 2>&1)
+ok "$(printf '%s\n' "$rd_out" | grep -c "^ok   JEV_MCP_URL set (from $rdH/.config/jev/env only)$")" 1 "README env file: --doctor reads the URL from the documented form"
+ok "$(printf '%s\n' "$rd_out" | grep -c "^ok   JEV_MCP_TOKEN set (from $rdH/.config/jev/env only)$")" 1 "README env file: --doctor reads the token from the documented form"
+ok "$(printf '%s\n' "$rd_out" | grep -c 'rd-token')" 0 "README env file: the token is not printed"
+# negative control: the same block with the quotes removed (what the README used to say) is ignored
+printf '%s\n' "$rd_body" | sed "s/'//g" > "$rdH/.config/jev/env"
+rd_out=$(HOME=$rdH DOCTOR_LOG="$dlog" PATH="$dstub:$PATH" STUB_TOOLS="$want" env -u JEV_MCP_URL -u JEV_MCP_TOKEN bash "$root/install.sh" --doctor 2>&1)
+ok "$(printf '%s\n' "$rd_out" | grep -c '^FAIL JEV_MCP_URL not set$')" 1 "README env file: unquoted values are not read (control: the test can fail)"
+# the end-of-run hint must not send an omp user to /reload-plugins for hooks
+hint_out=$(HOME="$tmp/hinthome" bash "$root/install.sh" --claude 2>&1)
+ok "$(printf '%s\n' "$hint_out" | grep -c 'restart omp to load the hooks; /reload-plugins does not reload them')" 1 "install.sh hint: omp needs a restart for hooks, /reload-plugins does not reload them"
+ok "$(printf '%s\n' "$hint_out" | grep -c 'omp: /reload-plugins,')" 0 "install.sh hint: no longer sends omp users to /reload-plugins for hooks"
+ok "$(printf '%s\n' "$hint_out" | grep -c 'not both: they would register every hook twice')" 1 "install.sh hint: plugin and --wire are not both"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

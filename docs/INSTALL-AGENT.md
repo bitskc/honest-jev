@@ -33,7 +33,7 @@ Pick the first match; if several agents are installed, install for each the user
 | other (Gemini CLI, Aider, Windsurf, ...) | none of the above | manual (Step 4c) |
 
 ## Step 2: get a Jev MCP server (choose A or B)
-Ask the user: **"Do you already have a hosted Jev MCP server URL and bearer token, or should I deploy one to your Cloudflare account?"**
+Ask the user: **"Is a Jev MCP server already deployed that you can use (by you or someone you trust: you need its URL and bearer token), or should I deploy one to your Cloudflare account?"** There is no public hosted server.
 
 ### Option A: connect to an existing server
 Ask the user for:
@@ -53,6 +53,7 @@ The guard hooks and `jev-call` read `~/.config/jev/env` when the process does no
 ### Option B: self-host on Cloudflare Workers
 Requirements, ask the user for whatever is missing:
 - Cloudflare auth: `npx wrangler login` (interactive; the user does the browser step) **or** `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit) in the environment (+ `CLOUDFLARE_ACCOUNT_ID` if the token spans several accounts).
+  - On a remote machine (SSH, no browser): wrangler's login callback listens on `localhost:8976` (`--callback-port`, default 8976), so from the user's own machine run `ssh -L 8976:localhost:8976 <host>`, then on the remote `npx wrangler login --browser=false`, and have the user open the printed link in a local browser. Alternative without a tunnel: `npx wrangler login --device` (OAuth device flow; wrangler's help: "Useful in containers, remote SSH sessions"). Flags checked with `npx wrangler login --help` (wrangler 4.154.0).
 - A Vercel AI Gateway key in `AI_GATEWAY_API_KEY` (routes to model `typesafe-ai/jev`). Direct TypeSafe alternative: `TYPESAFE_API_KEY`. Without any Jev key the server still runs, but only the deterministic guard rules work.
 
 ```sh
@@ -96,6 +97,8 @@ What `--wire` writes (no secrets, only `${VAR}` references):
 | Claude Code | `~/.claude.json` top-level `mcpServers` (project: `.mcp.json`) | `~/.claude/skills/` | full set from `config/claude-settings-hook.json` into `~/.claude/settings.json` (levels + guard + classify redact + Stop) |
 
 If a config file isn't plain JSON, the installer refuses to touch it; merge `config/*.json` by hand.
+
+**Claude Code: plugin or `--wire`, not both.** If the user already installed the plugin (`/plugin marketplace add bitskc/honest-jev`; ask, or check `/plugin`), do not run `--claude --wire`. The plugin registers its hooks from `hooks/claude-plugin-hooks.json` (commands under `${CLAUDE_PLUGIN_ROOT}`) and `--wire` writes the same hooks into `~/.claude/settings.json` from `config/claude-settings-hook.json` (commands under `~/.local/share/honest-jev`). The strings differ, so Claude Code cannot deduplicate them (and it does not deduplicate across settings and plugins even for identical strings: anthropics/claude-code issue 76297); all matching hooks run in parallel, so with both the guard judges every command twice (two decision rows) and the Honest Jev level hooks fire twice. The plugin ships skills and hooks but no MCP entry (`.claude-plugin/plugin.json` has only `hooks`): with the plugin, add the server with a project `.mcp.json` (`config/claude-mcp.json`, `${VAR}` references). Already ran `--claude --wire` and now want the plugin? Remove the `jev-guard-hook.sh` / `jev-honest-*` / `jev-classify-redact.js` / `jev-stop-verify.js` entries from `~/.claude/settings.json` (or restore its `.jev-bak`) first.
 
 **omp needs a restart after `--wire`.** omp runs the hook copies in `~/.omp/agent/hooks/pre/` (made by `--wire`), not the files under `~/.local/share/honest-jev/hooks/omp/`. `/reload-plugins` refreshes skills, slash commands and MCP servers but not hooks (omp docs, marketplace.md: "restart the session for newly installed non-MCP tools, hooks, or extension modules"), so restart omp. Claude Code's hooks point into `~/.local/share/honest-jev/hooks/`, so `jev-update` refreshes them; the omp copies are not touched by `jev-update` (`install.sh` without `--wire` never writes them), so after `jev-update` re-run `./install.sh --omp --wire` from a checkout of that same release (Step 0) and restart omp. To see whether they differ: `cmp ~/.local/share/honest-jev/hooks/omp/jev-guard.ts ~/.omp/agent/hooks/pre/jev-guard.ts` (same for `jev-honest.ts`); `--doctor` does not compare them.
 

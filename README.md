@@ -16,7 +16,7 @@ Install https://github.com/bitskc/honest-jev by following its docs/INSTALL-AGENT
 
 The agent reads [`docs/INSTALL-AGENT.md`](docs/INSTALL-AGENT.md), asks you for the server URL and token (or deploys its own server to your Cloudflare account), installs the skills and guard hook for its host, and verifies 16 tools. Nothing secret is committed or echoed.
 
-Give your coding agents (omp / oh-my-pi, Claude Code and compatible agents) a hosted **Jev** toolbox over MCP, plus the skills and hook that make them use it:
+Give your coding agents (omp / oh-my-pi, Claude Code and compatible agents) a **Jev** toolbox over MCP (a Worker you deploy yourself, or one someone you trust already deployed; there is no public hosted server), plus the skills and hook that make them use it:
 
 A self-hosted [Jev](https://github.com/jkudish/jev-mcp) toolbox over MCP plus the skills and hooks that make agents actually use it, for **Claude Code** (as a plugin) and **omp / oh-my-pi** (hooks + skills).
 
@@ -185,6 +185,8 @@ Each `jev_classify` item stays under the server's 2000-character cap (applied up
 
 Skills, `/honest-jev:honest-jev` (type `honest-jev <level>` plain text from any session, no slash needed), the Honest Jev hooks (SessionStart, UserPromptSubmit, SubagentStart), the guard hook (PreToolUse on Bash/Read/NotebookRead/Grep) and the opt-in Stop gate (off until `JEV_STOP_GATE`/`stopGate` is set — see [Stop gate](#stop-gate-opt-in-enforcement)) wire themselves. On first session Honest Jev offers to add its statusline badge — composed with any statusline you already have (ponytail's included), never replacing it.
 
+**Use one route for Claude Code hooks, not both.** The plugin registers its hooks from `hooks/claude-plugin-hooks.json` (commands under `${CLAUDE_PLUGIN_ROOT}`); `install.sh --claude --wire` writes the same hooks into `~/.claude/settings.json` from `config/claude-settings-hook.json` (commands under `~/.local/share/honest-jev`). The command strings differ, so Claude Code cannot deduplicate them (it deduplicates by command string, and not across settings and plugins even when they are identical: [anthropics/claude-code#76297](https://github.com/anthropics/claude-code/issues/76297)); all matching hooks run in parallel, so with both every hook runs twice: the guard judges each command twice (two decision rows) and the Honest Jev level hooks fire twice. The plugin ships no MCP entry: with the plugin, add the server with a project `.mcp.json` (below) and skip `--wire`.
+
 ### omp / oh-my-pi, or Claude Code without the plugin system
 
 ```sh
@@ -216,11 +218,13 @@ Two env vars for the agent process, in a `0600` file, never in git:
 
 ```sh
 mkdir -p ~/.config/jev && umask 077 && cat > ~/.config/jev/env <<'ENV'
-JEV_MCP_URL=https://<your-worker>.workers.dev/mcp
-JEV_MCP_TOKEN=<the MCP_BEARER_TOKEN you set on the worker>
+JEV_MCP_URL='https://<your-worker>.workers.dev/mcp'
+JEV_MCP_TOKEN='<the MCP_BEARER_TOKEN you set on the worker>'
 ENV
 set -a; . ~/.config/jev/env; set +a      # only for MCP ${JEV_MCP_URL} expansion; the guard hooks and jev-call read this file themselves
 ```
+
+Values must be single-quoted, as above: the hooks, `jev-call` and `install.sh --doctor` read only that form and ignore an unquoted `KEY=value` line. `./install.sh --save-env` (with both variables exported) writes the same form and escapes quotes in the values.
 
 **omp**: `~/.omp/agent/mcp.json` (user) or `.omp/mcp.json` (project); `config/omp-mcp.json` is the file. omp expands `${VAR}` at discovery:
 
