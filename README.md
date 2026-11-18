@@ -228,7 +228,7 @@ set -a; . ~/.config/jev/env; set +a      # only for MCP ${JEV_MCP_URL} expansion
 { "mcpServers": { "jev": { "type": "http", "url": "${JEV_MCP_URL}", "headers": { "Authorization": "Bearer ${JEV_MCP_TOKEN}" } } } }
 ```
 
-Then `/mcp reload`, `/mcp list`, `/mcp test jev` (expect 16 tools), `/reload-plugins`.
+Then `/mcp reload`, `/reload-plugins`, `/mcp list`, `/mcp test jev` (expect 16 tools). `/reload-plugins` refreshes skills and MCP servers but not hooks: restart omp to load new or changed hook files.
 
 **Claude Code**: `.mcp.json` in the project (`config/claude-mcp.json`, same JSON), or `claude mcp add --transport http jev "$JEV_MCP_URL" --header "Authorization: Bearer $JEV_MCP_TOKEN"` (stores the expanded token in `~/.claude.json`; prefer `.mcp.json`). Tools appear as `mcp__jev__<tool>`.
 
@@ -259,7 +259,7 @@ Needs Node ≥ 22 and a Cloudflare account (free plan is fine).
 cd server && npm ci
 npm run vendor          # clones jkudish/jev-mcp at a pinned commit, builds, patches -> vendor/ (not committed)
 npm test                # offline tests, mocked Jev
-npx wrangler deploy --keep-vars   # -> https://jev-mcp.<your-subdomain>.workers.dev (keeps dashboard-set vars on redeploy)
+npm run deploy         # vendor + rules fingerprint + wrangler deploy --keep-vars -> https://jev-mcp.<your-subdomain>.workers.dev (--keep-vars keeps dashboard-set vars on redeploy; re-vendoring after the step above is harmless)
 
 openssl rand -hex 32 > ~/.config/jev/token && chmod 600 ~/.config/jev/token && npx wrangler secret put MCP_BEARER_TOKEN < ~/.config/jev/token   # your JEV_MCP_TOKEN, never echoed
 printf %s "$AI_GATEWAY_API_KEY" | npx wrangler secret put AI_GATEWAY_API_KEY        # Vercel AI Gateway -> typesafe-ai/jev, or
