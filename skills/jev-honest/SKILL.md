@@ -87,6 +87,8 @@ User-authored standing checks, injected at every level except off as a `## Rules
 
 At **strict**, this is mandatory on every substantive reply. Prefer the Stop gate (`JEV_STOP_GATE=honest|both`, or automatic at strict) so redaction is enforced in code rather than relying on prose alone.
 
+The redact step is also enforced by a Claude Code `PreToolUse` hook (`hooks/jev-classify-redact.js`) on `jev_classify` calls. That hook is Claude Code only: it returns the redacted call as `hookSpecificOutput.updatedInput` and prints nothing when there is nothing to change. omp sessions get no such hook, so redact by hand there. In Claude Code's auto mode a call whose input a hook changed can be denied once and retried ("a hook changed this call's input after auto mode reviewed it").
+
 ## Boundaries
 
 Honest Jev governs what you claim, not what you build or how you talk. It never replaces tests, `kit_verify_done`, or a code review; it stops the sentence that outruns them. This skill is prose-only: nothing forces the `jev_classify` / `kit_verify_done` calls above to actually happen. `hooks/jev-stop-verify.js` is an opt-in `Stop` hook (`JEV_STOP_GATE=honest|verify|both`, or automatic at **strict**) that makes those same calls itself from the real transcript if you don't — see the README's "Stop gate" section.
