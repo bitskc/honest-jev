@@ -18,14 +18,14 @@ Keep the token in a `0600` env file or your client's secret store, never in git 
 | Cursor | Static bearer header (`${env:NAME}` in `headers`) | Documented. Not run against a deployed Worker. |
 | Codex CLI | Bearer token from an env var (`bearer_token_env_var`) | Documented. Not run against a deployed Worker. |
 | Claude Desktop | Only stdio servers, so it needs the `mcp-remote` bridge | Documented. Not run against a deployed Worker. |
-| ChatGPT connectors | OAuth 2.1 only | **Not supported.** Needs the OAuth layer in [#77](https://github.com/bitskc/honest-jev/issues/77). Do not expect it to work. |
+| ChatGPT connectors | OAuth 2.1 or no auth; no static bearer | **Not supported.** Needs the OAuth layer in [#77](https://github.com/bitskc/honest-jev/issues/77). Do not expect it to work. |
 
 The server-level checks the conformance test covers:
 
 - POST `/mcp` without a token returns 401 with `WWW-Authenticate: Bearer`.
 - POST `/mcp` with a wrong token returns 401.
 - GET `/mcp` with a valid token returns 405. The server does not open an SSE stream.
-- An unknown path returns 404. `/health` returns `ok` only for an authorized request.
+- An unknown path returns 404. `/health` returns `ok` to anyone; the rules fingerprint header appears only for the bearer holder.
 - A valid MCP client lists exactly the 16 tools, and `kit_guard_command` returns a decision.
 
 ## Claude Code
@@ -69,7 +69,7 @@ Then `/mcp reload`, then `/mcp test jev` (expect 16 tools).
 }
 ```
 
-Restart Cursor after changing the env file. Check that the server shows 16 tools in Settings, MCP.
+Restart Cursor after changing the env file. Check that the server shows 16 tools in Customize.
 
 ## Codex CLI
 
@@ -85,7 +85,26 @@ Export `JEV_MCP_TOKEN` in the shell that starts Codex.
 
 ## Claude Desktop
 
-Claude Desktop only launches stdio servers. Bridge the remote server with `mcp-remote` in `claude_desktop_config.json`. Pass the Authorization header through an env var, with no space after the colon in the `--header` argument. Cursor and Claude Desktop on Windows do not escape spaces in `args`, so the env form is the safe one (from the `mcp-remote` README):
+Claude Desktop only launches stdio servers. Bridge the remote server with `mcp-remote` in `claude_desktop_config.json`. Keep the token out of that file: write `Authorization: Bearer <your-token>` to a `0600` file (one `Name: value` per line) and pass its absolute path with `--header-file`. `mcp-remote` reads the file and fails if the path is wrong, so it never sends unauthenticated requests:
+
+```json
+{
+  "mcpServers": {
+    "jev": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://<your-worker>.workers.dev/mcp",
+        "--header-file",
+        "/absolute/path/to/jev-auth-header"
+      ]
+    }
+  }
+}
+```
+
+If you cannot use a file, the `env` form works, but it puts the token in `claude_desktop_config.json`, which then holds a secret: keep that file `0600` and out of git. Use no space after the colon in the `--header` argument, because Cursor and Claude Desktop on Windows do not escape spaces in `args` (from the `mcp-remote` README):
 
 ```json
 {
@@ -107,7 +126,7 @@ Claude Desktop only launches stdio servers. Bridge the remote server with `mcp-r
 }
 ```
 
-To keep the token out of the process list, use `--header-file` with a `0600` file containing `Authorization: Bearer <your-token>` (one `Name: value` per line). `mcp-remote` reads the file and fails if the path is wrong, so it never sends unauthenticated requests.
+The Settings → Connectors remote path needs OAuth ([#77](https://github.com/bitskc/honest-jev/issues/77)) or Anthropic's beta request headers. This recipe does not cover it.
 
 ## ChatGPT connectors
 

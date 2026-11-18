@@ -1,6 +1,6 @@
 // Client conformance for the deployed Worker surface, run in-process through the real default export (no network, no deploy).
 // Covers what the docs/CLIENTS.md recipes depend on: bearer auth on /mcp, the Streamable HTTP POST path, the tool list, and /health.
-// It needs server/vendor (the upstream jev tools, built by `npm run vendor`). It skips when vendor/ is absent, so jobs that run the whole test glob without building the vendor (the ledger job) stay green; the server job builds the vendor before its test run.
+// It needs server/vendor (the upstream jev tools, built by `npm run vendor`). Locally it skips when vendor/ is absent, so a checkout without the vendor still runs the rest of the suite. In CI (GITHUB_ACTIONS set) it always runs, so an absent vendor fails loudly; both workflow jobs build the vendor first.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -8,9 +8,9 @@ import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 const vendored = existsSync(new URL("../vendor/server.js", import.meta.url));
-const skip = vendored ? false : "server/vendor not built (run npm run vendor)";
+const skip = vendored || process.env.GITHUB_ACTIONS ? false : "server/vendor not built (run npm run vendor)";
 
-const worker = vendored ? (await import("../src/index.mjs")).default : null;
+const worker = skip ? null : (await import("../src/index.mjs")).default;
 
 // Throwaway, generated per run and never a real credential.
 const TOKEN = `conformance-${randomUUID()}`;
@@ -77,13 +77,13 @@ test("an MCP client with the right token lists exactly the 16 documented tools",
   }
 });
 
-test("an MCP client with a wrong token cannot connect", { skip }, async () => {
+test("an MCP client with a wrong token cannot connect, and the rejection is a 401", { skip }, async () => {
   const client = new Client({ name: "conformance", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: { headers: { authorization: "Bearer not-the-token" } },
     fetch: call,
   });
-  await assert.rejects(client.connect(transport));
+  await assert.rejects(client.connect(transport), (err) => err.status === 401);
   await client.close().catch(() => {});
 });
 
