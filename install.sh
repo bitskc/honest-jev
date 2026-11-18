@@ -126,6 +126,14 @@ for l in sys.stdin.read().splitlines():
     if l.startswith("{"): print(len(json.loads(l)["result"]["tools"])); break' 2>/dev/null || true)
     [ "$n" = "$EXPECTED_TOOLS" ] && ok "tools/list = $EXPECTED_TOOLS tools" || bad "tools/list returned '${n:-nothing}' (want $EXPECTED_TOOLS; bad token?)"
   fi
+  # omp loads its hooks from hooks/pre/, a copy made by --wire; a copy older than the installed release keeps running the old rules.
+  # Absent hook: no line (omp is not wired here, or Claude Code only); a symlink is the user's to keep current, so it is compared by content too.
+  for f in jev-guard.ts jev-honest.ts; do
+    rel="$HOME/.local/share/honest-jev/hooks/omp/$f"; cur="$omp_dir/hooks/pre/$f"
+    [ -e "$cur" ] && [ -f "$rel" ] || continue
+    if cmp -s "$rel" "$cur"; then ok "omp hook $f is current ($cur)"
+    else bad "omp hook $f is stale ($cur); run jev-update or ./install.sh --wire"; fi
+  done
   for d in "$omp_dir/skills" "$claude_dir/skills"; do [ -d "$d/jev-classify" ] && ok "skills in $d"; done
   [ -x "$bin/jev-call" ] && ok "jev-call installed" || bad "jev-call not installed (run ./install.sh)"
   exit "$fail"
@@ -169,8 +177,22 @@ install -m 644 "$here/scripts/jev-policy-hook.mjs" "$share/jev-policy/scripts/je
 printf '#!/bin/sh\nexec node "%s" "$@"\n' "$share/jev-policy/scripts/jev-policy-hook.mjs" > "$bin/jev-policy-hook" && chmod 755 "$bin/jev-policy-hook"
 # shellcheck disable=SC2115
 copy_skills() { mkdir -p "$1"; for d in "$here"/skills/*/; do n=$(basename "$d"); rm -rf "$1/$n"; cp -r "$d" "$1/$n"; done; echo "skills -> $1"; }
+# Without --wire nothing is wired, but a hook copy omp already loads would stay at the version it was wired with (omp loads it from
+# hooks/pre/, not from $share). So replace each one that EXISTS with the release copy; never create one (that is --wire). A symlink is left alone.
+refresh_omp_hooks() {
+  local f
+  for f in jev-guard.ts jev-honest.ts; do
+    if [ -L "$1/$f" ]; then echo "note: $1/$f is a symlink; left alone, keep its target current yourself"; continue; fi
+    [ -f "$1/$f" ] || continue
+    cmp -s "$share/hooks/omp/$f" "$1/$f" && continue
+    cp "$share/hooks/omp/$f" "$1/$f" && echo "hook  -> refreshed $1/$f"
+  done
+}
 if [ "$target" = omp ] || [ "$target" = both ]; then
   if [ -n "$project" ]; then copy_skills "$project/.omp/skills"; else copy_skills "$omp_dir/skills"; fi
+  if [ "$wire" = 0 ]; then
+    if [ -n "$project" ]; then refresh_omp_hooks "$project/.omp/hooks/pre"; else refresh_omp_hooks "$omp_dir/hooks/pre"; fi
+  fi
 fi
 if [ "$target" = claude ] || [ "$target" = both ]; then
   if [ -n "$project" ]; then copy_skills "$project/.claude/skills"; else copy_skills "$claude_dir/skills"; fi

@@ -84,6 +84,7 @@ cat > "$stub/systemctl" <<'EOF'
 exit 0
 EOF
 chmod +x "$stub/systemctl"
+ustub="$tmp/update-stub"; mkdir -p "$ustub"; cp "$stub/curl" "$stub/systemctl" "$ustub/"  # kept for the update.sh cases further down ($stub/curl is replaced by the jev-call stubs)
 U="$tmp/uhome"; mkdir -p "$U/.omp/agent" "$U/.claude" "$U/.config/systemd/user"
 got=$(HOME=$U PATH="$stub:$PATH" REPO_ROOT="$root" bash "$root/update.sh" --check 2>&1); ok "$?" 1 "update: no release -> exit 1"
 ok "$got" "no release found for bitskc/honest-jev; set JEV_REF to install an unpinned ref" "update: no release -> one clean line"
@@ -549,5 +550,61 @@ ok "$(ls -A "$dtd" | wc -l | tr -d ' ')" 0 "doctor: no temp file left in TMPDIR 
 HOME=$dH TMPDIR="$dtd" DOCTOR_LOG="$dlog" DOCTOR_CFG_LOG="$tmp/doctor-cfg.log" DOCTOR_ARGV_LOG="$tmp/doctor-argv.log" PATH="$dstub:$PATH" JEV_MCP_URL=https://x.example/mcp JEV_MCP_TOKEN=tok STUB_TOOLS=14 bash "$root/install.sh" --doctor >/dev/null 2>&1
 ok "$(ls -A "$dtd" | wc -l | tr -d ' ')" 0 "doctor: no temp file left in TMPDIR after a failing run"
 rm -rf "$dtd"
+# ── omp hooks: install.sh without --wire (the jev-update path) refreshes an existing copy, never creates one ──
+rel_g="$root/hooks/omp/jev-guard.ts"; rel_h="$root/hooks/omp/jev-honest.ts"
+# (1) stale guard + stale honest present -> both equal the release copy; the line names the file; a current file is not reported
+rH="$tmp/refhome"; mkdir -p "$rH/.omp/agent/hooks/pre"; printf '// old guard\n' > "$rH/.omp/agent/hooks/pre/jev-guard.ts"; printf '// old honest\n' > "$rH/.omp/agent/hooks/pre/jev-honest.ts"
+out=$(HOME=$rH bash "$root/install.sh" --omp 2>&1)
+ok "$(cmp -s "$rel_g" "$rH/.omp/agent/hooks/pre/jev-guard.ts" && cmp -s "$rel_h" "$rH/.omp/agent/hooks/pre/jev-honest.ts" && echo same)" same "hooks refresh: install without --wire replaces stale omp hooks with the release copies"
+ok "$(printf '%s\n' "$out" | grep -c "^hook  -> refreshed $rH/.omp/agent/hooks/pre/jev-guard.ts$")" 1 "hooks refresh: says which file it refreshed"
+out=$(HOME=$rH bash "$root/install.sh" --omp 2>&1)
+ok "$(printf '%s\n' "$out" | grep -c '^hook  -> refreshed' || true)" 0 "hooks refresh: a second run changes nothing and says nothing"
+# (2) absent -> not created, in the default dir and in a project
+aH="$tmp/abshome"; mkdir -p "$aH/.omp/agent"; HOME=$aH bash "$root/install.sh" --omp >/dev/null 2>&1
+ok "$([ -e "$aH/.omp/agent/hooks" ] && echo created || echo none)" none "hooks refresh: no hook file is created without --wire"
+aP="$tmp/absproj"; mkdir -p "$aP"; HOME=$aH bash "$root/install.sh" --omp --project "$aP" >/dev/null 2>&1
+ok "$([ -e "$aP/.omp/hooks" ] && echo created || echo none)" none "hooks refresh: --project without --wire creates no hook file either"
+# only the guard present: the honest hook is not created
+oH="$tmp/onlyhome"; mkdir -p "$oH/.omp/agent/hooks/pre"; printf '// old\n' > "$oH/.omp/agent/hooks/pre/jev-guard.ts"; HOME=$oH bash "$root/install.sh" --omp >/dev/null 2>&1
+ok "$(cmp -s "$rel_g" "$oH/.omp/agent/hooks/pre/jev-guard.ts" && [ ! -e "$oH/.omp/agent/hooks/pre/jev-honest.ts" ] && echo ok)" ok "hooks refresh: the file that exists is refreshed, the one that does not is not created"
+# (3) PI_CODING_AGENT_DIR honoured; the default dir is untouched
+dH2="$tmp/diroverhome"; dP="$tmp/diroverride"; mkdir -p "$dH2/.omp/agent/hooks/pre" "$dP/hooks/pre"
+printf '// old\n' > "$dH2/.omp/agent/hooks/pre/jev-guard.ts"; printf '// old\n' > "$dP/hooks/pre/jev-guard.ts"
+HOME=$dH2 PI_CODING_AGENT_DIR=$dP bash "$root/install.sh" --omp >/dev/null 2>&1
+ok "$(cmp -s "$rel_g" "$dP/hooks/pre/jev-guard.ts" && echo refreshed)" refreshed "hooks refresh: PI_CODING_AGENT_DIR hook refreshed"
+ok "$(cat "$dH2/.omp/agent/hooks/pre/jev-guard.ts")" "// old" "hooks refresh: the default ~/.omp/agent hook is left alone when the override is set"
+# project scope: DIR/.omp/hooks/pre
+pjH="$tmp/projhome"; pjD="$tmp/projdir"; mkdir -p "$pjH" "$pjD/.omp/hooks/pre"; printf '// old\n' > "$pjD/.omp/hooks/pre/jev-guard.ts"
+HOME=$pjH bash "$root/install.sh" --omp --project "$pjD" >/dev/null 2>&1
+ok "$(cmp -s "$rel_g" "$pjD/.omp/hooks/pre/jev-guard.ts" && echo refreshed)" refreshed "hooks refresh: --project DIR refreshes DIR/.omp/hooks/pre"
+# claude-only target never touches omp hooks; a symlinked hook is left alone
+cvH="$tmp/claudeonly"; mkdir -p "$cvH/.omp/agent/hooks/pre"; printf '// old\n' > "$cvH/.omp/agent/hooks/pre/jev-guard.ts"; HOME=$cvH bash "$root/install.sh" --claude >/dev/null 2>&1
+ok "$(cat "$cvH/.omp/agent/hooks/pre/jev-guard.ts")" "// old" "hooks refresh: --claude leaves omp hooks alone"
+slH="$tmp/symhome"; mkdir -p "$slH/.omp/agent/hooks/pre"; printf '// mine\n' > "$tmp/mine.ts"; ln -s "$tmp/mine.ts" "$slH/.omp/agent/hooks/pre/jev-guard.ts"
+out=$(HOME=$slH bash "$root/install.sh" --omp 2>&1)
+ok "$(cat "$tmp/mine.ts") $([ -L "$slH/.omp/agent/hooks/pre/jev-guard.ts" ] && echo link)" "// mine link" "hooks refresh: a symlinked hook (and its target) is left alone"
+ok "$(printf '%s\n' "$out" | grep -c '^note: .*jev-guard.ts is a symlink; left alone')" 1 "hooks refresh: ... and says so"
+# (4) doctor: stale -> FAIL + exit 1; current -> ok; absent -> no line
+hdH="$tmp/hookdoc"; mkdir -p "$hdH/.omp/agent/hooks/pre"; HOME=$hdH bash "$root/install.sh" --omp >/dev/null 2>&1
+hook_doctor() { HOME=$hdH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor 2>&1; }
+doc_h=$(hook_doctor); rc=$?
+ok "$(printf '%s\n' "$doc_h" | grep -c 'omp hook')" 0 "doctor: no omp hook installed -> no omp hook line"
+cp "$rel_g" "$hdH/.omp/agent/hooks/pre/jev-guard.ts"; cp "$rel_h" "$hdH/.omp/agent/hooks/pre/jev-honest.ts"
+doc_h=$(hook_doctor)
+ok "$(printf '%s\n' "$doc_h" | grep -c "^ok   omp hook jev-guard.ts is current ($hdH/.omp/agent/hooks/pre/jev-guard.ts)$")" 1 "doctor: current omp guard hook -> ok line"
+printf '// old\n' > "$hdH/.omp/agent/hooks/pre/jev-guard.ts"
+doc_h=$(hook_doctor); HOME=$hdH env -u JEV_MCP_URL -u JEV_MCP_TOKEN PATH="$stub:$PATH" bash "$root/install.sh" --doctor >/dev/null 2>&1; rc=$?
+ok "$(printf '%s\n' "$doc_h" | grep "^FAIL omp hook")" "FAIL omp hook jev-guard.ts is stale ($hdH/.omp/agent/hooks/pre/jev-guard.ts); run jev-update or ./install.sh --wire" "doctor: stale omp guard hook -> FAIL line naming the path and the fix"
+ok "$rc" 1 "doctor: stale omp guard hook -> exit 1"
+ok "$(printf '%s\n' "$doc_h" | grep -c 'omp hook jev-honest.ts is current')" 1 "doctor: ... and the current honest hook still reports ok"
+# (5) update.sh end to end (offline curl stub serves this tree as the archive): a stale hook is refreshed, an absent one is not created
+uH="$tmp/updhook"; mkdir -p "$uH/.omp/agent/hooks/pre" "$uH/.claude"; printf '// old\n' > "$uH/.omp/agent/hooks/pre/jev-guard.ts"
+out=$(HOME=$uH PATH="$ustub:$PATH" REPO_ROOT="$root" JEV_REF=main bash "$root/update.sh" --omp 2>&1); rc=$?
+ok "$rc" 0 "update: --omp run succeeds offline"
+ok "$(cmp -s "$rel_g" "$uH/.omp/agent/hooks/pre/jev-guard.ts" && echo refreshed)" refreshed "update: jev-update refreshes the stale omp guard hook"
+ok "$(cmp -s "$uH/.local/share/honest-jev/hooks/omp/jev-guard.ts" "$uH/.omp/agent/hooks/pre/jev-guard.ts" && echo same)" same "update: ... to the copy in the share dir"
+ok "$([ -e "$uH/.omp/agent/hooks/pre/jev-honest.ts" ] && echo created || echo none)" none "update: the honest hook was absent and is not created"
+ok "$(printf '%s\n' "$out" | grep -c '^hook  -> refreshed ')" 1 "update: prints one refreshed line"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
