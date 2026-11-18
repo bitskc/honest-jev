@@ -517,6 +517,30 @@
         "to": "allow",
         "justification": "Round 36c: Capitalized soft-ask carve-out is a tiny UI-verb allowlist (collect/confirm/approve), not a binary denylist. Cap interpreters/printers (Python3/Node/Paste/…) ask. Not an allowlist of those bypasses.",
         "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g1237",
+          "g1241"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 37: `grep -L` and `ag -L` are --files-without-match(es): they print file names and never a line, so a secret-name search under -L cannot show a value (main already allowed the same search under -l, -c, -q and the long forms; the short -L was the one quiet mode not read). rg's -L is --follow and still asks (g1250). `--exclude` alone does not allow (g1251), a line-printing recursive search still asks (g1246-g1249).",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g1254",
+          "g1255",
+          "g1256",
+          "g1257",
+          "g1258",
+          "g1259"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 37: `-L` joined `-l`, `-c` and `-q` as a quiet mode, and a quiet grep/ag is not checked against its operands (the `continue` in ruleSecret), so a secret-store operand (`.env`, `~/.ssh/id_rsa`, `~/.aws/credentials`, `credentials.json`) now allows under -L where main blocked it. Files-without-match prints names only, never a line, the same as -l/-c/-q, which main already allows on the same operands (g1260-g1262); the store's content is not read into the transcript. Line-printing forms and rg -L (--follow) still block (g1263-g1264).",
+        "wrapped": "all"
       }
     ]
   },
