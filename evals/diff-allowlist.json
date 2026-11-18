@@ -489,17 +489,6 @@
       },
       {
         "ids": [
-          "g1213",
-          "g1214",
-          "g1215"
-        ],
-        "from": "ask",
-        "to": "allow",
-        "justification": "Round 36 actionable-advice: soft bare-credential-word asks stay for readers, editors, test runners, git/curl/sort, and other lowercase tools. Capitalized agent/UI verbs (Paste-token, Open-secrets) are not filesystem readers and allow; shape matches still block. wrapped:all because piping/substituting a Capitalized verb still does not make it a content reader of the bare word. Corpus labels set to allow before the differential.",
-        "wrapped": "all"
-      },
-      {
-        "ids": [
           "g285~subst",
           "g371~subst",
           "g405~subst",
@@ -517,6 +506,15 @@
         "from": "ask",
         "to": "allow",
         "justification": "Round 36 bare-word printer gate: main asked on `$(…)` wrappers of already-allow commands because `$()` tokenization fabricated a bare-credential operand (`$(rg token`, `$(git credentials`). The plain rows stay allow; head only soft-asks when the real program is a content printer / test runner / git-curl-sort context, so these wrapper false positives go allow."
+      },
+      {
+        "ids": [
+          "g1226"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 36b case-fold fix: Capitalized agent/UI verbs that do not fold to a known reader/printer/wrapper/test binary (`Collect token`) stay allow. Paste/Cat/Open/Sudo/Npm ask. Not an allowlist of the Cat/Paste bypass.",
+        "wrapped": "all"
       }
     ]
   },

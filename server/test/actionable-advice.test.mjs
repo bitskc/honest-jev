@@ -30,15 +30,34 @@ test("bare credential word on a content printer asks with the bare-word suggesti
   }
 });
 
-test("Capitalized agent/UI verbs with a bare credential word allow (Paste token false-positive)", async () => {
-  for (const c of ["Paste token", "Paste password", "Open secrets", "Rename token"]) {
+test("case-folded known printers/wrappers with a bare credential word ask (macOS/Windows exec FS)", async () => {
+  for (const c of [
+    "Cat token",
+    "CAT token",
+    "Less TOKEN",
+    "Head secrets",
+    "Paste token",
+    "Paste credentials",
+    "Open secrets",
+    "paste token",
+    "Sudo cat token",
+    "Npm test credentials",
+    "Rename token",
+  ]) {
     const r = await g(c);
-    assert.equal(r.decision, "allow", c);
+    assert.equal(r.decision, "ask", c);
+    assert.equal(r.suggestion, R1_BARE_WORD_SUGGESTION, c);
+  }
+});
+
+test("unknown Capitalized UI verbs that are not known binaries still allow", async () => {
+  for (const c of ["Collect token", "Confirm password", "Approve secrets"]) {
+    assert.equal((await g(c)).decision, "allow", c);
   }
 });
 
 test("lowercase unknown tools and editors still ask on a bare credential word", async () => {
-  for (const c of ["paste token", "vim token", "nano token", "nvim password"]) {
+  for (const c of ["vim token", "nano token", "nvim password"]) {
     assert.equal((await g(c)).decision, "ask", c);
   }
 });
