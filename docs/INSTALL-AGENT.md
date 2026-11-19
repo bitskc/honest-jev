@@ -35,6 +35,8 @@ Pick the first match; if several agents are installed, install for each the user
 ## Step 2: get a Jev MCP server (choose A or B)
 Ask the user: **"Is a Jev MCP server already deployed that you can use (by you or someone you trust: you need its URL and bearer token), or should I deploy one to your Cloudflare account?"** There is no public hosted server.
 
+If the user already set honest-jev up on another machine, or on this machine for a different agent, the server exists: use Option A and do not deploy (see "Second machine or second agent" below).
+
 ### Option A: connect to an existing server
 Ask the user for:
 - `JEV_MCP_URL` (looks like `https://<name>.<subdomain>.workers.dev/mcp`)
@@ -49,6 +51,21 @@ export JEV_MCP_TOKEN=... # ask the user
 unset JEV_MCP_TOKEN
 ```
 The guard hooks and `jev-call` read `~/.config/jev/env` when the process does not already have the two variables. MCP entries that expand `${JEV_MCP_URL}` / `${JEV_MCP_TOKEN}` still need them in the agent process (`set -a; . ~/.config/jev/env; set +a` in the launcher). Offer to add that line; don't add it silently.
+
+#### Second machine or second agent (the server already exists)
+Do not deploy and do not ask for Cloudflare access: run Step 0, Step 1, Option A, Step 3, Step 5 and Step 6.
+- The URL and token are in `~/.config/jev/env` on the first machine (the URL is also what `npm run deploy` printed, plus `/mcp`). Cloudflare does not show a secret again, so if the token is lost the user sets a new one with `npx wrangler secret put MCP_BEARER_TOKEN` from `server/`; every machine still on the old token then needs `--save-env` again.
+- So the token never enters your transcript, give the user this to run in their own terminal. It reads the token hidden, keeps it out of shell history, and works in bash and zsh:
+```sh
+cd ~/.local/src/honest-jev     # the Step 0 checkout
+printf 'Server URL (ends in /mcp): '; read -r JEV_MCP_URL
+printf 'Token (hidden): '; read -rs JEV_MCP_TOKEN; echo
+export JEV_MCP_URL JEV_MCP_TOKEN
+./install.sh --save-env       # writes ~/.config/jev/env with mode 0600
+unset JEV_MCP_URL JEV_MCP_TOKEN
+```
+- A second agent on a machine whose `~/.config/jev/env` is already right: skip `--save-env`, run Step 3 for the new host (`--claude`, `--omp` or `--both`), then Step 5.
+- Step 0 installs the latest release. If the server was deployed from an older one, Step 5 can report that the guard rules differ from the server's: redeploy from the first machine (`cd server && npm run deploy`; see Troubleshooting).
 
 ### Option B: self-host on Cloudflare Workers
 Requirements, ask the user for whatever is missing:
