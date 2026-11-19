@@ -39,7 +39,7 @@ One Cloudflare Worker (your account, your Jev key, your bearer token), 16 MCP to
   <a href="https://honestjev.com"><img src="docs/jevs-honest-run.png" width="640" alt="Jev's Honest Run: Jev jumps past a +50 VERIFIED bonus and a row of gold stars over a brick floor"/></a>
 </p>
 
-Honest Abe got a side-scroller. **[Jev's Honest Run](https://honestjev.com)** is an NES-style platformer on honestjev.com where the tool's ideas are the level design: jump the risky commands, grab the verified stars and dodge the fibs. It has 3 worlds, 9 levels and 3 bosses, leaderboards, and a hard mode. Post a score, then ⭐ **[star the repo](https://github.com/bitskc/honest-jev)** so Jev keeps running.
+Honest Abe got a side-scroller. **[Jev's Honest Run](https://honestjev.com)** is an 8-bit platformer on honestjev.com where the tool's ideas are the level design: jump the risky commands, grab the verified stars and dodge the fibs. It has 3 worlds, 9 levels and 3 bosses, leaderboards, and a hard mode. Post a score, then ⭐ **[star the repo](https://github.com/bitskc/honest-jev)** so Jev keeps running.
 
 ## What it looks like (real output, trimmed to the key fields)
 
