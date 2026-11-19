@@ -81,9 +81,11 @@ test("Q6: an inline script, filter or recipe that names env or spawns a process,
     "python3 -c 'import subprocess; subprocess.run([\"printenv\"])'", "node -e 'require(\"child_process\").execSync(\"env\",{stdio:\"inherit\"})'", "lua -e 'os.execute(\"env\")'",
     "php -r 'system(\"env\");'", "ruby -e 'system \"env\"'", "sed '1e env' /etc/hostname", "make -f - <<'MK'\nall:\n\t@env\nMK", "tclsh <<'T'\nputs [array get env]\nT",
     "echo 'puts [array get env]' | tclsh", "script -qc env /dev/null", "npm exec -- env", "npx env", "export -n", "export -fn", "make -pn", "make -p -f /dev/null",
+    "npm run env", "pnpm run env", "yarn run env", "npm run-script env", "docker compose config", "docker-compose config", "docker compose -f compose.yaml config",
+    "strace -v -e execve ./run.sh", "ltrace -e getenv ./run.sh",
   ]) assert.notEqual((await g(L + t)).decision, "allow", t);
   // controls: an interpreter or make with no env, spawn or --env on the line stays a plain load
-  for (const t of ["make deploy", "node server.js --env production", "python3 manage.py migrate", "sed -i 's/a/b/' f.txt", "node server.js"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
+  for (const t of ["make deploy", "node server.js --env production", "python3 manage.py migrate", "sed -i 's/a/b/' f.txt", "node server.js", "npm test", "npm run build", "docker compose up -d", "docker compose ps"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
   assert.equal((await g("source ~/.config/jev/env; python3 app.py")).decision, "allow");
 });
 

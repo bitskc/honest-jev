@@ -1611,6 +1611,9 @@ function sourceLeaks(segs, bodies, command, src) {
       if (w === "script" || w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) return `\`${w}\` runs another command that can print the environment`;
       if (w === "export" && rest.some((a) => /^-[A-Za-z]*n[A-Za-z]*$/.test(a))) return "`export -n` lists the variables";
       if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable, the environment included";
+      if (["npm", "pnpm", "yarn"].includes(w) && rest.includes("env")) return `\`${w} run env\` prints the whole environment`;
+      if ((w === "docker-compose" || w === "podman-compose" || ((w === "docker" || w === "podman") && rest.includes("compose"))) && rest.some((a) => a === "config" || a === "convert")) return "`compose config` prints the compose file with every ${VAR} filled in from the loaded environment";
+      if (w === "strace" || w === "ltrace") return `\`${w}\` prints the environment of every process it traces`;
       if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
       if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
     }
