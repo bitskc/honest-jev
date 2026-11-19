@@ -14,7 +14,7 @@ import {
   programOf, redact, redactCap, resolveCommand, scriptOf, shellDashCScript, SHELL_WRAPPER_PROGS,
   interpScriptText, literalOutput, pipeFedScripts, processSubBodies, stdinFeeds, substitutionBodies,
   splitPipelines, splitSegments, maskCommentQuotes, stripHeredocs, stripRedirects, substLiteral, substitutedSegments,
-  substitutionSpans, trackCwds, unwrapScripts, words,
+  substitutionSpans, trackCwds, unwrapScripts, words, wordsQ, FUNC_HEAD_WORD_RE,
 } from "./shell.mjs";
 import { safeRegexAny } from "./safere.mjs";
 
@@ -791,9 +791,23 @@ const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest
 // tiny UI-verb *allowlist* (not a binary denylist): on case-insensitive exec FS, `Python3`/`Node`/
 // `Paste` resolve to real binaries, so Cap words outside the allowlist ask — same as unknown lowercase.
 const BARE_WORD_UI_VERBS = new Set(["collect", "confirm", "approve"]);
-function bareWordContextAsks(prog, args = []) {
-  if (!prog) return false;
+// A word holding a paren, `;` or `=` is source text, not an executable name: `getSession()`, `session.get(x)`, `a.b=c`, `=>` come from the body of
+// an interpreter script (`node -e`, a stdin heredoc) that the walk reads as shell lines, and nothing the shell would run as a program is spelled
+// so (a file literally named `a=b` or `f()` is possible but contrived; a quoted word is kept out of this, see `quotedProg`). Neither can `//` or
+// `./` (a directory: the empty basename) or a `#` comment word. Braces are NOT in the set: brace expansion makes `ca{t,t}` and `{cat,}` the real
+// program `cat`, so a word with braces keeps asking. Its shape matches (`.env`) still block; only the bare-word soft ask is skipped.
+// A command word that starts a substitution (`$(which cat) token`, `` `which cat` token ``) is a runtime-chosen program: it keeps asking.
+// Was the word `prog` (or a path ending in it) written with a quote or backslash anywhere in `seg`? Over-approximate: a quoted argument that equals the program's name counts too, which only makes the caller ask.
+const quotedWord = (seg, prog) => { const w = wordsQ(seg); return !!w.q && [...w.q].some((i) => w.t[i] === prog || base(w.t[i]) === prog); };
+const isNotAProgram = (w) => w === "" || w.startsWith("#") || (!/^[$`]/.test(w) && /[();=]/.test(w));
+// `head` is the segment's own first word, `prog` the command resolved behind it. They differ where the head is junk that the resolver
+// peels past (`// fetch token` resolves to `fetch`): the remainder of such a line still asks when it begins with a real reader
+// (`// cat token`), but not for an unknown word, which is script text rather than a printer.
+// `quotedProg`: the program word was written with a quote or a backslash (`'./f()' token`), so it names a program, not source text.
+function bareWordContextAsks(prog, args = [], head = prog, quotedProg = false) {
+  if (!prog || (!quotedProg && isNotAProgram(prog))) return false;
   const folded = prog.toLowerCase();
+  if (!quotedProg && head !== prog && isNotAProgram(head ?? "")) return READERS.has(folded) || copiesToTerminal(folded, args);
   // `cp`/`install`/`mv`/`rsync` are NON_CONTENT unless they copy onto a print device (`cp token /dev/stdout`).
   if (copiesToTerminal(folded, args)) return true;
   if (NON_CONTENT_PROGS.has(folded) || CREDENTIAL_CONSUMER_PROGS.has(folded)) return false;
@@ -1675,7 +1689,7 @@ function ruleSecret(ctx) {
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
     // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
     if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
-      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args))) {
+      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args, programOf(seg)[0], quotedWord(seg, prog)))) {
       const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
       soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }
@@ -2914,7 +2928,7 @@ function assignWords(seg) {
   let cond = false;
   while (i < toks.length) {
     if (SEGMENT_OPENERS.has(toks[i])) { if (!REAL_OPENERS.has(toks[i])) cond = true; i++; }
-    else if (/^[A-Za-z_][\w.-]*\(\)$/.test(toks[i]) && toks[i + 1] === "{") { cond = true; i += 2; }
+    else if (FUNC_HEAD_WORD_RE.test(toks[i]) && toks[i + 1] === "{") { cond = true; i += 2; }
     else break;
   }
   return { toks: i ? toks.slice(i) : toks, cond };
@@ -3459,7 +3473,7 @@ export async function guardCommand(input, deps = {}) {
     return internalError(input && typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e);
   }
 }
-async function guardCommandChecked(input, deps) {
+async function guardCommandMasked(input, deps) {
   // An apostrophe in a comment (`# don't\ncat .env`) opens a quote in every scanner that does not know comments, and the quote
   // swallows the lines after it. Removing comments cannot fix that safely: a `#` the detector mistakes for a comment start
   // (`${x%% #*}`, `a\ #b`, a backtick) would hide the real command after it from every rule. So nothing is removed: the command is
@@ -3479,6 +3493,21 @@ async function guardCommandChecked(input, deps) {
   return { ...second, jev: spent ? first.jev : second.jev, notes: [...(second.notes || []), "Decided on the command with the quote characters inside its comments masked: an apostrophe in a comment is not a quote."] };
 }
 const DECISION_RANK = { allow: 0, ask: 1, block: 2 };
+// words() keeps a Unicode space inside its word, as bash does (a function can be named `a<NBSP>b`). A command written with one
+// (`cat<NBSP>.env`) is then one unknown word that bash cannot run; an agent or a reader may still mean two words, so the command is judged
+// as written AND with every Unicode space read as a blank, and the stricter decision stands (never weaker than the old whitespace split).
+const UNICODE_SPACE_RE = /[^\S \t\n\r\f\v]/g;
+async function guardCommandChecked(input, deps) {
+  const best = await guardCommandMasked(input, deps);
+  if (best.decision === "block" || !SHELL_TOOLS.has(input.tool || "Bash")) return best;
+  const raw = String(input.command || "");
+  const blanks = raw.replace(UNICODE_SPACE_RE, " ");
+  if (blanks === raw) return best;
+  const spent = Boolean(best.jev && best.jev.used);
+  const alt = await guardCommandMasked({ ...input, command: blanks }, spent ? { ...deps, ask: null, jevAvailable: false } : deps);
+  if (DECISION_RANK[alt.decision] <= DECISION_RANK[best.decision]) return best;
+  return { ...alt, jev: spent ? best.jev : alt.jev, notes: [...(alt.notes || []), "Decided on the command with its Unicode spaces read as blanks: bash keeps one inside a word, but the stricter reading stands."] };
+}
 // guardOnce never lets a rule's exception look like "no match": the core records each one and the result is marked (see markRuleFailures).
 async function guardOnce(input, deps = {}) {
   const failures = [];

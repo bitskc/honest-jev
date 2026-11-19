@@ -1295,7 +1295,8 @@ test("round 21c: words() of a long segment is memoized without sharing the array
   assert.equal(b.length, 201);
   b[0] = "changed again";
   assert.equal(words(seg)[0], "echo");
-  assert.deepEqual(words("a\u00a0b\tc\u2003d"), ["a", "b", "c", "d"]);
+  // words end at ASCII whitespace only, like bash: a no-break or em space stays inside its word (the guard also judges the blank reading, see guardCommandChecked)
+  assert.deepEqual(words("a\u00a0b\tc\u2003d"), ["a\u00a0b", "c\u2003d"]);
 });
 
 // ── Round 22 (the disclosure-field release thread audit on f3fb909) ────────────────────────────────────────────────────────

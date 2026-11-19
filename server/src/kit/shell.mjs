@@ -125,12 +125,17 @@ const REDIR_PREFIX_MAX = 64;
 // A long segment is tokenized many times (every rule asks for the same command's words); keep the last few results.
 const WORDS_MEMO_MIN = 512;
 const wordsMemo = new Map();
-export function words(segment) {
+export function words(segment) { return wordsQ(segment).t; }
+/** words() plus `q`: the Set of token indices that carried a quote or backslash in the source (null when none did). A quoted word
+ *  is never a function header: `'./f()' .env` runs a program named `./f()`, it does not define a function. */
+export function wordsQ(segment) {
   if (segment && segment.length >= WORDS_MEMO_MIN) {
     const hit = wordsMemo.get(segment);
-    if (hit) return hit.slice();
+    if (hit) return { t: hit.t.slice(), q: hit.q && new Set(hit.q) };
   }
   const out = [];
+  const qi = [];
+  let wq = false; // the word being read carries a quote or a backslash
   let buf = "";
   let quote = null;
   let ansiC = false; // inside a $'...' ANSI-C quoted run: bash decodes \xNN/\n/\t/... escapes
@@ -143,7 +148,7 @@ export function words(segment) {
   let casePat = false; // inside a `(pattern)` right after `in`
   let paramDepth = 0; // open `${` parameter expansions: whitespace and `#` inside one are part of its word (`x=${y%% #*} rm -rf ~`)
   const lastClose = segment ? segment.lastIndexOf("}") : -1; // a `${` opens a group only if some `}` follows it
-  const flush = () => { if (inWord) { out.push(buf); buf = ""; inWord = false; } };
+  const flush = () => { if (inWord) { if (wq) qi.push(out.length); out.push(buf); buf = ""; inWord = false; wq = false; } };
   const s = segment || "";
   const n = s.length;
   for (let i = 0; i < n; i++) {
@@ -168,18 +173,21 @@ export function words(segment) {
     // $'...' ANSI-C quoting and $"..." locale quoting: the `$` is consumed by the quote, not part of the
     // word's value -- `$'/'` is just `/` to the shell, and `$'\x2eenv'` decodes byte-for-byte to `.env`.
     if (ch === "$" && i + 1 < n && (s[i + 1] === "'" || s[i + 1] === '"')) {
-      quote = s[i + 1]; ansiC = s[i + 1] === "'"; i++; inWord = true; continue;
+      quote = s[i + 1]; ansiC = s[i + 1] === "'"; i++; inWord = true; wq = true; continue;
     }
-    if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
-    if (ch === "\\" && i + 1 < n) { buf += s[i + 1]; i++; inWord = true; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; inWord = true; wq = true; continue; }
+    if (ch === "\\" && i + 1 < n) { buf += s[i + 1]; i++; inWord = true; wq = true; continue; }
     // `${...}`: only when a closing `}` exists later in the segment (an unclosed one must not swallow the words after it)
     if (ch === "$" && s[i + 1] === "{" && (paramDepth > 0 || lastClose >= i + 2)) { paramDepth++; buf += "${"; i++; inWord = true; continue; }
     if (paramDepth > 0) {
       if (ch === "}") paramDepth--;
       buf += ch; inWord = true; continue;
     }
-    const code = ch.charCodeAt(0); // ASCII whitespace without a regex per character; non-ASCII falls back to \s
-    if (code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(ch))) { flush(); continue; }
+    // Words end at ASCII whitespace only (space, tab, newline, and the other C0 spaces this walk always treated as separators). Bash itself
+    // splits on blank/IFS = space, tab, newline: a no-break, em or ideographic space stays INSIDE the word, which is how a function can be
+    // named `a<NBSP>b`. Splitting on Unicode spaces here made such a name two words and hid its body whenever the header was not at the segment start.
+    const code = ch.charCodeAt(0);
+    if (code === 32 || (code >= 9 && code <= 13)) { flush(); continue; }
     // An unquoted redirect operator ends the word before it: `cat<.env` is `cat` then `<.env`, and `rm -rf />/dev/null` is
     // `rm -rf /` then `>/dev/null`. An fd number or `&` glued in front belongs to the operator (`2>x`, `&>x`), the operator's own
     // characters stay together (`>>`, `<<<`), and nothing splits inside `$(...)` or `${...}`. The target stays glued to the
@@ -189,6 +197,9 @@ export function words(segment) {
     if (ch === "(") {
       // A `(` right after a word that is not a shell keyword is not shell grouping (`name(` is a function head or an
       // interpreter call such as `console.log(process.env.HOME)` inside a `node -e` payload): it stays in the word.
+      // `name()(cmd)`: the `(` right after a complete `name()` head opens the function's subshell body, a grouping paren of its own
+      // (kept glued it would pull the body's closing `)` onto its last word: `.env)` is not `.env`).
+      if (substDepth === 0 && inWord && FUNC_HEAD_WORD_RE.test(buf)) { flush(); out.push("("); continue; }
       if (substDepth > 0 || (inWord && !PAREN_KEYWORDS.has(buf))) {
         substDepth++; buf += ch; inWord = true; continue;
       }
@@ -211,11 +222,12 @@ export function words(segment) {
     buf += ch; inWord = true;
   }
   flush();
+  const q = qi.length ? new Set(qi) : null;
   if (s.length >= WORDS_MEMO_MIN) {
     if (wordsMemo.size >= 32) wordsMemo.clear();
-    wordsMemo.set(s, out);
+    wordsMemo.set(s, { t: out, q });
   }
-  return out.slice(); // callers may keep or edit the array: hand out a copy of the memoized one
+  return { t: out.slice(), q: q && new Set(q) }; // callers may keep or edit the arrays: hand out copies of the memoized ones
 }
 
 /** Decode one ANSI-C escape at s[0]==="\\" inside a $'...' run: \xNN and the common one-char escapes.
@@ -362,6 +374,7 @@ export function peelCommand(toksIn, opts = {}) {
   // re-slices, so a command that peels thousands of wrappers (`env A=1 env A=1 ...`) costs O(n), not a copy per wrapper.
   // Every index below is relative to `o`; the few paths that rebuild the argv (env -S splicing) keep `o` valid.
   let toks = toksIn.slice();
+  let quoted = opts.quoted || null; // token indices written with a quote or backslash (wordsQ); dropped when the argv is rebuilt below
   let o = 0;
   const redirs = [];
   const rest = (from = 0) => {
@@ -389,9 +402,26 @@ export function peelCommand(toksIn, opts = {}) {
       }
       if (!t0 || t0 === ")" || isCaseLabel(t0) || (KEYWORD_SKIP.has(t0) && t0 !== "select") || ASSIGN_RE.test(t0)) { pos++; continue; }
       if (t0 === "time") { pos++; while (pos < toks.length && toks[pos] === "-p") pos++; continue; }
-      // a function header (`f() {`, `f () {`, `function f {`, `function f() {`) is not the command: the body's first command follows it
-      if (/^[A-Za-z_][\w.-]*\(\)$/.test(t0) && toks[pos + 1] === "{") { pos += 2; continue; }
-      if (t0 === "function" && /^[A-Za-z_][\w.-]*(?:\(\))?$/.test(toks[pos + 1] ?? "") && (toks[pos + 2] === "{" || (toks[pos + 1].endsWith("()") && toks[pos + 2] === undefined))) { pos += toks[pos + 2] === "{" ? 3 : 2; continue; }
+      // A function header is never the command; the body's first command follows it and is what the rules must see. Every shape
+      // is peeled, whatever the body opens with: `f() {`, `f(){`, `f () {`, `f() ( cmd )`, `f()(cmd)`, `f() if ...`, `f() cmd`,
+      // `function f {`, `function f() ( cmd )`, `function f(){`. The body is never dropped (`f() ( cat .env )` still reads `cat .env`).
+      // Only a word the source wrote bare can be a header: a quoted or escaped one (`'./f()' .env`, `./f\(\) .env`) names a program.
+      // A caller handing over tokens that already went through one peel (`headers: false`) has no header left to find.
+      if (opts.headers !== false && !(quoted && quoted.has(pos))) {
+        const head = FUNC_HEAD_TOKEN_RE.exec(t0);
+        if (head) { if (head[1]) toks[pos] = head[1]; else pos++; continue; }
+        if (FUNC_NAME_RE.test(t0) && !KEYWORD_SKIP.has(t0) && !PAREN_KEYWORDS.has(t0) && toks[pos + 1] === "(" && toks[pos + 2] === ")"
+          && !(quoted && (quoted.has(pos + 1) || quoted.has(pos + 2)))) { pos += 3; continue; }
+        if (t0 === "function") {
+          const def = quoted && quoted.has(pos + 1) ? null : FUNC_DEF_NAME_RE.exec(toks[pos + 1] ?? "");
+          if (def) {
+            if (def[1]) { toks[pos + 1] = def[1]; pos++; continue; }
+            pos += 2;
+            if (toks[pos] === "(" && toks[pos + 1] === ")" && !(quoted && (quoted.has(pos) || quoted.has(pos + 1)))) pos += 2;
+            continue;
+          }
+        }
+      }
       break;
     }
     if (pos >= toks.length) return redirs.slice(); // only redirects: the first one stands as the "program" (`> /dev/sda`)
@@ -469,6 +499,7 @@ export function peelCommand(toksIn, opts = {}) {
           const val = t.slice(eq.length + 1);
           if (opts.splice) opts.splice.push(val);
           toks = [...toks.slice(0, o + i), ...words(val), ...toks.slice(o + i + 1)];
+          quoted = null;
           i = 1;
           continue;
         }
@@ -479,6 +510,7 @@ export function peelCommand(toksIn, opts = {}) {
         // (env -S 'rm -rf /' resolves to rm) AND record the raw text for script-level consumers.
         if (opts.splice) opts.splice.push(toks[o + i + 1]);
         toks = [...toks.slice(0, o + i), ...words(toks[o + i + 1]), ...toks.slice(o + i + 2)];
+        quoted = null;
         i = 1;
         continue;
       }
@@ -488,6 +520,7 @@ export function peelCommand(toksIn, opts = {}) {
         const val = t.slice(2);
         if (opts.splice) opts.splice.push(val);
         toks = [...toks.slice(0, o + i), ...words(val), ...toks.slice(o + i + 1)];
+        quoted = null;
         i = 1;
         continue;
       }
@@ -527,7 +560,8 @@ export function peelCommand(toksIn, opts = {}) {
  *  still applies to them; every other consumer resolves elevation via resolveCommand/peelCommand.
  *  Returns [program, args]. */
 export function programOf(segment) {
-  const toks = peelCommand(words(segment), { stopAt: ELEVATED_PROGS });
+  const w = wordsQ(segment);
+  const toks = peelCommand(w.t, { stopAt: ELEVATED_PROGS, quoted: w.q });
   if (!toks.length) return [null, []];
   return [base(toks[0]), toks.slice(1)];
 }
@@ -679,7 +713,7 @@ export function pipeFedScripts(command) {
       const next = stageWords(pipeline[i + 1]);
       if (!next.length) continue;
       if (base(next[0]) === "xargs") { out.push(...xargsComposed(next, body)); continue; }
-      const [prog, ...args] = peelCommand(next);
+      const [prog, ...args] = peelCommand(next, { headers: false });
       if (prog && SHELL_WRAPPER_PROGS.has(base(prog)) && args.every((a) => a.startsWith("-"))) out.push(body);
     }
   }
@@ -719,8 +753,20 @@ export function processSubBodies(command) {
   return out;
 }
 
-// `f() { cmd; }` and `function f { cmd; }`: the header segment carries the body's first command after `{`.
-const FUNC_HEADER_RE = /^\s*(?:function\s+[A-Za-z_][\w.-]*\s*(?:\(\s*\))?|[A-Za-z_][\w.-]*\s*\(\s*\))\s*\{\s*(\S.*)$/s;
+// Bash takes almost any word as a function name: `a::b`, `lib::run`, `1f`, `fünc`, `日本`, `a@b`, `a+b`, `a,b`, `a/b`, `a#b`, `a!b`, `a*b`, even
+// `{a`. What it refuses is whitespace, the operators `; & | < > ( )`, quotes, a backslash and an expansion (`$`, a backtick). So the name is
+// any run of characters outside that set: a function whose name a narrower class missed was never peeled, and its body never analysed.
+// (ASCII whitespace only: a no-break space is a name character in bash, and the raw-text header below must still match it.)
+const FN_NAME_CHAR = "[^ \\t\\n\\r\\f\\v;&|<>()'\"\\\\$`]";
+const FN_NAME = `${FN_NAME_CHAR}+`;
+// A function-header token: `name()`, optionally glued to a brace (`name(){`); group 1 is what follows `()`. A subshell body's `(` is split off by words().
+export const FUNC_HEAD_WORD_RE = new RegExp(`^${FN_NAME}\\(\\)$`);
+const FUNC_HEAD_TOKEN_RE = new RegExp(`^${FN_NAME}\\(\\)(\\{.*)?$`, "s");
+const FUNC_NAME_RE = new RegExp(`^${FN_NAME}$`);
+// The word after `function`: the name, with its `()` and glued opener when present.
+const FUNC_DEF_NAME_RE = new RegExp(`^${FN_NAME}(?:\\(\\))?(\\{.*)?$`, "s");
+// `f() { cmd; }`, `f() ( cmd )`, `f() cmd` and `function f { cmd; }`: the header segment carries the body's first command after the opener.
+const FUNC_HEADER_RE = new RegExp(`^\\s*(?:function\\s+${FN_NAME}(?!${FN_NAME_CHAR})\\s*(?:\\(\\s*\\))?|${FN_NAME}\\s*\\(\\s*\\))\\s*(?:[{(]\\s*)?(\\S.*)$`, "s");
 
 
 // ── wrapper unwrap: bash -c/sh -c/eval/xargs/find -exec/su/ssh/..., shared by every rule ──────────────
@@ -772,7 +818,7 @@ export function indirectInvokes(prog, args) {
   if (prog === "xargs" || prog === "parallel") {
     const i = firstPositional(args, prog === "xargs" ? XARGS_VALUE_OPTS : PARALLEL_VALUE_OPTS);
     if (i === null) return null;
-    const rest = peelCommand(args.slice(i));
+    const rest = peelCommand(args.slice(i), { headers: false });
     return rest.length ? [base(rest[0]), rest.slice(1)] : null;
   }
   if (prog === "find") {
@@ -780,7 +826,7 @@ export function indirectInvokes(prog, args) {
       if (!["-exec", "-execdir", "-ok", "-okdir"].includes(args[i])) continue;
       const rest = [];
       for (let j = i + 1; j < args.length && args[j] !== ";" && args[j] !== "+"; j++) rest.push(args[j]);
-      const peeled = peelCommand(rest);
+      const peeled = peelCommand(rest, { headers: false });
       if (peeled.length) return [base(peeled[0]), peeled.slice(1)];
     }
   }
@@ -798,13 +844,13 @@ export function resolveCommand(segment, opts = {}) {
   if (prog0 === null) return [null, []];
   // programOf deliberately stops AT sudo/doas (R5 sees the elevation wrapper); everything else needs
   // the command behind it, so the head goes through one more peel with no stopAt.
-  let toks = peelCommand([prog0, ...args0]);
+  let toks = peelCommand([prog0, ...args0], { headers: false });
   if (!toks.length) return [null, []];
   let [prog, args] = [base(toks[0]), toks.slice(1)];
   for (let k = 0; k < 4; k++) {
     const invoked = indirectInvokes(prog, args);
     if (!invoked) return [prog, args];
-    const peeled = peelCommand([invoked[0], ...invoked[1]]);
+    const peeled = peelCommand([invoked[0], ...invoked[1]], { headers: false });
     if (!peeled.length) return [null, []];
     [prog, args] = [base(peeled[0]), peeled.slice(1)];
   }
@@ -909,7 +955,7 @@ export function unwrapScripts(segments, maxDepth = 3) {
       // A function header's body text is script text too: `f() { rm -rf /; }; f` splits its first command
       // onto the header segment, where no rule would read it.
       const fn = FUNC_HEADER_RE.exec(seg);
-      if (fn) { out.push(fn[1]); walk(splitSegments(stripHeredocs(fn[1])), depth + 1); }
+      if (fn && !/^[{(]$/.test(fn[1])) { out.push(fn[1]); walk(splitSegments(stripHeredocs(fn[1])), depth + 1); }
       let [prog, args] = programOf(seg);
       if (prog === null) continue;
       const invoked = indirectInvokes(prog, args);
