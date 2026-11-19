@@ -25,10 +25,12 @@ test("Q6: sourcing an env file is allowed when the rest of the command uses no $
     "source .env", ". .env", ". ./.env", ". .env.local", ". .env.production", "source config/app.env", "source .envrc", "source ~/.config/jev/env",
     "set -a; . ./.env; set +a", "set -a && . ./.env && set +a", "set -o allexport; source .env", "set -o allexport; source .env; set +o allexport", "set -euo pipefail; . .env; ./run.sh",
     ". .env > out.txt", ". .env 2>/dev/null", ". .env && node server.js", "set -a; . ./.env; set +a; npm run dev", "cd app && . ./.env && npm test",
-    "bash -c 'set -a; . ./.env; set +a; ./run.sh'", "(. ./.env; ./run.sh)", "env -i bash -c '. .env; ./run'", "set -a; . ./.env; set +a; curl https://x",
+    "bash -c 'set -a; . ./.env; set +a; ./run.sh'", "(. ./.env; ./run.sh)", "set -a; . ./.env; set +a; curl https://x",
     // the advised confirm step: a test prints nothing, the echo prints a fixed word
     "set -a; . ./.env; set +a; [ -n \"$KEY\" ] && echo 'key loaded'",
   ]) assert.equal((await g(c)).decision, "allow", c);
+  // a bare `env` word anywhere on the line asks, even as a wrapper (`env -i bash -c ...`)
+  assert.notEqual((await g("env -i bash -c '. .env; ./run'")).decision, "allow");
 });
 
 test("Q6: sourcing a secret store that is not an env file keeps the ask (bash prints a non-shell file's lines as errors)", async () => {
@@ -74,26 +76,41 @@ test("Q6: a program that reads the whole environment without a $ keeps the ask o
   ]) assert.equal((await g(c)).decision, "block", c);
 });
 
-test("Q6: an inline script, filter or recipe that names env or spawns a process, and the spawner wrappers, keep the ask", async () => {
+test("Q6: an inline script that spawns, a bare env word, and the runners that run env or a shell keep the ask", async () => {
   const L = "set -a; . ./.env; set +a; ";
   for (const t of [
     "awk 'BEGIN{system(\"env\")}'", "gawk 'BEGIN{system(\"printenv\")}'", "perl -e 'system(\"env\")'", "python3 -c 'import os; os.system(\"env\")'",
     "python3 -c 'import subprocess; subprocess.run([\"printenv\"])'", "node -e 'require(\"child_process\").execSync(\"env\",{stdio:\"inherit\"})'", "lua -e 'os.execute(\"env\")'",
     "php -r 'system(\"env\");'", "ruby -e 'system \"env\"'", "sed '1e env' /etc/hostname", "make -f - <<'MK'\nall:\n\t@env\nMK", "tclsh <<'T'\nputs [array get env]\nT",
-    "echo 'puts [array get env]' | tclsh", "script -qc env /dev/null", "npm exec -- env", "npx env", "export -n", "export -fn", "make -pn", "make -p -f /dev/null",
-    "npm run env", "pnpm run env", "yarn run env", "npm run-script env", "docker compose config", "docker-compose config", "docker compose -f compose.yaml config",
-    "strace -v -e execve ./run.sh", "ltrace -e getenv ./run.sh",
+    "echo 'puts [array get env]' | tclsh", "script -qc env /dev/null", "npm exec -- env", "npx env", "npx printenv", "npx sh -c env", "npx -c 'env'", "npx -y env", "npm x -- bash -c env",
+    "export -n", "export -fn", "make -pn", "make -p -f /dev/null", "npm run env", "pnpm run env", "yarn run env", "npm run-script env",
+    "docker compose config", "docker-compose config", "docker compose -f compose.yaml config", "strace -v -e execve ./run.sh", "ltrace -e getenv ./run.sh",
+    // a bare env or printenv word anywhere: the argument of xargs, gdb, find -exec, git rebase -x, vim -c, rsync -e ...
+    "echo env | xargs sh -c", "echo env | xargs bash -c", "find . -maxdepth 0 -exec env {} +", "gdb -batch -ex run --args env", "git rebase -x env HEAD", "vim -es -c '!env'",
+    "rsync -e env a b", "parallel ::: env", "bwrap --bind / / env", "xargs printenv </dev/null",
+    // spawning calls in inline scripts
+    "perl -e 'exec \"id\"'", "ruby -e 'system \"id\"'", "node -e 'execSync(\"id\")'", "python3 -c 'import os; os.popen(\"id\")'",
   ]) assert.notEqual((await g(L + t)).decision, "allow", t);
-  // controls: an interpreter or make with no env, spawn or --env on the line stays a plain load
-  for (const t of ["make deploy", "node server.js --env production", "python3 manage.py migrate", "sed -i 's/a/b/' f.txt", "node server.js", "npm test", "npm run build", "docker compose up -d", "docker compose ps"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
+  // controls from the owner's real loads: plain tools through npx, an RPC name starting with execute, Python's exec(compile(...)), --env and NODE_ENV are not spawns or the env word
+  for (const t of [
+    "npx tsx script.ts", "npx vercel --prod", "npx tsc --noEmit", "npx -y prisma migrate deploy", "npm exec -- tsc", "npm x -- vitest run",
+    "python3 -c 'import db; db.rpc(\"execute_dynamic_query\", {})'", "python3 -c 'exec(compile(open(\"a.py\").read(), \"a.py\", \"exec\"))'", "node -e 'executeJob()'",
+    "make deploy", "make env-check", "make print-env", "node server.js --env production", "NODE_ENV=production npm run build", "node --env-file=.env.local server.js",
+    "python3 manage.py migrate", "sed -i 's/a/b/' f.txt", "node server.js", "npm test", "npm run build", "docker compose up -d", "docker compose ps",
+  ]) assert.equal((await g(`${L}${t}`)).decision, "allow", t);
   assert.equal((await g("source ~/.config/jev/env; python3 app.py")).decision, "allow");
 });
 
-test("Q6: .env.* with a non-shell suffix is not an env file (bash prints its lines as errors)", async () => {
-  for (const f of [".env.json", ".env.yaml", ".env.yml", ".env.toml", ".env.pem", ".env.key", ".env.gpg", ".env.enc", ".env.p12", ".env.crt", "app.env.json", "config/.env.yaml"]) {
-    assert.equal((await g(`. ${f}`)).decision, "ask", f);
-  }
-  for (const f of [".env.production", ".env.staging", ".env.local", "app.env", "config/.env.test"]) assert.equal((await g(`source ${f}`)).decision, "allow", f);
+test("Q6: an env file is an allowlist of names; any other .env.<suffix> keeps the ask", async () => {
+  for (const f of [
+    ".env.json", ".env.yaml", ".env.yml", ".env.toml", ".env.pem", ".env.key", ".env.gpg", ".env.enc", ".env.p12", ".env.crt", "app.env.json", "config/.env.yaml", "config.yaml.env",
+    ".env.p8", ".env.pfx", ".env.jks", ".env.keystore", ".env.der", ".env.cer", ".env.xml", ".env.json5", ".env.sops", ".env.age", ".env.asc", ".env.tpl", ".env.vault", ".env.keys",
+    ".env.encrypted", ".env.bak", ".dev.vars.local", "app.env.local",
+  ]) assert.equal((await g(`. ${f}`)).decision, "ask", f);
+  for (const f of [
+    ".env", ".envrc", "app.env", ".dev.vars", "config/.env.test", ".env.local", ".env.development", ".env.dev", ".env.production", ".env.prod", ".env.staging", ".env.stage",
+    ".env.test", ".env.testing", ".env.ci", ".env.preview", ".env.defaults", ".env.docker", ".env.production.local", ".env.local.local",
+  ]) assert.equal((await g(`source ${f}`)).decision, "allow", f);
 });
 
 test("Q6: executing the store instead of sourcing it still blocks", async () => {
