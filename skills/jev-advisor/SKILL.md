@@ -44,7 +44,7 @@ jev-call jev_decide '{"decision":"Which test runner for the new package?","evide
 
 Read `recommendation.selected` and its probability in `recommendation.probabilities`; if `selected` is `ask_user` or `investigate`, say so instead of forcing a pick.
 
-Do not use `jev_decide` to pre-pick an option before showing the user a multiple-choice question. That was measured on 323 of the owner's past questions: Jev picked on only 38% of them, its picks matched the owner's choice 83% of the time, and on the same questions it was no better than the agent's own recommended option (Jev 85%, agent 87%).
+Do not use `jev_decide` to pre-pick an option before showing the user a multiple-choice question. That was measured on 323 of the owner's past questions: Jev picked on only 38% of them and its picks matched the owner's choice 83% of the time; on the 92 questions where both Jev and the agent gave an answer, Jev matched 85% and the agent's own recommendation 87%.
 
 Sorting things into buckets: use the `jev-classify` skill. A rule table that picks an action: use `jev-decide`.
 
