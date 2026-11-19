@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { guardCommand } from "../src/kit/guard.mjs";
-import { programOf, words } from "../src/kit/shell.mjs";
+import { programOf, words, wordsQ } from "../src/kit/shell.mjs";
 
 // Owner report: `getSession() token` asked ("names a bare credential word"). A function-definition header (`name()`) was read as the
 // PROGRAM and the next word as its operand, and the call lines of a `node -e` / `python -c` / stdin-script body are read as shell lines.
@@ -76,7 +76,7 @@ test("owner report: header-shaped lines and call lines in interpreter source do 
 });
 
 test("B: a first word that cannot be an executable name is not a printer: no bare-word ask for it", async () => {
-  for (const c of ["session.get(x) token", "x.y=1 token", "fn(a, b) password", "a{b} secrets", "// fetch token", "./ credentials",
+  for (const c of ["session.get(x) token", "x.y=1 token", "fn(a, b) password", "// fetch token", "./ credentials",
     "# fetch token", "getSession() // fetch token"]) {
     const r = await g(c);
     assert.equal(r.decision, "allow", `${c} -> ${r.decision} ${r.reason}`);
@@ -107,4 +107,47 @@ test("quoted text and non-executing heredoc bodies never become segments", async
     const r = await g(c);
     assert.equal(r.decision, "allow", `${c} -> ${r.decision} ${r.reason}`);
   }
+});
+
+// Review of #87 (P1, P2-1, P2-2, P3 left as is).
+test("P1: a function named like bash allows (`a::b`, unicode, leading digit, `a@b`, `a,b`, `a/b`, `a!b`, `{a`) is peeled and its body analysed", async () => {
+  for (const n of ["a::b", "lib::run", "fünc", "日本", "1f", "a@b", "a,b", "a/b", "a!b", "a:b", "a+b", "a#b", "a*b", "{a", "a\u00a0b"]) {
+    for (const [def, call] of [[`${n}() { cat .env; }`, n], [`${n}() ( cat .env )`, n], [`function ${n} { cat .env; }`, n], [`function ${n}() ( cat .env )`, n]]) {
+      const c = `${def}; ${call}`;
+      const r = await g(c);
+      assert.equal(r.decision, "block", c);
+      assert.match(r.reason, /on a secret store \(\.env\)/, c);
+    }
+    for (const body of ["echo $API_TOKEN", "rm -rf ~", "sudo rm -rf /"]) assert.equal((await g(`${n}() ( ${body} ); ${n}`)).decision, "block", `${n} ${body}`);
+    assert.equal((await g(`${n}() { echo ok; }; ${n}`)).decision, "allow", n);
+  }
+});
+
+test("P1: the header peel finds the body for every name class in programOf too", () => {
+  for (const n of ["a::b", "fünc", "1f", "a@b", "日本"]) {
+    assert.deepEqual(programOf(`${n}() ( cat .env )`), ["cat", [".env"]], n);
+    assert.deepEqual(programOf(`function ${n} { cat .env`), ["cat", [".env"]], n);
+  }
+});
+
+test("P2-1: brace expansion makes a braced word a real program: it keeps asking, and a store shape still blocks", async () => {
+  for (const c of ["ca{t,t} token", "{cat,} token", "c{a,}t token", "/bin/ca{t,} token", "ca{t,t} credentials"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "ask", `${c} -> ${r.decision}`);
+  }
+  for (const c of ["ca{t,t} .env", "ca{t,t} ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
+});
+
+test("P2-2: a quoted or escaped word is a program, never a function header: its operand still blocks or asks", async () => {
+  for (const c of ["'./f()' .env", "./f\\(\\) .env", "\"./f()\" .env", "'f()' .env", "'f()' ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
+  for (const c of ["'./f()' token", "'f()' token", "./f\\(\\) token"]) assert.equal((await g(c)).decision, "ask", c);
+  // the same words bare are headers: nothing to read behind them
+  assert.deepEqual(programOf("'f()' .env"), ["f()", [".env"]]);
+  assert.deepEqual(programOf("f() ( cat .env )"), ["cat", [".env"]]);
+  assert.deepEqual(programOf("f '(' ')' .env"), ["f", ["(", ".env"]]);
+});
+
+test("wordsQ marks the words written with a quote or a backslash", () => {
+  assert.deepEqual(wordsQ("a 'b' c\\ d e").q && [...wordsQ("a 'b' c\\ d e").q], [1, 2]);
+  assert.equal(wordsQ("a b c").q, null);
 });
