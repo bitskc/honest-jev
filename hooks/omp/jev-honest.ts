@@ -249,7 +249,7 @@ export default function jevHonest(pi: ExtensionAPI) {
     setStatus(ctx);
     pi.sendMessage?.({
       customType: "jev-honest",
-      content: level === "off" ? 'HONEST JEV OFF — confirm in one line: "Honest Jev off. The command guard is separate and still on (JEV_GUARD_MODE=shadow + restart to log only)."' : `HONEST JEV LEVEL CHANGED — level: ${level}. Confirm in one line and apply it from this reply on.\n\n${instructions(level)}`,
+      content: level === "off" ? 'HONEST JEV OFF — confirm in one line: "Honest Jev off. The command guard is separate and still on; to log only, start omp with JEV_GUARD_MODE=shadow in its environment (not ~/.config/jev/env)."' : `HONEST JEV LEVEL CHANGED — level: ${level}. Confirm in one line and apply it from this reply on.\n\n${instructions(level)}`,
       display: true,
     });
   };
