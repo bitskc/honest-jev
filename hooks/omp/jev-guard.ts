@@ -74,12 +74,12 @@ const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT)
 // The rules run in a worker thread with the same budget as the Claude hook (JEV_GUARD_LOCAL_TIMEOUT, default 1.5 s, clamped
 // to 0.1..1.5). A run that does not finish is killed and treated as "the rules did not run" (#49). The module stays loaded
 // in that worker, so a file rewritten on disk after the first call does not change what this process runs.
-export const LOCAL_NOTICE = "Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
-export const LOCAL_DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
+export const LOCAL_NOTICE = "Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
+export const LOCAL_DOWN_NOTICE = "Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
 export const TRUST_NOTICES: Record<"mismatch" | "unverified" | "down", string> = {
-  mismatch: "Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which.",
-  unverified: "Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
-  down: "Honest Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, without a server call. Run install.sh --doctor for details.",
+  mismatch: "Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which.",
+  unverified: "Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
+  down: "Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, without a server call. Run install.sh --doctor for details.",
 };
 
 export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {

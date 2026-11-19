@@ -248,7 +248,7 @@ test("hooks end to end: fresh install is silent; prompt switch writes flag and i
   assert.equal(sub.hookSpecificOutput.hookEventName, "SubagentStart");
   assert.match(sub.hookSpecificOutput.additionalContext, /level: strict/);
   assert.equal(run("jev-honest-mode-tracker.js", JSON.stringify({ prompt: "talk about honest-jev strict mode" })), "");
-  assert.match(run("jev-honest-mode-tracker.js", JSON.stringify({ prompt: "honest-jev off" })), /^HONEST JEV OFF/);
+  assert.match(run("jev-honest-mode-tracker.js", JSON.stringify({ prompt: "honest-jev off" })), /^HONEST JEV OFF.*The command guard is separate and still on \(JEV_GUARD_MODE=shadow \+ restart to log only\)/);
   assert.equal(fs.readFileSync(path.join(d, ".jev-honest-active"), "utf8"), "off\n");
   assert.equal(run("jev-honest-mode-tracker.js", "not json"), "");
 });

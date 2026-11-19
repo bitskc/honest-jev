@@ -325,7 +325,7 @@ class UnclearCommands(unittest.TestCase):
         out = json.loads(p.stdout)
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
         self.assertNotIn("hookSpecificOutput", out)  # a notice, not a decision
-        self.assertEqual(out["systemMessage"], "Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
+        self.assertEqual(out["systemMessage"], "Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
                          "This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.")
         p2, _ = e.run(event("Bash", {"command": UNCLEAR}, session="s-A"))
         self.assertEqual(p2.stdout, "")  # same session: nothing again
@@ -475,7 +475,7 @@ class LocalRunnerFallsThroughToTheServer(unittest.TestCase):
         self.assertEqual((r["decided_by"], r["fail_reason"], r["source"]), ("fail_closed", "rule_error", "client"))
 
 
-DOWN_NOTICE = ("Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
+DOWN_NOTICE = ("Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
                "so commands are not being checked. Run install.sh --doctor for details.")
 
 

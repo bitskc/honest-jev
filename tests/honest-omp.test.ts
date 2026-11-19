@@ -241,7 +241,7 @@ test("omp plain text: normal mode turns Honest Jev off but reaches the model; ma
   expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
   expect(await input({ text: "normal mode" }, ctx)).toBeUndefined();
   expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");
-  expect(h.sent.at(-1)).toBe("HONEST JEV OFF — confirm in one line.");
+  expect(h.sent.at(-1)).toBe('HONEST JEV OFF — confirm in one line: "Honest Jev off. The command guard is separate and still on (JEV_GUARD_MODE=shadow + restart to log only)."');
   expect(await input({ text: "honest-jev strict" }, ctx)).toEqual({ handled: true });
   expect(await input({ text: "Normal mode." }, ctx)).toBeUndefined();
   expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("off");

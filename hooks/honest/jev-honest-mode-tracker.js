@@ -16,7 +16,7 @@ process.stdin.on('end', () => {
     if (level === 'off') {
       rt.setLevel('off'); // explicit off, never cleared: an absent flag would fall through to the configured
       // default (JEV_HONEST_DEFAULT_LEVEL / config.json honestLevel) and silently re-arm on the next session
-      rt.emit('UserPromptSubmit', 'HONEST JEV OFF — the claims-vs-evidence check is no longer required. Confirm in one line.');
+      rt.emit('UserPromptSubmit', 'HONEST JEV OFF — the claims-vs-evidence check is no longer required. Confirm in one line: "Honest Jev off. The command guard is separate and still on (JEV_GUARD_MODE=shadow + restart to log only)."');
       return;
     }
     rt.setLevel(level);

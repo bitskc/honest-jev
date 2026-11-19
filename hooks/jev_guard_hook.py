@@ -302,7 +302,7 @@ class Outcome(object):
 
 
 LOCAL_SETTLED = ("prefilter", "fail_closed")
-LOCAL_NOTICE = ("Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
+LOCAL_NOTICE = ("Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
                 "This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.")
 
 
@@ -375,7 +375,7 @@ def first_unclear_in_session():
         return False
 
 
-LOCAL_DOWN_NOTICE = ("Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
+LOCAL_DOWN_NOTICE = ("Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
                      "so commands are not being checked. Run install.sh --doctor for details.")
 
 # The local rules' fingerprint against the server's (hooks/jev-rules-fingerprint.mjs; the server reports its own on GET /health, see
@@ -386,12 +386,12 @@ FP_TTL_DOWN = 60       # seconds the fact "the server gave none" is remembered, 
 FP_FETCH_BUDGET = 0.8  # seconds for the whole GET /health; with the local runner's 1.5 and the server call's 2.5 the path stays under the hook's 5
 FP_HEADER = "x-jev-rules-fingerprint"
 TRUST_NOTICES = {
-    "mismatch": ("Honest Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the "
+    "mismatch": ("Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the "
                  "server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which."),
-    "unverified": ("Honest Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older "
+    "unverified": ("Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older "
                    "Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. "
                    "Run install.sh --doctor for details."),
-    "down": ("Honest Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, "
+    "down": ("Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, "
              "without a server call. Run install.sh --doctor for details."),
 }
 
