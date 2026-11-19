@@ -566,6 +566,16 @@
       ],
       "issue": "#1",
       "justification": "Nesting past the documented `-c` cap: the plain row (3 shell wrappers) asks, and one more wrapper puts the payload beyond the 3 unwrap layers, which the guard documents as invisible (SKILL.md, README, `kit.test.mjs` 'round 4 documented limit'). Making the cap ask instead of allow is a design decision for the owner (tracked in #1); until then it is exempt."
+    },
+    {
+      "ids": [
+        "g1362"
+      ],
+      "wrappers": [
+        "env"
+      ],
+      "issue": "#103",
+      "justification": "Correct behaviour, not a deferred bug: `env` takes every leading word holding `=` as an assignment, a path included, so `env ./a=b token` sets a variable and runs the program `token` with no operand, and allow is bash's reading. The plain row `./a=b token` asks because the shell itself runs `./a=b` with the operand `token`; wrapped in env the pathed word is no longer the program (pinned by mid-word-expansion.test.mjs). The issue field is only the one this format requires (an open issue, #103, in the same assignment-word area); nothing is left to fix for this row."
     }
   ]
 }

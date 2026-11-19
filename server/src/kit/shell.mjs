@@ -481,6 +481,8 @@ export function peelCommand(toksIn, opts = {}) {
       const t = toks[o + i];
       if (t === "--") {
         i++;
+        // env keeps taking `=` words as assignments after `--` (`env -- ./a=b rm -rf ~`).
+        if (spec.envAssignments) while (i < n() && toks[o + i].includes("=")) i++;
         if (spec.joinAfterDashDash) return rest(i).length ? ["bash", ...rest(i)] : [];
         break;
       }
@@ -490,8 +492,9 @@ export function peelCommand(toksIn, opts = {}) {
         if (spec.scriptOpts.has(t) && i + 1 < n()) return ["bash", "-c", toks[o + i + 1]];
         if (t.startsWith("--command=")) return ["bash", "-c", t.slice("--command=".length)];
       }
+      // env itself takes EVERY leading word holding `=` as an assignment, a path included (`env ./a=b rm -rf ~` runs `rm -rf ~`).
+      if (spec.envAssignments && !t.startsWith("-") && t.includes("=")) { i++; continue; }
       if (!t.startsWith("-") || t === "-") break;
-      if (spec.envAssignments && ASSIGN_RE.test(t)) { i++; continue; }
       if (spec.spliceOpts) {
         // --split-string=x / -S=x: the attached value is still a command line to splice.
         const eq = spec.spliceOpts && [...spec.spliceOpts].find((o2) => t.startsWith(o2 + "="));
@@ -844,7 +847,8 @@ export function resolveCommand(segment, opts = {}) {
   if (prog0 === null) return [null, []];
   // programOf deliberately stops AT sudo/doas (R5 sees the elevation wrapper); everything else needs
   // the command behind it, so the head goes through one more peel with no stopAt.
-  let toks = peelCommand([prog0, ...args0], { headers: false });
+  // programOf already peeled every real `VAR=val`; an assignment-shaped prog0 is `./a=b` / `/x/a=b` with its path cut off by base(), a program bash runs.
+  let toks = ASSIGN_RE.test(prog0) ? [prog0, ...args0] : peelCommand([prog0, ...args0], { headers: false });
   if (!toks.length) return [null, []];
   let [prog, args] = [base(toks[0]), toks.slice(1)];
   for (let k = 0; k < 4; k++) {
