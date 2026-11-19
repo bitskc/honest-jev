@@ -1562,42 +1562,52 @@ export function secretCliPrint(prog, args) {
       return null;
   }
 }
-// Owner decision 2026-11-19 (reverses Q6 of issue #12): `source F` / `. F` of a secret-shaped F is ALLOWED. Loading values into the shell
-// prints nothing, and it is the form R1_SUGGESTION recommends. It still asks when the same command can make the values show up:
-// tracing (`set -x`, `bash -x`, `PS4=`, `trap ... DEBUG`) echoes every assignment, and a later printer or network sender that
-// expands a variable (`echo $KEY`, `curl -d "$TOKEN"`) would print or send what was loaded. Printing the whole environment, the
-// store itself (`bash .env`, `cat .env`) and the rest are other rules' business and keep their own block or ask.
-const TRACE_SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"]);
-const TRACE_VAR_RE = /^(?:PS4|SHELLOPTS|BASHOPTS|BASH_XTRACEFD)=/;
-const TRACE_FLAG_RE = /^(?:--verbose|[-+][A-Za-z]*[xv][A-Za-z]*)$/;
-const TRACE_OPTION_RE = /^(?:xtrace|verbose|sourcetrace)$/i;
-const SOURCE_PRINT_PROGS = new Set(["echo", "printf", "print", "cat", "tee", "head", "tail", "od", "xxd", "base64", "strings", "printenv"]);
-const SOURCE_SEND_PROGS = new Set(["curl", "wget", "http", "https", "xh", "nc", "ncat", "netcat", "socat", "telnet"]);
-const expandsVariable = (tok) => /\$[A-Za-z_{(]|`/.test(tok);
-// An inline interpreter script that reads the environment (`node -e 'console.log(process.env.KEY)'`) can print what was loaded.
-const ENV_READ_RE = /process\.env|Deno\.env|os\.environ|os\.getenv|\bgetenv\b|\bENVIRON\b|\bENV\[|\$ENV\{|System\.getenv/;
-/** Why a command that sources a secret store is not simply a load, or null when it is. `segs` are the command's segments (outer, unwrapped bodies, substitutions); `command` is the whole text (heredoc bodies included). */
-function sourceLeaks(segs, command) {
+// Owner decision 2026-11-19 (reverses Q6 of issue #12): `source F` / `. F` of an ENV FILE (`.env`, `.env.*`, `*.env`, `.envrc`, `.dev.vars*`, the kit's
+// own env file) is ALLOWED: shell-style assignments print nothing, and it is the load R1_SUGGESTION recommends. Any other secret store (an SSH key,
+// `.aws/credentials`, `.npmrc`, `.pgpass`, a kubeconfig, key and cert files) keeps the ask, because bash prints a non-shell file's lines as errors.
+// The load is allowed only when nothing ELSE in the command could show what was loaded, so the check is inverted: every other segment must use no
+// `$` expansion or backtick, change no tracing or hooks, and read no whole environment. Whatever it cannot prove clean asks.
+const ENV_FILE_RES = [
+  /(^|\/)\.env(?:\.[A-Za-z0-9_.-]+)?$/, /\.env$/, /(^|\/)\.envrc$/, /(^|\/)\.dev\.vars(?:\.[A-Za-z0-9_.-]+)?$/,
+  /[\\/]jev-kit[\\/]env$/, /[\\/]airlock[\\/]env$/, /(^|\/)\.config\/jev\/env$/,
+];
+/** True when every spelling of `arg` that names a secret store names an env file (a glob, `.ssh/id_rsa`, `.npmrc`... is not). */
+function sourcedStoreIsEnvFile(arg, home) {
+  let any = false;
+  for (const [, p] of secretCandidates([arg], home)) {
+    if (!SECRET_PATH_RES.some((r) => r.test(p))) continue;
+    any = true;
+    if (!ENV_FILE_RES.some((r) => r.test(p))) return false;
+  }
+  return any;
+}
+const TRACE_CLUSTER_RE = /^[-+][A-Za-z]*[xv][A-Za-z]*$/;
+const TRACE_NAME_RE = /^(?:--verbose|--xtrace|xtrace|verbose|sourcetrace)$/i;
+const TRACE_ASSIGN_RE = /^(?:BASH_ENV|ENV|PS4|SHELLOPTS|BASH_XTRACEFD)=/;
+const OPTION_BUILTINS = new Set(["set", "shopt", "setopt", "unsetopt"]);
+const LOAD_SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "ash"]);
+// `[ -n "$KEY" ]` / `test -z $KEY` print nothing: the advised "confirm it is present" step (R1_SUGGESTION) is the one `$` use that stays allowed.
+const TEST_ONLY_RE = /^\s*(?:\[\[?|test)\s+-[nz]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s*(?:\]\]?)?\s*$/;
+// An inline script or filter that reads the whole environment without a `$`: `process.env`, `os.environ`, `ENVIRON`, `getenv`, `ENV[...]`, `%ENV`, `jq env`.
+const ENV_READ_RE = /\bENV\b|%ENV|\benviron\b|\bENVIRON\b|\bgetenv\b|\bGetenv\b|process\s*[.[]\s*["']?env|Deno\s*\.\s*env/;
+/** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `bodies` = heredoc bodies. */
+function sourceLeaks(segs, bodies) {
+  if (bodies.some((b) => /[$`]/.test(b))) return "a heredoc body expands a variable";
   for (const seg of segs) {
-    const [prog, args] = programOf(stripRedirects(seg));
+    if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "another part of the command expands a variable (`$` or a backtick), which could print or send what was loaded";
     const t = wordsQ(seg).t;
-    if (t.some((tok) => TRACE_VAR_RE.test(tok))) return "tracing is configured and would echo each assignment";
-    for (let i = 0; i < t.length; i++) {
-      const w = base(t[i]);
-      if (w !== "set" && !TRACE_SHELLS.has(w) && w !== "setopt" && w !== "trap") continue;
-      if (w === "setopt" && t.slice(i + 1).some((a) => TRACE_OPTION_RE.test(a.replace(/_/g, "")))) return "`setopt` turns on tracing, which echoes each assignment";
-      if (w === "trap" && t.slice(i + 1).some((a) => /^(?:DEBUG|RETURN|ERR)$/.test(a))) return "a `trap` hook runs commands that can print the values";
-      for (let j = i + 1; j < t.length; j++) {
-        const a = t[j];
-        if ((a === "-o" || a === "+o") && TRACE_OPTION_RE.test(t[j + 1] ?? "")) return "tracing is on and would echo each assignment";
-        if (a === "-o" || a === "+o") { j++; continue; }
-        if (!/^[-+]/.test(a)) break;
-        if (a[0] === "-" && TRACE_FLAG_RE.test(a)) return "tracing is on and would echo each assignment";
-      }
+    for (let k = 0; k < t.length; k++) {
+      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPTS, BASH_XTRACEFD)";
+      const w = base(t[k]);
+      if (w === "trap") return "a `trap` can run a command that prints what was loaded";
+      if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
+      if (t.slice(k + 1).some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
     }
-    if (prog && SOURCE_PRINT_PROGS.has(prog) && (expandsVariable(seg) || (prog === "printenv" && args.length > 0) || (seg.includes("<<") && expandsVariable(command)))) return "a command in the same line prints a variable";
-    if (prog && SOURCE_SEND_PROGS.has(prog) && args.some(expandsVariable)) return "a command in the same line sends a variable over the network";
-    if (ENV_READ_RE.test(seg)) return "an inline script in the same line reads the environment and can print it";
+    const [prog, args] = programOf(stripRedirects(seg));
+    if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an environment option shows every process's environment";
+    if (prog === "jq" && /\benv\b/.test(seg)) return "`jq env` reads the whole environment";
+    if (["declare", "typeset", "readonly", "printenv"].includes(prog)) return `\`${prog}\` can list variable values`;
+    if (ENV_READ_RE.test(seg)) return "an inline script or filter reads the environment and can print it";
   }
   return null;
 }
@@ -1644,10 +1654,11 @@ function ruleSecret(ctx) {
       const why = cliProg && secretCliPrint(cliProg, cliArgs);
       if (why) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `${why}: it would land in the transcript; confirm it is intended`, suggestion: R1_SUGGESTION };
     }
-    // `source F` / `. F` of a secret store is judged after the loop: it is allowed unless sourceLeaks finds tracing, a printer or a sender.
+    // `source F` / `. F`: an env file is judged after the loop (allowed unless sourceLeaks finds something else); any other secret store keeps the ask.
     if ((bareProg === "source" || bareProg === ".") && bareArgs[0]) {
       const src = secretShapeIn([bareArgs[0]], home, true);
-      if (src) sourced ??= { prog: bareProg, src };
+      if (src && sourcedStoreIsEnvFile(bareArgs[0], home)) sourced ??= { prog: bareProg, src };
+      else if (src) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg} ${src}\` loads a secret store that is not an env file (bash prints a non-shell file's lines as errors); confirm it is intended`, suggestion: R1_SUGGESTION };
     }
     // Q6 metadata verbs: kubectl --kubeconfig, and docker/podman *compose* --env-file → ask.
     // Plain `docker run --env-file` stays on the consumer exemption (prints nothing unless the command dumps env).
@@ -1807,8 +1818,8 @@ function ruleSecret(ctx) {
     }
   }
   if (sourced && !soft) {
-    const why = sourceLeaks(secretSegs, ctx.command);
-    if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${sourced.src}\` loads a secret store, and ${why}; confirm it is intended`, suggestion: R1_SUGGESTION };
+    const why = sourceLeaks(secretSegs, [...ctx.inputScripts.map((b) => b.body), ...(/<<(?!<)/.test(ctx.command) ? [ctx.command] : [])]);
+    if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${sourced.src}\` loads an env file, but ${why}; confirm it is intended`, suggestion: R1_SUGGESTION };
   }
   return soft ?? ambiguous;
 }
