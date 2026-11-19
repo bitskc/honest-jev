@@ -2,7 +2,7 @@
 
 This repository is MIT-licensed (see `LICENSE`, Copyright (c) 2026 bitskc / Andy Hayes). It builds on the MIT-licensed
 projects below. Their licence texts are kept verbatim in `licenses/`. Licence identifiers were checked against the GitHub
-API (`gh api repos/<owner>/<repo>/license`) on 2026-10-27.
+API (`gh api repos/<owner>/<repo>/license`) on 2026-10-27 (ponytail: 2026-11-18).
 
 | Project | Licence | Copyright holder | How it is used here | Text |
 |---|---|---|---|---|

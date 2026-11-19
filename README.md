@@ -27,7 +27,7 @@ Coding agents are good at writing code and bad at three judgment calls they make
 - *"Did I run the tests, or just say I did?"* — `kit_verify_done` counts only real runner evidence.
 - *"Is what I'm about to say actually backed by what I did?"* — **Honest Jev** classifies each claim as verified / hedged / unverifiable / misrepresented before you send it.
 
-One Cloudflare Worker (your account, your Jev key, your bearer token), 16 MCP tools, 10 skills, 5 hooks.
+One Cloudflare Worker (your account, your Jev key, your bearer token), 16 MCP tools, 11 skills, 5 hooks.
 
 `jev-call` below is installed to `~/.local/bin/jev-call` by `install.sh`; from a bare checkout use `scripts/jev-call.sh` instead.
 
