@@ -1562,6 +1562,77 @@ export function secretCliPrint(prog, args) {
       return null;
   }
 }
+// Owner decision 2026-11-19 (reverses Q6 of issue #12): `source F` / `. F` of an ENV FILE is ALLOWED: shell-style assignments print nothing, and it
+// is the load R1_SUGGESTION recommends. An env file is an ALLOWLIST of names: `.env`, `.envrc`, `*.env`, `.dev.vars`, the kit's own env file, and
+// `.env.<suffix>` (also `.env.<suffix>.local`) for the suffixes below. Any other secret store (an SSH key, `.aws/credentials`, `.npmrc`, `.pgpass`, a
+// kubeconfig, key and cert files, `.env.json`, `.env.p8`, ...) keeps the ask, because bash prints a non-shell file's lines as errors.
+// The load is allowed only when nothing ELSE in the command could show what was loaded, so the check is inverted: every other segment must use no
+// `$` expansion or backtick, change no tracing or hooks, and read no whole environment. Whatever it cannot prove clean asks.
+const ENV_SUFFIXES = "local|development|dev|production|prod|staging|stage|test|testing|ci|preview|example|sample|defaults|docker";
+const ENV_FILE_RES = [
+  /\.env$/, /(^|\/)\.envrc$/, /(^|\/)\.dev\.vars$/,
+  new RegExp(String.raw`(^|\/)\.env\.(?:${ENV_SUFFIXES})(?:\.local)?$`),
+  /[\\/]jev-kit[\\/]env$/, /[\\/]airlock[\\/]env$/, /(^|\/)\.config\/jev\/env$/,
+];
+// a `*.env` stem that names a non-shell format (`config.yaml.env`, `keys.pem.env`) is not shell syntax either
+const NON_SHELL_SUFFIX_RE = /\.(?:json|ya?ml|toml|pem|key|gpg|enc|p12|crt)(?:\.|$)/i;
+/** True when every spelling of `arg` that names a secret store names an env file (a glob, `.ssh/id_rsa`, `.npmrc`, `.env.json`... is not). */
+function sourcedStoreIsEnvFile(arg, home) {
+  let any = false;
+  for (const [, p] of secretCandidates([arg], home)) {
+    if (!SECRET_PATH_RES.some((r) => r.test(p))) continue;
+    any = true;
+    if (!ENV_FILE_RES.some((r) => r.test(p)) || NON_SHELL_SUFFIX_RE.test(base(p))) return false;
+  }
+  return any;
+}
+const TRACE_CLUSTER_RE = /^[-+][A-Za-z]*[xv][A-Za-z]*$/;
+const TRACE_NAME_RE = /^(?:--verbose|--xtrace|xtrace|verbose|sourcetrace)$/i;
+const TRACE_ASSIGN_RE = /^(?:BASH_ENV|ENV|PS4|SHELLOPTS|BASH_XTRACEFD)=/;
+const OPTION_BUILTINS = new Set(["set", "shopt", "setopt", "unsetopt"]);
+const LOAD_SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "ash"]);
+// `[ -n "$KEY" ]` / `test -z $KEY` print nothing: the advised "confirm it is present" step (R1_SUGGESTION) is the one `$` use that stays allowed.
+const TEST_ONLY_RE = /^\s*(?:\[\[?|test)\s+-[nz]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s*(?:\]\]?)?\s*$/;
+// An inline script or filter that reads the whole environment without a `$`: `process.env`, `os.environ`, `ENVIRON`, `getenv`, `ENV[...]`, `%ENV`.
+const ENV_READ_RE = /\bENV\b|%ENV|\benviron\b|\bENVIRON\b|\bgetenv\b|\bGetenv\b|process\s*[.[]\s*["']?env|Deno\s*\.\s*env/;
+const ENV_NAME_RE = /(?<![-\w.])(?:env|printenv)(?![\w-])/;
+// A real process-spawning call anywhere on the line (an inline script, a recipe, a pipe into an interpreter): `system(`, `os.system(`, `popen(`, `subprocess`, `child_process`, `spawn(`, `execSync(` / `execFile(` / `execvp(`..., perl/ruby `exec "..."` / `system "..."` / `qx` / `%x`.
+// A word that merely starts with `exec` (`execute_dynamic_query`) or Python's `exec(compile(...)` is not a spawn.
+const SPAWN_RE = /\bsystem\s*\(|(?<![\w.])system\s+["']|\bpopen\w*\s*\(|\bos\.(?:system|execute|popen|exec\w*|spawn\w*)\b|\bsubprocess\b|\bchild_process\b|\bspawn\w*\s*\(|\bexec(?:Sync|File\w*|l\w{0,2}|v\w{0,2})\s*\(|(?<![\w.])exec(?:\s+|\s*\()\s*["']|\b(?:shell_exec|passthru|proc_open|Open3)\b|\bqx\b|%x[({[]/;
+/** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `command` = the whole text, `src` = the loaded path (left out of the env-word test). */
+function sourceLeaks(segs, command, src) {
+  // a heredoc body is not a segment: any `$` or backtick on a line that has one asks
+  if (/<<(?!<)/.test(command) && /[$`]/.test(command)) return "a heredoc on the line may expand a variable";
+  for (const seg of segs) {
+    if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "another part of the command expands a variable (`$` or a backtick), which could print or send what was loaded";
+    const t = wordsQ(seg).t;
+    for (let k = 0; k < t.length; k++) {
+      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPTS, BASH_XTRACEFD)";
+      const w = base(t[k]);
+      const rest = t.slice(k + 1);
+      if (w === "trap") return "a `trap` can run a command that prints what was loaded";
+      if (w === "script") return "`script` runs another command that can print the environment";
+      if ((w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) && rest.some((a) => a === "-c" || a === "--call" || LOAD_SHELLS.has(base(a)))) return `\`${w}\` runs a shell, which can print the environment`;
+      if (w === "export" && rest.some((a) => /^-[A-Za-z]*n[A-Za-z]*$/.test(a))) return "`export -n` lists the variables";
+      if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable, the environment included";
+      if ((w === "docker-compose" || w === "podman-compose" || ((w === "docker" || w === "podman") && rest.includes("compose"))) && rest.some((a) => a === "config" || a === "convert")) return "`compose config` prints the compose file with every ${VAR} filled in from the loaded environment";
+      if (w === "strace" || w === "ltrace") return `\`${w}\` prints the environment of every process it traces`;
+      if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
+      if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
+    }
+    const [prog, args] = programOf(stripRedirects(seg));
+    // `e` in any option cluster (`e`, `eww`, `-e`, `-ef`, `-E`): BSD/macOS `ps` prints every process's environment with it (`ps aux` and `ps -A` have no `e`)
+    if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an e option shows every process's environment (BSD and macOS ps)";
+    if (["declare", "typeset", "readonly"].includes(prog)) return `\`${prog}\` can list variable values`;
+    if (ENV_READ_RE.test(seg)) return "an inline script or filter reads the environment and can print it";
+  }
+  // the whole line, the loaded path left out: a bare `env` / `printenv` word anywhere (an argument to xargs, gdb, find -exec, vim -c, npm run, jq, an inline script...) can print the environment,
+  // and a spawning call (`system(`, `subprocess`, `child_process`...) can run `set` or `export` without any such word
+  const text = command.split(src).join(" ");
+  if (ENV_NAME_RE.test(text)) return "the line has a bare `env` or `printenv` word, which can print the whole environment (as an argument to xargs, gdb, find -exec, npm run, jq, an interpreter, ...)";
+  if (SPAWN_RE.test(text)) return "the line has a process-spawning call (system(, subprocess, child_process, ...), which can print the environment";
+  return null;
+}
 function ruleSecret(ctx) {
   const { tool, home } = ctx;
   if (tool === "Read" || tool === "NotebookRead") {
@@ -1593,6 +1664,7 @@ function ruleSecret(ctx) {
     if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${stdinFindings.leak.prog}\` reads a script from stdin that ${stdinFindings.leak.why}`, suggestion: R1_SUGGESTION };
     if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${stdinFindings.unseen}\` reads its script from stdin (a pipe, a file or \`<(...)\`), and the guard cannot see what that script does with the environment; confirm it is intended`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
+  let sourced = null;
   for (const [si, seg] of secretSegs.entries()) {
     const cwds = ctx.expandedCwds[si] ?? ctx.allCwds;
     // resolveCommand swaps a `find` segment for its -exec argv (`cat {}`), dropping the -name/path operands.
@@ -1604,10 +1676,11 @@ function ruleSecret(ctx) {
       const why = cliProg && secretCliPrint(cliProg, cliArgs);
       if (why) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `${why}: it would land in the transcript; confirm it is intended`, suggestion: R1_SUGGESTION };
     }
-    // Q6: sourcing a secrets file loads values into the shell; ask (was allow; R1_SUGGESTION still names the safer form).
+    // `source F` / `. F`: an env file is judged after the loop (allowed unless sourceLeaks finds something else); any other secret store keeps the ask.
     if ((bareProg === "source" || bareProg === ".") && bareArgs[0]) {
       const src = secretShapeIn([bareArgs[0]], home, true);
-      if (src) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg} ${src}\` loads a secret store into the shell environment; confirm it is intended`, suggestion: R1_SUGGESTION };
+      if (src && sourcedStoreIsEnvFile(bareArgs[0], home)) sourced ??= { prog: bareProg, src };
+      else if (src) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg} ${src}\` loads a secret store that is not an env file (bash prints a non-shell file's lines as errors); confirm it is intended`, suggestion: R1_SUGGESTION };
     }
     // Q6 metadata verbs: kubectl --kubeconfig, and docker/podman *compose* --env-file → ask.
     // Plain `docker run --env-file` stays on the consumer exemption (prints nothing unless the command dumps env).
@@ -1765,6 +1838,10 @@ function ruleSecret(ctx) {
         return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` in verbose mode echoes the Authorization header, including the token`, suggestion: "Drop -v/--verbose when a credential is on the command line, or move the token into a variable and redact the output." };
       }
     }
+  }
+  if (sourced && !soft) {
+    const why = sourceLeaks(secretSegs, ctx.command, sourced.src);
+    if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${sourced.src}\` loads an env file, but ${why}; confirm it is intended`, suggestion: R1_SUGGESTION };
   }
   return soft ?? ambiguous;
 }

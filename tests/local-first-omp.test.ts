@@ -304,7 +304,7 @@ test("parity: every row of evals/guard.jsonl, local verdict == direct guardComma
   }
   expect(diffs).toEqual([]);
   expect(unclear).toBeLessThan(rowsIn.length / 10);
-});
+}, 60000); // every corpus row runs through the rules twice: the default 5 s bun timeout does not scale with a growing corpus or a busy CI host
 
 // ── the local rules could not run (enabled, no reply) and no server answers ──────────────────────────────────────────────────
 const DOWN_NOTICE = "Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";

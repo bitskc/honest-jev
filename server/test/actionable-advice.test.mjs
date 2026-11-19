@@ -237,3 +237,16 @@ test("-L on a secret-store operand prints names only, like -l/-c/-q: allow; line
     assert.equal((await g(c)).decision, "block", c);
   }
 });
+
+test("every command a R1 suggestion recommends is itself allowed (advice never recommends a form that asks or blocks)", async () => {
+  const guard = await import("../src/kit/guard.mjs");
+  const names = Object.keys(guard).filter((k) => /^R1_.*SUGGESTION$/.test(k));
+  assert.ok(names.length >= 5, `found ${names.join(",")}`);
+  for (const name of names) {
+    const spans = [...guard[name].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    assert.ok(spans.length > 0, `${name} names no command`);
+    for (const c of spans) assert.equal((await g(c)).decision, "allow", `${name}: ${c}`);
+  }
+  // the load-and-confirm pair, run as one line, is allowed too
+  assert.equal((await g("set -a; . ./.env; set +a; [ -n \"$KEY\" ] && echo 'key loaded'")).decision, "allow");
+});
