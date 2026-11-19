@@ -40,6 +40,16 @@ test("env ./a=b is an assignment: the command behind it is judged", async () => 
   assert.equal((await g("env ./a=b token")).decision, "allow"); // env runs the program `token`, no operand (evals/diff-allowlist.json closure exemption)
 });
 
+// env keeps taking `=` words as assignments after `--`.
+test("env -- ./a=b is an assignment too: the command behind it is judged", async () => {
+  for (const c of ["env -- ./a=b rm -rf ~", "env -i -- ./a=b rm -rf ~", "env -u Z -- ./a=b rm -rf ~", "env -- A=b ./a=b rm -rf ~", "env -S '-- ./a=b rm -rf ~'",
+    "\\env -- ./a=b rm -rf ~", "bash -c 'env -- ./a=b rm -rf ~'"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "block", `${c} -> ${r.decision} ${r.reason}`);
+  }
+  assert.equal((await g("env -- ./a=b echo ok")).decision, "allow");
+});
+
 test("nice, time, command and nohup really run ./a=b as the program", async () => {
   for (const c of ["nice ./a=b token", "time ./a=b token", "command ./a=b token", "nohup ./a=b token"]) {
     const r = await g(c);

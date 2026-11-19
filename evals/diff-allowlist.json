@@ -575,7 +575,7 @@
         "env"
       ],
       "issue": "#103",
-      "justification": "`env` takes every leading word holding `=` as an assignment, a path included, so `env ./a=b token` sets a variable and runs the program `token` with no operand: allow is bash's reading. The plain row `./a=b token` asks because the shell itself runs `./a=b` with the operand `token`. Wrapped in env the pathed word is no longer the program (see mid-word-expansion.test.mjs). Filed under #103 (assignment-spelling words that the peel must treat like `A=b`)."
+      "justification": "Correct behaviour, not a deferred bug: `env` takes every leading word holding `=` as an assignment, a path included, so `env ./a=b token` sets a variable and runs the program `token` with no operand, and allow is bash's reading. The plain row `./a=b token` asks because the shell itself runs `./a=b` with the operand `token`; wrapped in env the pathed word is no longer the program (pinned by mid-word-expansion.test.mjs). The issue field is only the one this format requires (an open issue, #103, in the same assignment-word area); nothing is left to fix for this row."
     }
   ]
 }

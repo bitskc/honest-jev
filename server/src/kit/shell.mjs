@@ -481,6 +481,8 @@ export function peelCommand(toksIn, opts = {}) {
       const t = toks[o + i];
       if (t === "--") {
         i++;
+        // env keeps taking `=` words as assignments after `--` (`env -- ./a=b rm -rf ~`).
+        if (spec.envAssignments) while (i < n() && toks[o + i].includes("=")) i++;
         if (spec.joinAfterDashDash) return rest(i).length ? ["bash", ...rest(i)] : [];
         break;
       }
