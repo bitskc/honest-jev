@@ -27,7 +27,7 @@ Coding agents are good at writing code and bad at three judgment calls they make
 - *"Did I run the tests, or just say I did?"* — `kit_verify_done` counts only real runner evidence.
 - *"Is what I'm about to say actually backed by what I did?"* — **Honest Jev** classifies each claim as verified / hedged / unverifiable / misrepresented before you send it.
 
-One Cloudflare Worker (your account, your Jev key, your bearer token), 16 MCP tools, 10 skills, 5 hooks.
+One Cloudflare Worker (your account, your Jev key, your bearer token), 16 MCP tools, 11 skills, 5 hooks.
 
 `jev-call` below is installed to `~/.local/bin/jev-call` by `install.sh`; from a bare checkout use `scripts/jev-call.sh` instead.
 
@@ -82,6 +82,7 @@ Every fixed tool **fails open with a note** when Jev is unreachable (`kit_decide
 | `jev-issue-triage` | Backlog sweep: classify hundreds of issues (~14k tokens per 64), then verify close-candidates against the repo before closing anything |
 | `jev-classify` | Any "sort these into buckets" task |
 | `jev-decide` | An agent (any domain) must pick one of a few actions by rule: write a spec, call `kit_decide`, apply the decision |
+| `jev-advisor` | Before building something non-trivial and before another round: a one-line, advisory second opinion from `jev_noul` (plus a one-off `jev_decide`) |
 | `jev-policy-author` | The user asks for a reusable rule or gate ("always ask me before ..."): draft a decision class with examples, prove it with `jev-policy`, store it, call it |
 | `fast-file-search` | Repo-wide file discovery with the guard's `sudo` rules in mind |
 

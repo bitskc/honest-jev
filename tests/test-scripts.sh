@@ -660,5 +660,37 @@ if [ "$(id -u)" != 0 ]; then
   ok "$(cat "$uR/.local/share/honest-jev/installed-ref" 2>/dev/null)" "0000000000000000000000000000000000000000" "update: ... and still records the installed ref"
 fi
 
+# ── skill frontmatter: strict-YAML hazards ──────────────────────────────────────
+# No YAML parser is available to this script (no npm install, no PyYAML), so this is a lint for the hazard that bit us: an
+# unquoted plain scalar holding ": " or " #" (a colon-space reads as a nested mapping; strict parsers throw, omp only loads
+# it through its repair path). Prints one problem per line; empty output = clean. Fold with ">-" or quote the value.
+fm_problems() {
+  awk -v q="'" '
+    NR == 1 { if ($0 != "---") { print "line 1 is not ---"; bad = 1; exit } ; next }
+    /^---[ \t]*$/ { closed = 1; exit }
+    /^[ \t]/ || /^[ \t]*$/ || /^#/ { next }
+    {
+      i = index($0, ":")
+      if (i < 2) { print "line " NR ": not key: value"; next }
+      key = substr($0, 1, i - 1); v = substr($0, i + 1); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+      seen[key] = 1
+      if (v == "" || index("\"" q ">|[{&*!", substr(v, 1, 1))) next
+      if (v ~ /^[%@`]/ || v ~ /: / || v ~ / #/ || v ~ /:$/) print "line " NR ": unquoted value of \"" key "\" has a colon-space, #, or reserved start"
+    }
+    END {
+      if (!bad && !closed) print "no closing ---"
+      if (!bad && !seen["name"]) print "missing name"
+      if (!bad && !seen["description"]) print "missing description"
+    }'
+}
+for f in "$root"/skills/*/SKILL.md; do
+  ok "$(fm_problems < "$f")" "" "skills: frontmatter of $(basename "$(dirname "$f")") is strict-YAML safe"
+done
+# negative controls: the lint must fail on the shape that shipped in PR #93 and pass on its two fixes
+ok "$(printf -- '---\nname: x\ndescription: Use it, then Jev: before building.\n---\n' | fm_problems | wc -l | tr -d ' ')" 1 "skills: frontmatter lint rejects an unquoted 'Jev: before'"
+ok "$(printf -- '---\nname: x\ndescription: >-\n  Use it, then Jev: before building.\n---\n' | fm_problems)" "" "skills: frontmatter lint accepts the folded form"
+ok "$(printf -- '---\nname: x\ndescription: "Use it, then Jev: before building."\n---\n' | fm_problems)" "" "skills: frontmatter lint accepts the quoted form"
+ok "$(printf -- '---\nname: x\n' | fm_problems)" $'no closing ---\nmissing description' "skills: frontmatter lint rejects an unclosed block"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
