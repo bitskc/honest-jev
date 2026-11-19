@@ -585,9 +585,9 @@ function secretStoreIn(tokens, home) {
   const hit = secretShapeIn(tokens, home);
   if (hit) return { hit, severity: "block" };
   const word = bareSecretWordIn(tokens);
-  if (word) return { hit: word, severity: "soft", why: "names a bare credential word" };
+  if (word) return { hit: word, severity: "soft", kind: "bare", why: "names a bare credential word" };
   const wide = wideGlobIn(tokens, home);
-  return wide ? { hit: wide, severity: "soft", why: "is a glob too wide or ambiguous to prove it misses a secret store" } : null;
+  return wide ? { hit: wide, severity: "soft", kind: "wide", why: "is a glob too wide or ambiguous to prove it misses a secret store" } : null;
 }
 function ambiguousPathIn(tokens) {
   for (const tok of tokens) {
@@ -1754,20 +1754,20 @@ function ruleSecret(ctx) {
     // `.env` and `.netrc` among them. The guard cannot know what the directory holds, so it asks (the literal spellings still block).
     if (!store && operands) {
       const dot = grepPatternExempt(prog, args, operands).find((a) => DOT_GLOB_RE.test(a));
-      if (dot) store = { hit: dot, severity: "soft", why: "expands to every hidden file, `.env` and credential dotfiles included" };
+      if (dot) store = { hit: dot, severity: "soft", kind: "dot", why: "expands to every hidden file, `.env` and credential dotfiles included" };
     }
     // A credentials DIRECTORY is the only reason for the block, and the program is not a content reader (`git log -- credentials/`,
     // `git diff --stat -- src/credentials/`, `find credentials/ -name x`, `tree`): main allowed these. They ask: `git diff credentials/id`
     // does print the file, but only a reader is certain to. `cat credentials/id`, `git add credentials/`, `scp credentials/..` still block.
     if (store?.severity === "block" && !READERS.has(prog) && !secretShapeIn(grepPatternExempt(prog, args, operands), home, true)) {
-      store = { hit: store.hit, severity: "soft", why: "names a credentials directory and may print what is in it" };
+      store = { hit: store.hit, severity: "soft", kind: "creddir", why: "names a credentials directory and may print what is in it" };
     }
     if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` on a secret store (${store.hit}) would print its contents`, suggestion: R1_SUGGESTION };
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
     // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
-    if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
-      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args, programOf(seg)[0], quotedWord(seg, prog) || pathedWord(seg, prog)))) {
-      const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
+    if (store && !(store.severity === "soft" && store.kind === "wide" && isCredentialsGlobReadonly(prog, args))
+      && !(store.severity === "soft" && store.kind === "bare" && !bareWordContextAsks(prog, args, programOf(seg)[0], quotedWord(seg, prog) || pathedWord(seg, prog)))) {
+      const suggestion = store.kind === "bare" ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
       soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }
     if (READERS.has(prog)) {
@@ -3546,12 +3546,19 @@ function internalError(askAt, ruleId, e) {
 async function guardOnceSafe(input, deps) {
   try { return await guardOnce(input, deps); } catch (e) { return internalError(typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e); }
 }
+// The plain name a prompt shows for a rule (`label` on the reply). An unknown rule id has no label: the hooks fall back to the id.
+export const RULE_LABELS = Object.freeze({
+  "R1-secret-exposure": "secret", "R1-secret-exfiltration": "secret upload", "R5-sudo": "sudo", "R7-destructive": "destructive",
+  "R7-irreversible": "irreversible", "R7-root-delete": "root delete", "R9-commit-secret": "secret commit", "R10-general-risk": "risky",
+  "internal-error": "guard error",
+});
+const withLabel = (out) => (out && out.decision !== "allow" && Object.hasOwn(RULE_LABELS, out.rule) ? { ...out, label: RULE_LABELS[out.rule] } : out);
 export async function guardCommand(input, deps = {}) {
   try {
-    return await guardCommandChecked(input, deps);
+    return withLabel(await guardCommandChecked(input, deps));
   } catch (e) {
     // Anything that throws outside a rule (reading the input, the comment-masking pass): the guard did not finish, so it asks.
-    return internalError(input && typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e);
+    return withLabel(internalError(input && typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e));
   }
 }
 async function guardCommandMasked(input, deps) {
