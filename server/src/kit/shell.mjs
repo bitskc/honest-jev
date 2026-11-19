@@ -183,8 +183,11 @@ export function wordsQ(segment) {
       if (ch === "}") paramDepth--;
       buf += ch; inWord = true; continue;
     }
-    const code = ch.charCodeAt(0); // ASCII whitespace without a regex per character; non-ASCII falls back to \s
-    if (code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(ch))) { flush(); continue; }
+    // Words end at ASCII whitespace only (space, tab, newline, and the other C0 spaces this walk always treated as separators). Bash itself
+    // splits on blank/IFS = space, tab, newline: a no-break, em or ideographic space stays INSIDE the word, which is how a function can be
+    // named `a<NBSP>b`. Splitting on Unicode spaces here made such a name two words and hid its body whenever the header was not at the segment start.
+    const code = ch.charCodeAt(0);
+    if (code === 32 || (code >= 9 && code <= 13)) { flush(); continue; }
     // An unquoted redirect operator ends the word before it: `cat<.env` is `cat` then `<.env`, and `rm -rf />/dev/null` is
     // `rm -rf /` then `>/dev/null`. An fd number or `&` glued in front belongs to the operator (`2>x`, `&>x`), the operator's own
     // characters stay together (`>>`, `<<<`), and nothing splits inside `$(...)` or `${...}`. The target stays glued to the

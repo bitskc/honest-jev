@@ -151,3 +151,20 @@ test("wordsQ marks the words written with a quote or a backslash", () => {
   assert.deepEqual(wordsQ("a 'b' c\\ d e").q && [...wordsQ("a 'b' c\\ d e").q], [1, 2]);
   assert.equal(wordsQ("a b c").q, null);
 });
+
+// Re-review of #87: a Unicode space is a name character in bash (words split on blank/newline only), so a name holding one must still be peeled.
+test("re-review: a function named with a Unicode space is analysed bare and nested; a command spelled with one is never weaker than the old split", async () => {
+  for (const s of ["\u00a0", "\u2003", "\u3000", "\u2009", "\u202f"]) {
+    const n = `a${s}b`;
+    assert.deepEqual(words(`${n}() ( cat .env )`).slice(0, 2), [`${n}()`, "("], JSON.stringify(s));
+    for (const body of ["cat .env", "echo $API_TOKEN", "rm -rf ~"]) {
+      const def = `${n}() { ${body}; }; ${n}`;
+      for (const c of [def, `{ ${def}; }`, `( ${def} )`, `if true; then ${def}; fi`, `function ${n} { ${body}; }; ${n}`, `{ ${n}() ( ${body} ); ${n}; }`]) {
+        assert.equal((await g(c)).decision, "block", JSON.stringify(c));
+      }
+    }
+    assert.equal((await g(`{ ${n}() { echo ok; }; ${n}; }`)).decision, "allow", JSON.stringify(s));
+    assert.equal((await g(`cat${s}.env`)).decision, "block", JSON.stringify(s));
+    assert.equal((await g(`cat${s}token`)).decision, "ask", JSON.stringify(s));
+  }
+});

@@ -3473,7 +3473,7 @@ export async function guardCommand(input, deps = {}) {
     return internalError(input && typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e);
   }
 }
-async function guardCommandChecked(input, deps) {
+async function guardCommandMasked(input, deps) {
   // An apostrophe in a comment (`# don't\ncat .env`) opens a quote in every scanner that does not know comments, and the quote
   // swallows the lines after it. Removing comments cannot fix that safely: a `#` the detector mistakes for a comment start
   // (`${x%% #*}`, `a\ #b`, a backtick) would hide the real command after it from every rule. So nothing is removed: the command is
@@ -3493,6 +3493,21 @@ async function guardCommandChecked(input, deps) {
   return { ...second, jev: spent ? first.jev : second.jev, notes: [...(second.notes || []), "Decided on the command with the quote characters inside its comments masked: an apostrophe in a comment is not a quote."] };
 }
 const DECISION_RANK = { allow: 0, ask: 1, block: 2 };
+// words() keeps a Unicode space inside its word, as bash does (a function can be named `a<NBSP>b`). A command written with one
+// (`cat<NBSP>.env`) is then one unknown word that bash cannot run; an agent or a reader may still mean two words, so the command is judged
+// as written AND with every Unicode space read as a blank, and the stricter decision stands (never weaker than the old whitespace split).
+const UNICODE_SPACE_RE = /[^\S \t\n\r\f\v]/g;
+async function guardCommandChecked(input, deps) {
+  const best = await guardCommandMasked(input, deps);
+  if (best.decision === "block" || !SHELL_TOOLS.has(input.tool || "Bash")) return best;
+  const raw = String(input.command || "");
+  const blanks = raw.replace(UNICODE_SPACE_RE, " ");
+  if (blanks === raw) return best;
+  const spent = Boolean(best.jev && best.jev.used);
+  const alt = await guardCommandMasked({ ...input, command: blanks }, spent ? { ...deps, ask: null, jevAvailable: false } : deps);
+  if (DECISION_RANK[alt.decision] <= DECISION_RANK[best.decision]) return best;
+  return { ...alt, jev: spent ? best.jev : alt.jev, notes: [...(alt.notes || []), "Decided on the command with its Unicode spaces read as blanks: bash keeps one inside a word, but the stricter reading stands."] };
+}
 // guardOnce never lets a rule's exception look like "no match": the core records each one and the result is marked (see markRuleFailures).
 async function guardOnce(input, deps = {}) {
   const failures = [];
