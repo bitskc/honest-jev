@@ -17,14 +17,14 @@ cfg="$tmp/cfg"; mkdir -p "$cfg" "$tmp/sl-home"
 ok "$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$cfg bash "$sl")" "" "statusline: no flag -> empty"
 for m in off soft standard strict; do printf '%s\n' "$m" > "$cfg/.jev-honest-active"; eval "got_$m=\$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$cfg bash \"$sl\")"; done
 ok "$got_off" "" "statusline: off -> empty"
-ok "$got_soft" $'\033[38;5;130m[HONEST:SOFT]\033[0m' "statusline: soft badge"
-ok "$got_standard" $'\033[38;5;130m[HONEST]\033[0m' "statusline: standard badge"
-ok "$got_strict" $'\033[38;5;130m[HONEST:STRICT]\033[0m' "statusline: strict badge"
+ok "$got_soft" $'\033[38;5;130m🎩 HONEST:SOFT\033[0m' "statusline: soft badge"
+ok "$got_standard" $'\033[38;5;130m🎩 HONEST\033[0m' "statusline: standard badge"
+ok "$got_strict" $'\033[38;5;130m🎩 HONEST:STRICT\033[0m' "statusline: strict badge"
 printf 'BOGUS\n' > "$cfg/.jev-honest-active"; ok "$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$cfg bash "$sl")" "" "statusline: unrecognised level -> empty, not a bogus badge"
 mkdir -p "$tmp/sl-home/.omp/agent"; printf 'soft\n' > "$tmp/sl-home/.omp/agent/.jev-honest-active"
-ok "$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$tmp/sl-nocfg bash "$sl")" $'\033[38;5;130m[HONEST:SOFT]\033[0m' "statusline: omp flag (~/.omp/agent) badges when no Claude flag"
+ok "$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$tmp/sl-nocfg bash "$sl")" $'\033[38;5;130m🎩 HONEST:SOFT\033[0m' "statusline: omp flag (~/.omp/agent) badges when no Claude flag"
 mkdir -p "$tmp/pi-agent"; printf 'strict\n' > "$tmp/pi-agent/.jev-honest-active"
-ok "$(HOME=$tmp/sl-home PI_CODING_AGENT_DIR=$tmp/pi-agent CLAUDE_CONFIG_DIR=$tmp/sl-nocfg bash "$sl")" $'\033[38;5;130m[HONEST:STRICT]\033[0m' "statusline: PI_CODING_AGENT_DIR overrides the omp flag dir (not ~/.omp/agent)"
+ok "$(HOME=$tmp/sl-home PI_CODING_AGENT_DIR=$tmp/pi-agent CLAUDE_CONFIG_DIR=$tmp/sl-nocfg bash "$sl")" $'\033[38;5;130m🎩 HONEST:STRICT\033[0m' "statusline: PI_CODING_AGENT_DIR overrides the omp flag dir (not ~/.omp/agent)"
 
 # ── install.sh: both targets, project scope with spaces, hooks + helpers landed ──
 H="$tmp/home"; mkdir -p "$H/.omp/agent" "$H/.claude"
@@ -103,7 +103,7 @@ bash "$root/update.sh" --project >/dev/null 2>&1; ok "$?" 2 "update: --project w
 
 # ── statusline sourcing; update.sh --timer: relative --project, % escaping, persisted env, enable failure ──
 printf 'soft\n' > "$cfg/.jev-honest-active"
-ok "$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$cfg bash -c 'source "$1"; jev_honest_badge; echo -n after' _ "$sl")" $'\033[38;5;130m[HONEST:SOFT]\033[0m'"after" "statusline: sourced -> badge returned, parent shell keeps running"
+ok "$(HOME=$tmp/sl-home CLAUDE_CONFIG_DIR=$cfg bash -c 'source "$1"; jev_honest_badge; echo -n after' _ "$sl")" $'\033[38;5;130m🎩 HONEST:SOFT\033[0m'"after" "statusline: sourced -> badge returned, parent shell keeps running"
 mkdir -p "$tmp/rel/proj" "$tmp/pct%x"
 (cd "$tmp/rel" && HOME=$U PATH="$stub:$PATH" REPO_ROOT="$root" JEV_REF=main bash "$root/update.sh" --timer --project proj >/dev/null 2>&1)
 ok "$(grep ExecStart "$U/.config/systemd/user/jev-skill-sync.service")" "ExecStart=$U/.local/bin/jev-update \"--project\" \"$tmp/rel/proj\"" "update: --timer resolves a relative --project to an absolute path"

@@ -11,9 +11,9 @@ jev_honest_badge() {
   [ -f "$flag" ] || return 0
   mode=$(head -n 1 "$flag" | tr -cd '[:alnum:]')
   case "$mode" in
-    standard) printf '\033[38;5;130m[HONEST]\033[0m' ;;
-    soft)     printf '\033[38;5;130m[HONEST:SOFT]\033[0m' ;;
-    strict)   printf '\033[38;5;130m[HONEST:STRICT]\033[0m' ;;
+    standard) printf '\033[38;5;130m🎩 HONEST\033[0m' ;;
+    soft)     printf '\033[38;5;130m🎩 HONEST:SOFT\033[0m' ;;
+    strict)   printf '\033[38;5;130m🎩 HONEST:STRICT\033[0m' ;;
   esac
   return 0
 }

@@ -228,7 +228,7 @@ function instructions(level: Level): string {
   return head + body + rulesSection();
 }
 function badge(level: Level): string {
-  return level === "off" ? "" : level === "standard" ? "[HONEST]" : `[HONEST:${level.toUpperCase()}]`;
+  return level === "off" ? "" : level === "standard" ? "🎩 HONEST" : `🎩 HONEST:${level.toUpperCase()}`;
 }
 // Only the ctx surface this hook touches; everything is optional so a UI-less context is a no-op.
 type HookCtx = { ui?: { setStatus?: (key: string, text: string) => void; notify?: (message: string, level?: string) => void } };
