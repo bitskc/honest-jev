@@ -74,6 +74,26 @@ test("Q6: a program that reads the whole environment without a $ keeps the ask o
   ]) assert.equal((await g(c)).decision, "block", c);
 });
 
+test("Q6: an inline script, filter or recipe that names env or spawns a process, and the spawner wrappers, keep the ask", async () => {
+  const L = "set -a; . ./.env; set +a; ";
+  for (const t of [
+    "awk 'BEGIN{system(\"env\")}'", "gawk 'BEGIN{system(\"printenv\")}'", "perl -e 'system(\"env\")'", "python3 -c 'import os; os.system(\"env\")'",
+    "python3 -c 'import subprocess; subprocess.run([\"printenv\"])'", "node -e 'require(\"child_process\").execSync(\"env\",{stdio:\"inherit\"})'", "lua -e 'os.execute(\"env\")'",
+    "php -r 'system(\"env\");'", "ruby -e 'system \"env\"'", "sed '1e env' /etc/hostname", "make -f - <<'MK'\nall:\n\t@env\nMK", "tclsh <<'T'\nputs [array get env]\nT",
+    "echo 'puts [array get env]' | tclsh", "script -qc env /dev/null", "npm exec -- env", "npx env", "export -n", "export -fn", "make -pn", "make -p -f /dev/null",
+  ]) assert.notEqual((await g(L + t)).decision, "allow", t);
+  // controls: an interpreter or make with no env, spawn or --env on the line stays a plain load
+  for (const t of ["make deploy", "node server.js --env production", "python3 manage.py migrate", "sed -i 's/a/b/' f.txt", "node server.js"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
+  assert.equal((await g("source ~/.config/jev/env; python3 app.py")).decision, "allow");
+});
+
+test("Q6: .env.* with a non-shell suffix is not an env file (bash prints its lines as errors)", async () => {
+  for (const f of [".env.json", ".env.yaml", ".env.yml", ".env.toml", ".env.pem", ".env.key", ".env.gpg", ".env.enc", ".env.p12", ".env.crt", "app.env.json", "config/.env.yaml"]) {
+    assert.equal((await g(`. ${f}`)).decision, "ask", f);
+  }
+  for (const f of [".env.production", ".env.staging", ".env.local", "app.env", "config/.env.test"]) assert.equal((await g(`source ${f}`)).decision, "allow", f);
+});
+
 test("Q6: executing the store instead of sourcing it still blocks", async () => {
   for (const c of ["bash .env", "sh .env", "cat .env | sh", "cat .env", "grep -n API_KEY .env"]) assert.equal((await g(c)).decision, "block", c);
 });

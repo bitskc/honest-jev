@@ -1571,13 +1571,15 @@ const ENV_FILE_RES = [
   /(^|\/)\.env(?:\.[A-Za-z0-9_.-]+)?$/, /\.env$/, /(^|\/)\.envrc$/, /(^|\/)\.dev\.vars(?:\.[A-Za-z0-9_.-]+)?$/,
   /[\\/]jev-kit[\\/]env$/, /[\\/]airlock[\\/]env$/, /(^|\/)\.config\/jev\/env$/,
 ];
-/** True when every spelling of `arg` that names a secret store names an env file (a glob, `.ssh/id_rsa`, `.npmrc`... is not). */
+// `.env.json`, `.env.pem`... are not shell syntax: bash would print their lines as errors, so a non-shell suffix on the basename is never an env file.
+const NON_SHELL_SUFFIX_RE = /\.(?:json|ya?ml|toml|pem|key|gpg|enc|p12|crt)(?:\.|$)/i;
+/** True when every spelling of `arg` that names a secret store names an env file (a glob, `.ssh/id_rsa`, `.npmrc`, `.env.json`... is not). */
 function sourcedStoreIsEnvFile(arg, home) {
   let any = false;
   for (const [, p] of secretCandidates([arg], home)) {
     if (!SECRET_PATH_RES.some((r) => r.test(p))) continue;
     any = true;
-    if (!ENV_FILE_RES.some((r) => r.test(p))) return false;
+    if (!ENV_FILE_RES.some((r) => r.test(p)) || NON_SHELL_SUFFIX_RE.test(base(p))) return false;
   }
   return any;
 }
@@ -1590,25 +1592,38 @@ const LOAD_SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "ash"])
 const TEST_ONLY_RE = /^\s*(?:\[\[?|test)\s+-[nz]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s*(?:\]\]?)?\s*$/;
 // An inline script or filter that reads the whole environment without a `$`: `process.env`, `os.environ`, `ENVIRON`, `getenv`, `ENV[...]`, `%ENV`, `jq env`.
 const ENV_READ_RE = /\bENV\b|%ENV|\benviron\b|\bENVIRON\b|\bgetenv\b|\bGetenv\b|process\s*[.[]\s*["']?env|Deno\s*\.\s*env/;
-/** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `bodies` = heredoc bodies. */
-function sourceLeaks(segs, bodies) {
+// An inline script, filter or recipe (python perl ruby php lua node awk sed tclsh make) that names `env`/`printenv` or spawns a process can run `env` itself.
+const INLINE_PROG_RE = /^(?:python[\d.]*|pypy[\d.]*|perl\d*|ruby\d*|php\d*|lua[\d.]*|luajit|node|nodejs|bun|deno|g?awk|mawk|nawk|sed|tclsh[\d.]*|wish|g?make)$/;
+const ENV_NAME_RE = /(?<![-\w.])(?:env|printenv)(?![\w-])/;
+const SPAWN_RE = /\b(?:system|exec\w*|popen\w*|spawn\w*|subprocess|child_process|execute)\b/;
+/** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `bodies` = text checked for `$`; `command` = the whole text, `src` = the loaded path (left out of the env-name test). */
+function sourceLeaks(segs, bodies, command, src) {
   if (bodies.some((b) => /[$`]/.test(b))) return "a heredoc body expands a variable";
+  let inline = false;
   for (const seg of segs) {
     if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "another part of the command expands a variable (`$` or a backtick), which could print or send what was loaded";
     const t = wordsQ(seg).t;
     for (let k = 0; k < t.length; k++) {
       if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPTS, BASH_XTRACEFD)";
       const w = base(t[k]);
+      const rest = t.slice(k + 1);
       if (w === "trap") return "a `trap` can run a command that prints what was loaded";
+      if (w === "script" || w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) return `\`${w}\` runs another command that can print the environment`;
+      if (w === "export" && rest.some((a) => /^-[A-Za-z]*n[A-Za-z]*$/.test(a))) return "`export -n` lists the variables";
+      if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable, the environment included";
       if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
-      if (t.slice(k + 1).some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
+      if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
     }
     const [prog, args] = programOf(stripRedirects(seg));
     if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an environment option shows every process's environment";
     if (prog === "jq" && /\benv\b/.test(seg)) return "`jq env` reads the whole environment";
     if (["declare", "typeset", "readonly", "printenv"].includes(prog)) return `\`${prog}\` can list variable values`;
     if (ENV_READ_RE.test(seg)) return "an inline script or filter reads the environment and can print it";
+    if (INLINE_PROG_RE.test(prog ?? "")) inline = true;
   }
+  // an inline interpreter on the line (its script may arrive by argument, heredoc or pipe): the line must not name `env` or spawn a process
+  const text = command.split(src).join(" ");
+  if (inline && (ENV_NAME_RE.test(text) || SPAWN_RE.test(text))) return "an inline script or recipe on the line names `env` or spawns a process, which can print the environment";
   return null;
 }
 function ruleSecret(ctx) {
@@ -1818,7 +1833,7 @@ function ruleSecret(ctx) {
     }
   }
   if (sourced && !soft) {
-    const why = sourceLeaks(secretSegs, [...ctx.inputScripts.map((b) => b.body), ...(/<<(?!<)/.test(ctx.command) ? [ctx.command] : [])]);
+    const why = sourceLeaks(secretSegs, [...ctx.inputScripts.map((b) => b.body), ...(/<<(?!<)/.test(ctx.command) ? [ctx.command] : [])], ctx.command, sourced.src);
     if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${sourced.src}\` loads an env file, but ${why}; confirm it is intended`, suggestion: R1_SUGGESTION };
   }
   return soft ?? ambiguous;
