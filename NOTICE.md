@@ -11,6 +11,7 @@ API (`gh api repos/<owner>/<repo>/license`) on 2026-10-27.
 | [valentynkit/jev-belay](https://github.com/valentynkit/jev-belay) (pin `98f39e0`) | MIT | Valentyn Kit | Ported from `belay.mjs`: check-command belt, runner-summary parsing, transcript evidence pass, the four done-check questions, `decide()`, redaction rules (`server/src/kit/verify.mjs`, `shell.mjs`). | `licenses/jev-belay.LICENSE` |
 | [valentynkit/jev-commit](https://github.com/valentynkit/jev-commit) | MIT | Valentyn Kit | Secret-shaped patterns and placeholder suppression, reached through jev-kit's `belt.py` (rule R9). | `licenses/jev-commit.LICENSE` |
 | [leepokai/jev-guard](https://github.com/leepokai/jev-guard) | MIT | leepokai | The `user_requested` question wording and the risk-score idea behind R10, via jev-kit. | `licenses/jev-guard.LICENSE` |
+| [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | MIT | DietrichGebert | The idea of the "lazy senior developer" ladder (skip it, reuse it, stdlib, platform, one line) behind the `jev-advisor` skill's yes/no propositions. Wording is original; no text is copied. | `licenses/ponytail.LICENSE` |
 
 ## Not included
 - [browser-use/browser-use](https://github.com/browser-use/browser-use) (MIT) and jev-kit's `jev-ultrafast` browser agent, file-search component, daemon, tuning loop and installer: **nothing from these is vendored or ported**. They run locally and are only mentioned for context.
