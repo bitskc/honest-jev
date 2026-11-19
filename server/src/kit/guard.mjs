@@ -1570,7 +1570,7 @@ export function secretCliPrint(prog, args) {
 // `$` expansion or backtick, change no tracing or hooks, and read no whole environment. Whatever it cannot prove clean asks.
 const ENV_SUFFIXES = "local|development|dev|production|prod|staging|stage|test|testing|ci|preview|example|sample|defaults|docker";
 const ENV_FILE_RES = [
-  /(^|\/)\.env$/, /\.env$/, /(^|\/)\.envrc$/, /(^|\/)\.dev\.vars$/,
+  /\.env$/, /(^|\/)\.envrc$/, /(^|\/)\.dev\.vars$/,
   new RegExp(String.raw`(^|\/)\.env\.(?:${ENV_SUFFIXES})(?:\.local)?$`),
   /[\\/]jev-kit[\\/]env$/, /[\\/]airlock[\\/]env$/, /(^|\/)\.config\/jev\/env$/,
 ];
@@ -1593,64 +1593,44 @@ const OPTION_BUILTINS = new Set(["set", "shopt", "setopt", "unsetopt"]);
 const LOAD_SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "ash"]);
 // `[ -n "$KEY" ]` / `test -z $KEY` print nothing: the advised "confirm it is present" step (R1_SUGGESTION) is the one `$` use that stays allowed.
 const TEST_ONLY_RE = /^\s*(?:\[\[?|test)\s+-[nz]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?\s*(?:\]\]?)?\s*$/;
-// An inline script or filter that reads the whole environment without a `$`: `process.env`, `os.environ`, `ENVIRON`, `getenv`, `ENV[...]`, `%ENV`, `jq env`.
+// An inline script or filter that reads the whole environment without a `$`: `process.env`, `os.environ`, `ENVIRON`, `getenv`, `ENV[...]`, `%ENV`.
 const ENV_READ_RE = /\bENV\b|%ENV|\benviron\b|\bENVIRON\b|\bgetenv\b|\bGetenv\b|process\s*[.[]\s*["']?env|Deno\s*\.\s*env/;
-// Programs that run an inline script, filter or recipe (python perl ruby php lua node awk sed tclsh make): a spawning call on the line asks.
-const INLINE_PROG_RE = /^(?:python[\d.]*|pypy[\d.]*|perl\d*|ruby\d*|php\d*|lua[\d.]*|luajit|node|nodejs|bun|deno|g?awk|mawk|nawk|sed|tclsh[\d.]*|wish|g?make)$/;
 const ENV_NAME_RE = /(?<![-\w.])(?:env|printenv)(?![\w-])/;
 // A real process-spawning call in an inline script: `system(`, `os.system(`, `popen(`, `subprocess`, `child_process`, `spawn(`, `execSync(` / `execFile(` / `execvp(`..., perl/ruby `exec "..."` / `system "..."` / `qx` / `%x`.
 // A word that merely starts with `exec` (`execute_dynamic_query`) or Python's `exec(compile(...)` is not a spawn.
 const SPAWN_RE = /\bsystem\s*\(|(?<![\w.])system\s+["']|\bpopen\w*\s*\(|\bos\.(?:system|execute|popen|exec\w*|spawn\w*)\b|\bsubprocess\b|\bchild_process\b|\bspawn\w*\s*\(|\bexec(?:Sync|File\w*|l\w{0,2}|v\w{0,2})\s*\(|(?<![\w.])exec(?:\s+|\s*\()\s*["']|\b(?:shell_exec|passthru|proc_open|Open3)\b|\bqx\b|%x[({[]/;
-// `npx` / `npm exec` ask only when the command they run is `env`, `printenv` or a shell (`npx tsx`, `npx vercel`, `npx tsc` are plain tools).
-const RUNNER_SHELLS = new Set(["env", "printenv", "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"]);
-/** The program an `npx` / `npm exec` line runs: `-c`/`--call` runs a shell string; options that take a value are skipped; after `--` the next word. */
-function runnerTarget(rest) {
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (a === "-c" || a === "--call") return "sh";
-    if (a === "--") return rest[i + 1] === undefined ? null : base(rest[i + 1]);
-    if (a === "-p" || a === "--package" || a === "-w" || a === "--workspace") { i++; continue; }
-    if (a.startsWith("-")) continue;
-    return base(a);
-  }
-  return null;
-}
-/** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `bodies` = text checked for `$`; `command` = the whole text, `src` = the loaded path (left out of the env-name test). */
-function sourceLeaks(segs, bodies, command, src) {
-  if (bodies.some((b) => /[$`]/.test(b))) return "a heredoc body expands a variable";
-  let inline = false;
+/** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `command` = the whole text, `src` = the loaded path (left out of the env-word test). */
+function sourceLeaks(segs, command, src) {
+  // a heredoc body is not a segment: any `$` or backtick on a line that has one asks
+  if (/<<(?!<)/.test(command) && /[$`]/.test(command)) return "a heredoc on the line may expand a variable";
   for (const seg of segs) {
     if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "another part of the command expands a variable (`$` or a backtick), which could print or send what was loaded";
     const t = wordsQ(seg).t;
     for (let k = 0; k < t.length; k++) {
-      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPTS, BASH_XTRACEFD)";
+      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPS, BASH_XTRACEFD)";
       const w = base(t[k]);
       const rest = t.slice(k + 1);
       if (w === "trap") return "a `trap` can run a command that prints what was loaded";
       if (w === "script") return "`script` runs another command that can print the environment";
-      if (w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) {
-        const target = runnerTarget(w === "npx" ? rest : rest.slice(1));
-        if (target && RUNNER_SHELLS.has(target)) return `\`${w}\` runs \`${target}\`, which can print the environment`;
-      }
+      if ((w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) && rest.some((a) => a === "-c" || a === "--call" || LOAD_SHELLS.has(base(a)))) return `\`${w}\` runs a shell, which can print the environment`;
       if (w === "export" && rest.some((a) => /^-[A-Za-z]*n[A-Za-z]*$/.test(a))) return "`export -n` lists the variables";
       if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable, the environment included";
-      if (["npm", "pnpm", "yarn"].includes(w) && rest.includes("env")) return `\`${w} run env\` prints the whole environment`;
       if ((w === "docker-compose" || w === "podman-compose" || ((w === "docker" || w === "podman") && rest.includes("compose"))) && rest.some((a) => a === "config" || a === "convert")) return "`compose config` prints the compose file with every ${VAR} filled in from the loaded environment";
       if (w === "strace" || w === "ltrace") return `\`${w}\` prints the environment of every process it traces`;
       if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
       if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
     }
     const [prog, args] = programOf(stripRedirects(seg));
-    if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an environment option shows every process's environment";
-    if (prog === "jq" && /\benv\b/.test(seg)) return "`jq env` reads the whole environment";
-    if (["declare", "typeset", "readonly", "printenv"].includes(prog)) return `\`${prog}\` can list variable values`;
+    // BSD `ps e` / `ps eww` print every process's environment (`ps -ef` is not that `e`)
+    if (prog === "ps" && args.some((a) => /^[A-Za-z]*e[A-Za-z]*$/.test(a) || a === "-E")) return "`ps` with an environment option shows every process's environment";
+    if (["declare", "typeset", "readonly"].includes(prog)) return `\`${prog}\` can list variable values`;
     if (ENV_READ_RE.test(seg)) return "an inline script or filter reads the environment and can print it";
-    if (INLINE_PROG_RE.test(prog ?? "")) inline = true;
   }
-  // the whole line, the loaded path left out: a bare `env` / `printenv` word anywhere (an argument to xargs, gdb, find -exec, git rebase -x, vim -c, an inline script...) can print the environment
+  // the whole line, the loaded path left out: a bare `env` / `printenv` word anywhere (an argument to xargs, gdb, find -exec, vim -c, npm run, jq, an inline script...) can print the environment,
+  // and a spawning call (`system(`, `subprocess`, `child_process`...) can run `set` or `export` without any such word
   const text = command.split(src).join(" ");
-  if (ENV_NAME_RE.test(text)) return "the line has a bare `env` or `printenv` word, which can print the whole environment (as an argument to xargs, gdb, find -exec, an interpreter, ...)";
-  if (inline && SPAWN_RE.test(text)) return "an inline script or recipe on the line spawns a process, which can print the environment";
+  if (ENV_NAME_RE.test(text)) return "the line has a bare `env` or `printenv` word, which can print the whole environment (as an argument to xargs, gdb, find -exec, npm run, jq, an interpreter, ...)";
+  if (SPAWN_RE.test(text)) return "an inline script or recipe on the line spawns a process, which can print the environment";
   return null;
 }
 function ruleSecret(ctx) {
@@ -1860,7 +1840,7 @@ function ruleSecret(ctx) {
     }
   }
   if (sourced && !soft) {
-    const why = sourceLeaks(secretSegs, [...ctx.inputScripts.map((b) => b.body), ...(/<<(?!<)/.test(ctx.command) ? [ctx.command] : [])], ctx.command, sourced.src);
+    const why = sourceLeaks(secretSegs, ctx.command, sourced.src);
     if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${sourced.src}\` loads an env file, but ${why}; confirm it is intended`, suggestion: R1_SUGGESTION };
   }
   return soft ?? ambiguous;

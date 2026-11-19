@@ -101,11 +101,27 @@ test("Q6: an inline script that spawns, a bare env word, and the runners that ru
   assert.equal((await g("source ~/.config/jev/env; python3 app.py")).decision, "allow");
 });
 
+test("Q6: the branches that stop a dumper with no $ and no env word (each leaks in real bash), and the controls that must not ask", async () => {
+  const L = "set -a; . ./.env; set +a; ";
+  for (const t of [
+    "trap set EXIT", "trap export EXIT", "script -qc set /dev/null", "script -qc export /dev/null", "npx sh -c set", "npx -c export", "npm exec -- bash -c export", "npm x -- sh -c set",
+    "awk 'BEGIN{system(\"set\")}'", "python3 -c 'import os; os.system(\"export\")'", "node -e 'require(\"child_process\").execSync(\"set\",{stdio:\"inherit\"})'",
+    "export -n", "make -p -f /dev/null", "ps e", "ps eww", "strace -v -e execve /bin/true",
+  ]) assert.notEqual((await g(L + t)).decision, "allow", t);
+  for (const t of ["ps aux", "ps -ef", "npx tsx script.ts"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
+});
+
+test("Q6: only the exact confirm test keeps a $ allowed; a test inside a larger command, or with another operand, asks", async () => {
+  const L = "set -a; . ./.env; set +a; ";
+  for (const t of ["[ -n \"$KEY\" ] && echo ok", "[[ -z $KEY ]] || exit 1", "test -n \"${KEY}\""]) assert.equal((await g(L + t)).decision, "allow", t);
+  for (const t of ["echo \"[ -n $KEY ]\"", "[ \"$KEY\" = x ]", "[ -n \"$KEY\" ] && cat <<<\"$KEY\"", "[ -n \"${KEY:-$OTHER}\" ]", "[ -n \"$(cat f)\" ]"]) assert.notEqual((await g(L + t)).decision, "allow", t);
+});
+
 test("Q6: an env file is an allowlist of names; any other .env.<suffix> keeps the ask", async () => {
   for (const f of [
     ".env.json", ".env.yaml", ".env.yml", ".env.toml", ".env.pem", ".env.key", ".env.gpg", ".env.enc", ".env.p12", ".env.crt", "app.env.json", "config/.env.yaml", "config.yaml.env",
     ".env.p8", ".env.pfx", ".env.jks", ".env.keystore", ".env.der", ".env.cer", ".env.xml", ".env.json5", ".env.sops", ".env.age", ".env.asc", ".env.tpl", ".env.vault", ".env.keys",
-    ".env.encrypted", ".env.bak", ".dev.vars.local", "app.env.local",
+    ".env.encrypted", ".env.bak", ".dev.vars.local", "app.env.local", ".env.qa", ".env.uat", ".env.e2e", ".env.demo",
   ]) assert.equal((await g(`. ${f}`)).decision, "ask", f);
   for (const f of [
     ".env", ".envrc", "app.env", ".dev.vars", "config/.env.test", ".env.local", ".env.development", ".env.dev", ".env.production", ".env.prod", ".env.staging", ".env.stage",
