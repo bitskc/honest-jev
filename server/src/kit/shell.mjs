@@ -490,8 +490,9 @@ export function peelCommand(toksIn, opts = {}) {
         if (spec.scriptOpts.has(t) && i + 1 < n()) return ["bash", "-c", toks[o + i + 1]];
         if (t.startsWith("--command=")) return ["bash", "-c", t.slice("--command=".length)];
       }
+      // env itself takes EVERY leading word holding `=` as an assignment, a path included (`env ./a=b rm -rf ~` runs `rm -rf ~`).
+      if (spec.envAssignments && !t.startsWith("-") && t.includes("=")) { i++; continue; }
       if (!t.startsWith("-") || t === "-") break;
-      if (spec.envAssignments && ASSIGN_RE.test(t)) { i++; continue; }
       if (spec.spliceOpts) {
         // --split-string=x / -S=x: the attached value is still a command line to splice.
         const eq = spec.spliceOpts && [...spec.spliceOpts].find((o2) => t.startsWith(o2 + "="));

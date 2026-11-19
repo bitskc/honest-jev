@@ -28,3 +28,21 @@ test("a mid-word expansion does not hide a secret-store shape", async () => {
   const r = await g("cat$(true) .env");
   assert.equal(r.decision, "block");
 });
+
+// `env` takes every word holding `=` as an assignment, a path included, so what follows still runs: the `./a=b` fix must not hide it.
+test("env ./a=b is an assignment: the command behind it is judged", async () => {
+  for (const c of ["env ./a=b rm -rf ~", "env /x/a=b rm -rf ~", "env -i ./a=b rm -rf ~", "env -u Z ./a=b rm -rf ~", "env -S './a=b rm -rf ~'",
+    "\\env ./a=b rm -rf ~", "command env ./a=b rm -rf ~", "nohup env ./a=b rm -rf ~", "timeout 5 env ./a=b rm -rf ~", "bash -c 'env ./a=b rm -rf ~'"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "block", `${c} -> ${r.decision} ${r.reason}`);
+  }
+  assert.equal((await g("env ./a=b cat token")).decision, "ask");
+  assert.equal((await g("env ./a=b token")).decision, "allow"); // env runs the program `token`, no operand (evals/diff-allowlist.json closure exemption)
+});
+
+test("nice, time, command and nohup really run ./a=b as the program", async () => {
+  for (const c of ["nice ./a=b token", "time ./a=b token", "command ./a=b token", "nohup ./a=b token"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "ask", `${c} -> ${r.decision} ${r.reason}`);
+  }
+});
