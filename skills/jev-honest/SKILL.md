@@ -71,7 +71,7 @@ User-authored standing checks, injected at every level except off as a `## Rules
 
 **Format:** `{"id": "<kebab>", "when": "<situation>", "ask": "<question>", "evidence": "<what proves it>"}`. `when` and `ask` are required; `id` is generated from `when` if you don't give one; `evidence` is optional.
 
-**Layers**, later wins on the same id: built-in examples shipped with the plugin → user global (`rules.json` in `userConfigDir()`: `$CLAUDE_CONFIG_DIR/jev/` if set, else `$XDG_CONFIG_HOME/jev/`, else `~/.config/jev/`) → repo (`.jev/rules.json` in the cwd, so a team can commit shared rules). A `{"id": "...", "disabled": true}` entry at a later layer removes an earlier layer's same-id rule.
+**Layers**, later wins on the same id: built-in (empty by default; opt-in examples live in `examples/rules/` and take effect once copied into a user or repo `rules.json`) → user global (`rules.json` in `userConfigDir()`: `$CLAUDE_CONFIG_DIR/jev/` if set, else `$XDG_CONFIG_HOME/jev/`, else `~/.config/jev/`) → repo (`.jev/rules.json` in the cwd, so a team can commit shared rules). A `{"id": "...", "disabled": true}` entry at a later layer removes an earlier layer's same-id rule.
 
 **Author on the fly**, no file editing: `honest-jev rule add "<when>" -> "<ask>" [evidence: "<evidence>"]`, or natural language: `honest-jev rule add: when <...> ask <...> evidence <...>`. Repo scope is explicit only — add a trailing `--repo` or `(repo)`, or lead with `repo` right after `add`/`remove`/`disable` (e.g. `honest-jev rule remove repo <id>`) — to write `.jev/rules.json` instead of the user-global file; a `when`/`ask` that merely mentions "the repo" stays user-global. `honest-jev rule list` shows what's active; `honest-jev rule remove <id>` / `honest-jev rule disable <id>` mask a rule (built-in or user-added) at the layer you're writing to.
 
@@ -86,6 +86,8 @@ User-authored standing checks, injected at every level except off as a `## Rules
 2. **Refuse** otherwise: if evidence cannot be shown without secrets, drop the item and treat the claim as **not verified** (do not call classify with the raw text).
 
 At **strict**, this is mandatory on every substantive reply. Prefer the Stop gate (`JEV_STOP_GATE=honest|both`, or automatic at strict) so redaction is enforced in code rather than relying on prose alone.
+
+The redact step is also enforced by a Claude Code `PreToolUse` hook (`hooks/jev-classify-redact.js`) on `jev_classify` calls. That hook is Claude Code only: it returns the redacted call as `hookSpecificOutput.updatedInput` and prints nothing when there is nothing to change. omp sessions get no such hook, so redact by hand there. In Claude Code's auto mode a call whose input a hook changed can be denied once and retried ("a hook changed this call's input after auto mode reviewed it").
 
 ## Boundaries
 

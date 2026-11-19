@@ -14,6 +14,7 @@ const LEDGER = join(dir, "state", "ledger.jsonl");
 const MARK = "ZXQ-HOSTILE-MARKER";
 process.env.JEV_MCP_URL = "https://worker-private.example.workers.dev/mcp";
 process.env.JEV_MCP_TOKEN = "stub-token";
+process.env.JEV_GUARD_LOCAL = "off"; // these tests are about the server path; the local rules are covered by tests/local-first-omp.test.ts
 process.env.JEV_LEDGER = LEDGER;
 process.env.JEV_GUARD_ASK_NO_UI = "block";
 
@@ -124,7 +125,7 @@ test("a hostile top-level reply (no record) is scrubbed too: synthesised rows ar
 });
 
 test("closed lists and the row key set match the Python and Node implementations", () => {
-  expect([...mod.FAIL_REASONS]).toEqual(["no_upstream", "upstream_error", "timeout", "invalid_response", "oversize", "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error"]);
+  expect([...mod.FAIL_REASONS]).toEqual(["no_upstream", "upstream_error", "timeout", "invalid_response", "oversize", "client_config", "client_input", "client_timeout", "client_network", "client_http_5xx", "client_parse", "client_rejected", "rule_error", "local_rules_unavailable"]);
   expect([...mod.DECIDED_BY]).toEqual(["prefilter", "jev", "fail_open", "fail_closed", "policy"]);
   expect(Object.keys(mod.buildRow(null, { host: "omp" }))).toEqual(["v", "decision_id", "server_decision_id", "ts", "tool", "decision", "verdict", "decided_by", "rule", "fail_reason", "latency_ms", "jev", "tiers", "host", "correlation_id", "policy_version", "source", "enforced", "would_have"]);
 });

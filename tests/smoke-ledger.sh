@@ -15,6 +15,7 @@ start() { # start a stub worker; echo its port. Own stdout/stderr files so no pi
 }
 port_ok=$(start --jev); port_down=$(start --mode 5xx)
 export HOME="$tmp/home"; mkdir -p "$HOME"
+unset XDG_STATE_HOME JEV_LEDGER  # the ledger must land under the temp HOME, never the user's real log
 export SSL_CERT_FILE="$tmp/c.pem" JEV_MCP_TOKEN=stub-token
 ev() { python3 -c 'import json,sys;print(json.dumps({"tool_name":sys.argv[1],"tool_input":json.loads(sys.argv[2]),"cwd":"/tmp"}))' "$1" "$2"; }
 # run <url> <command-string> [ENV=val ...]: pipe one Bash PreToolUse event (the command is data) into the guard hook

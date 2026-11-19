@@ -90,7 +90,7 @@ class Env:
         self.ledger = os.path.join(self.home, "ledger.jsonl")
         self.env = {"PATH": os.path.join(TMP, "bin") + os.pathsep + os.environ["PATH"], "HOME": self.home, "SSL_CERT_FILE": CERT,
                     "JEV_MCP_TOKEN": "stub-token", "JEV_POLICY_USER": self.layer, "JEV_POLICY_HOOK": HELPER, "JEV_LEDGER": self.ledger,
-                    "STUB_GH_LOG": self.gh_log, **extra}
+                    "STUB_GH_LOG": self.gh_log, "JEV_GUARD_LOCAL": "off", **extra}  # the policy path rides on the server path here; tests/test_local_first.py covers both together
 
     def run(self, command, tool="Bash", **over):
         ev = json.dumps({"tool_name": tool, "tool_input": {"command": command}, "cwd": self.repo, "hook_event_name": "PreToolUse"})
@@ -192,6 +192,40 @@ class HookUnits(unittest.TestCase):
             finally:
                 os.environ.pop("JEV_POLICY_USER", None)
 
+    def test_format_guard_why_separates_safer_route_and_reply_outcome_sets_model_context(self):
+        why = self.hook.format_guard_why(
+            {"rule": "R1-secret-exposure", "reason": "node reads its script from stdin; confirm it is intended",
+             "suggestion": "Write the script to a file"},
+            "ask",
+        )
+        self.assertIn("Safer: Write the script to a file", why)
+        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, why)
+        ask = self.hook.reply_outcome({
+            "decision": "ask", "rule": "R1-secret-exposure",
+            "reason": "node reads its script from stdin; confirm it is intended",
+            "suggestion": "Write the script to a file", "decided_by": "prefilter",
+        })
+        self.assertEqual(ask.effect, "ask")
+        self.assertIn("Safer:", ask.reason)
+        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, ask.reason)
+        self.assertIn(self.hook.NEXT_AFTER_DECLINE, ask.model_context)
+        block = self.hook.reply_outcome({
+            "decision": "block", "rule": "R1-secret-exposure",
+            "reason": "prints a secret", "suggestion": "Do not print a secret", "decided_by": "prefilter",
+        })
+        self.assertEqual(block.effect, "deny")
+        self.assertIn("Safer: Do not print a secret", block.reason)
+        self.assertIn(self.hook.NEXT_AFTER_DECLINE, block.reason)
+        self.assertEqual(block.model_context, block.reason)
+
+    def test_format_guard_why_keeps_a_full_stop_reason_and_the_search_suggestion_apart(self):
+        reason = "`grep` prints every line matching a secret-looking name across many files. Approve only if showing it is acceptable."
+        suggestion = "To find where it is used without printing values: list only the files (`grep -rl NAME .`)."
+        why = self.hook.format_guard_why({"rule": "R1-secret-exposure", "reason": reason, "suggestion": suggestion}, "ask")
+        self.assertEqual(why, "Jev guard [R1-secret-exposure]: " + reason + " Safer: " + suggestion)
+        self.assertNotIn("..", why)
+        self.assertEqual(why.count("Safer:"), 1)
+
 
 class PolicyHook(unittest.TestCase):
     NOTICE = ("Jev policy: a policy gate was not evaluated for this command (the helper is unavailable, the policy file is unusable, or it ran "
@@ -214,6 +248,21 @@ class PolicyHook(unittest.TestCase):
         self.assertEqual((pr[0]["decision"], pr[0]["rule"], pr[0]["decided_by"], pr[0]["enforced"], pr[0]["source"]), ("ask_user", "R1-unreviewed-merge", "jev", True, "server"))
         self.assertRegex(pr[0]["policy_version"], r"^[0-9a-f]{12}$")
         self.assertEqual(len([r for r in e.rows() if r["tool"] == "kit_guard_command"]), 1, "the guard still wrote its own row")
+
+    def test_with_the_local_rules_on_the_policy_path_still_runs_beside_them(self):
+        # local-first guard: the guard half of this command is settled by the local rules (no kit_guard_command call, a client-sourced
+        # prefilter row); the policy half is untouched: one kit_decide call, the class's ask, its own server row
+        log = os.path.join(TMP, "w1-local.log")
+        e = Env([class_doc()], JEV_MCP_URL=url(start_stub(log=log)), STUB_GH="unreviewed", JEV_GUARD_LOCAL=None)
+        p, _ = e.run("gh pr merge 12 --squash")
+        self.assertEqual(decision_of(p), "ask", p.stderr)
+        self.assertIn("Jev policy [pr-merge-gate/R1-unreviewed-merge]", reason_of(p))
+        with open(log) as f:
+            self.assertEqual(len([json.loads(l) for l in f]), 1, "exactly one kit_decide call, and no guard call to log")
+        guard = [r for r in e.rows() if r["tool"] == "kit_guard_command"]
+        self.assertEqual([(r["decided_by"], r["source"], r["server_decision_id"]) for r in guard], [("prefilter", "client", None)])
+        pr = policy_rows(e)
+        self.assertEqual([(r["decision"], r["rule"], r["source"]) for r in pr], [("ask_user", "R1-unreviewed-merge", "server")])
 
     def test_reviewed_merge_passes_silently_in_a_comment_or_a_review(self):
         for state in ("reviewed", "reviewed_in_review"):
@@ -496,6 +545,49 @@ class PolicyNotice(unittest.TestCase):
         e = Env([class_doc()], JEV_MCP_URL=url(start_stub()), STUB_GH="reviewed")
         p, _ = e.run("gh pr merge 12")
         self.assertEqual(p.stdout.strip(), "")
+
+
+class ConcludeAdditionalContext(unittest.TestCase):
+    """When guard+policy both ask, additionalContext must carry the policy reason even if only the guard set model_context."""
+
+    def load_hook(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("jev_guard_hook_ctx", os.path.join(ROOT, "hooks", "jev_guard_hook.py"))
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        return hook
+
+    def conclude_stdout(self, hook, g, p):
+        import contextlib
+        import io
+
+        class Done(object):
+            outcome = p
+            deadline = time.monotonic() + 1
+
+            def join(self, _t):
+                return None
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            hook.conclude(g, Done())
+        return out.getvalue(), err.getvalue()
+
+    def test_both_ask_includes_policy_reason_and_next_step_once(self):
+        hook = self.load_hook()
+        guard_why = "Jev guard [R1]: `cat token` is a bare credential word. Safer: Confirm the path is not a secret."
+        policy_why = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+        g = hook.Outcome("ask", guard_why, model_context="%s %s" % (guard_why, hook.NEXT_AFTER_DECLINE))
+        p = hook.Outcome("ask", policy_why)  # policy path sets reason only, no model_context
+        out, _ = self.conclude_stdout(hook, g, p)
+        hso = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecision"], "ask")
+        self.assertIn(policy_why, hso["permissionDecisionReason"])
+        self.assertIn(guard_why, hso["permissionDecisionReason"])
+        ctx = hso["additionalContext"]
+        self.assertIn(policy_why, ctx, "policy reason must reach the model, not only permissionDecisionReason")
+        self.assertIn(guard_why, ctx)
+        self.assertEqual(ctx.count(hook.NEXT_AFTER_DECLINE), 1)
 
 
 class ConcludeTimeout(unittest.TestCase):

@@ -4,33 +4,28 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { createServer } from "../vendor/server.js";
 import { registerKitTools } from "./kit/tools.mjs";
 import { registerDecideTool } from "./decide/tool.mjs";
+import { handleHealth, tokenOk } from "./health.mjs";
 
 let handler;
 let currentEnv = {};
-const enc = new TextEncoder();
-
-async function sha(s) { return new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s))); }
-async function tokenOk(header, expected) {
-  if (!expected) return false;
-  const given = header && header.startsWith("Bearer ") ? header.slice(7) : "";
-  const [a, b] = await Promise.all([sha(given), sha(expected)]);
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i];
-  return d === 0;
-}
 
 // One factory per request: the 12 upstream tools, the 3 fixed kit tools, then the spec-driven kit_decide.
-function factory() {
+// Exported so server/scripts/gen-tools-doc.mjs generates docs/TOOLS.md through this exact chain: the
+// drift test and the deployed Worker cannot register different tools.
+export function composeServer(env = {}) {
   const server = createServer();
-  registerKitTools(server, () => currentEnv);
-  registerDecideTool(server, () => currentEnv);
+  registerKitTools(server, () => env);
+  registerDecideTool(server, () => env);
   return server;
+}
+function factory() {
+  return composeServer(currentEnv);
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/health") return new Response("ok");
+    if (url.pathname === "/health") return handleHealth(request, env);
     if (url.pathname !== "/mcp") return new Response("Not found", { status: 404 });
     if (!(await tokenOk(request.headers.get("authorization"), env.MCP_BEARER_TOKEN))) {
       return new Response("Unauthorized", { status: 401, headers: { "www-authenticate": "Bearer" } });

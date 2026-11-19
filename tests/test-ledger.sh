@@ -17,11 +17,13 @@ step "hooks: ledger writes, shadow, failures, atomicity (python)" python3 -m uni
 step "guard hook: JEV_GUARD_ASK_AT parsing rejects NaN/Infinity (python)" python3 -m unittest tests/test_guard_ask_at.py
 step "scripts: jev-report / jev-outcome" node --test tests/ledger-report.test.mjs
 step "jev-call: a kit_decide call appends one content-free ledger row (stub curl)" python3 -W ignore -m unittest tests/test_jev_call_ledger.py
+step "local-first guard: rule-decided commands never touch the network, notice, fallbacks (python hook)" python3 -W ignore -m unittest tests/test_local_first.py
 if command -v bun >/dev/null 2>&1; then
   step "omp hook (bun)" bun test tests/ledger-omp.test.ts
   step "omp hook, shadow mode (bun)" bun test tests/ledger-omp-shadow.test.ts
   step "omp hook, stalled ledger write does not delay the verdict (bun)" bun test tests/ledger-omp-stall.test.ts
   step "omp guard sends JEV_GUARD_ASK_AT as ask_at (bun)" bun test tests/guard-omp-ask-at.test.ts
+  step "local-first guard: omp hook, in-process rules, corpus parity (bun)" bun test tests/local-first-omp.test.ts
   step "omp honest hook: size cap, rule-text cleaning, legacy notice, FIFO (bun)" bun test tests/honest-omp.test.ts
 else
   echo "SKIP omp hook tests (bun not on PATH)"
@@ -34,6 +36,18 @@ step "install.sh ships the ledger module, the shadow hook and both scripts, and 
   [ -x $H/.local/bin/jev-report ] && [ -x $H/.local/bin/jev-outcome ] || { echo "scripts not installed"; exit 1; }
   printf "%s\n" "{\"v\":1,\"decision_id\":\"00000000-0000-4000-8000-000000000001\",\"tool\":\"kit_guard_command\",\"decision\":\"allow\",\"decided_by\":\"prefilter\",\"jev\":{\"calls\":0}}" > $H/l.jsonl
   HOME=$H $H/.local/bin/jev-report $H/l.jsonl | grep -q "1 decision(s)" || { echo "installed jev-report failed"; exit 1; }
+  echo ok'
+step "install.sh ships the local rules runner and the rules it loads, and the INSTALLED hook settles a command locally" bash -c '
+  H=$(mktemp -d); trap "rm -rf $H" EXIT
+  HOME=$H bash install.sh --claude >/dev/null || exit 1
+  s=$H/.local/share/honest-jev
+  [ -f $s/hooks/jev-guard-local.mjs ] && [ -f $s/jev-policy/server/src/kit/guard.mjs ] || { echo "local rules not installed"; exit 1; }
+  [ "$(HOME=$H node $s/hooks/jev-guard-local.mjs --check)" = "$s/jev-policy/server/src/kit/guard.mjs" ] || { echo "installed runner did not load the installed rules"; exit 1; }
+  want=$(node hooks/jev-guard-local.mjs --fingerprint)
+  [ -n "$want" ] && [ "$(HOME=$H node $s/hooks/jev-guard-local.mjs --fingerprint)" = "$want" ] || { echo "the installed rules do not have the fingerprint of the checkout (which is what the Worker reports)"; exit 1; }
+  out=$(printf "%s" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat .env\"},\"cwd\":\"/tmp\",\"session_id\":\"t\"}" | env -u JEV_MCP_URL -u JEV_MCP_TOKEN -u JEV_LEDGER -u XDG_STATE_HOME HOME=$H bash $s/hooks/jev-guard-hook.sh)
+  case "$out" in *\"permissionDecision\":*\"deny\"*) ;; *) echo "installed hook did not deny cat .env locally: $out"; exit 1;; esac
+  grep -q "\"decided_by\":\"prefilter\"" $H/.local/state/jev/ledger.jsonl || { echo "no local prefilter row"; exit 1; }
   echo ok'
 step "dispatch shadow config is valid JSON and opt-in only" python3 - <<'PY'
 import json, sys

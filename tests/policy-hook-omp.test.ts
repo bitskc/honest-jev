@@ -63,6 +63,7 @@ const LAYERS = {
 // ---- environment (the hook reads JEV_* at module load, so this precedes the dynamic import) --------------------------
 process.env.JEV_MCP_URL = "https://worker-private.example.workers.dev/mcp";
 process.env.JEV_MCP_TOKEN = "stub-token";
+process.env.JEV_GUARD_LOCAL = "off"; // these tests are about the server path; the local rules are covered by tests/local-first-omp.test.ts
 process.env.JEV_LEDGER = LEDGER;
 process.env.JEV_GUARD_ASK_NO_UI = "block";
 process.env.STUB_GH_ARGV = ARGV_LOG;
@@ -136,6 +137,7 @@ test("unreviewed merge asks: the user is asked once, with a reason naming the cl
   expect(confirms[0].message).toContain("Jev policy [pr-merge-gate/R1-unreviewed-merge]: A pull request merge that has not been gstack reviewed");
   expect(v.block).toBe(true);
   expect(v.reason).toContain("declined by user");
+  expect(v.reason).toContain("Do not run the same command again");
   const d = decides();
   expect(d.length).toBe(1);
   expect(d[0].args.class).toBe("pr-merge-gate");
@@ -164,7 +166,26 @@ test("no UI: the ask blocks with the usual needs-approval text", async () => {
   const v = await run(bash(MERGE), ctx());
   expect(v.block).toBe(true);
   expect(v.reason).toContain("Needs human approval");
+  expect(v.reason).toContain("Do not run the same command again");
+  expect(v.reason).not.toContain("ask the user and retry");
   expect(rows().find((r) => r.label === "no_ui")?.decision_id).toBe(policyRows()[0].decision_id);
+});
+
+test("guard ask with suggestion: confirm shows Safer: route; decline tells the agent not to retry the same command", async () => {
+  process.env.JEV_POLICY_USER = LAYERS.none; // no policy so only the guard speaks
+  guardReply = {
+    decision: "ask",
+    rule: "R1-secret-exposure",
+    reason: "`node` reads its script from stdin; confirm it is intended",
+    suggestion: "Write the script to a file and run it as node path/script.js",
+    decided_by: "prefilter",
+  };
+  const declined = await run(bash("cat x.js | node"), ctx(false));
+  expect(confirms[0].message).toContain("Safer: Write the script to a file");
+  expect(confirms[0].message).not.toContain("Do not run the same command again");
+  expect(declined.reason).toContain("Safer: Write the script to a file");
+  expect(declined.reason).toContain("(declined by user)");
+  expect(declined.reason).toContain("Do not run the same command again");
 });
 
 test("reviewed merge: the class proceeds, nothing is shown", async () => {
@@ -180,7 +201,9 @@ test("guard block + policy proceed: block (the stricter of the two)", async () =
   guardReply = { decision: "block", rule: "R1-secret-exposure", reason: "guard says no", decided_by: "prefilter" };
   decideReply = async () => rpc(PROCEED_REPLY);
   const v = await run(bash(MERGE), ctx(true));
-  expect(v).toEqual({ block: true, reason: "Jev guard [R1-secret-exposure]: guard says no" });
+  expect(v.block).toBe(true);
+  expect(v.reason).toContain("Jev guard [R1-secret-exposure]: guard says no");
+  expect(v.reason).toContain("Do not run the same command again");
   expect(confirms.length).toBe(0);
 });
 
@@ -341,7 +364,9 @@ test("helper missing: the policy path fails open, a ledger row records it, the g
   process.env.JEV_POLICY_HOOK = join(dir, "no-such-helper.mjs");
   guardReply = { decision: "block", rule: "R1", reason: "guard says no", decided_by: "prefilter" };
   const v = await run(bash(MERGE), ctx(true));
-  expect(v).toEqual({ block: true, reason: "Jev guard [R1]: guard says no" });
+  expect(v.block).toBe(true);
+  expect(v.reason).toContain("Jev guard [R1]: guard says no");
+  expect(v.reason).toContain("Do not run the same command again");
   expect(decides().length).toBe(0);
   expect(policyRows()[0]).toMatchObject({ tool: "kit_decide", decision: "allow", decided_by: "fail_open", fail_reason: "client_config" });
   guardReply = ALLOW;

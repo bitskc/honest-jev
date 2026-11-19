@@ -10,13 +10,17 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
     "wrangler": "^4"
   },
   "scripts": {
     "vendor": "sh build-vendor.sh",
+    "gen:tools": "npm run fingerprint && node scripts/gen-tools-doc.mjs",
+    "fingerprint": "node scripts/gen-rules-fingerprint.mjs",
+    "pretest": "npm run fingerprint",
     "test": "node --test \"test/**/*.test.mjs\"",
-    "dev": "npm run vendor && wrangler dev",
-    "deploy": "npm run vendor && wrangler deploy --keep-vars"
+    "dev": "npm run vendor && npm run fingerprint && wrangler dev",
+    "deploy": "npm run vendor && npm run fingerprint && wrangler deploy --keep-vars"
   },
   "license": "MIT"
 }

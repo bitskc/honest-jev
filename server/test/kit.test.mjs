@@ -1608,8 +1608,45 @@ test("round 11 P2-1: dotenv suffix chains block at any depth; .envrc and the nam
     "cat .env", "cat .env.production", "cat .env.production.local", "cat .env.production.local.bak", "cat .env.a.b.c",
     "cat .envrc", "cat .npmrc", "cat ~/.pypirc", "cat service-account.json", "cat terraform.tfstate", "cat .dev.vars",
     "cat ~/.docker/config.json", "cat ~/.kube/config", "cat ~/.config/gh/hosts.yml",
+    "cat ~/.config/jev/env", "grep JEV_MCP_TOKEN ~/.config/jev/env",
   ]) assert.equal((await g(c)).decision, "block", c);
   for (const c of ["cat .env.example", "cat .env.sample", "stat .env", "cp .env.example .env", "rm .env", "echo .env"]) {
+    assert.equal((await g(c)).decision, "allow", c);
+  }
+});
+test("the kit token file blocks; other files in ~/.config/jev do not", async () => {
+  assert.equal((await g("cat ~/.config/jev/env")).decision, "block");
+  assert.equal((await g("echo x >> ~/.config/jev/env")).decision, "block");
+  assert.equal((await g("tee ~/.config/jev/env")).decision, "block");
+  assert.equal((await g("cat ~/.config/jev/policy.json")).decision, "allow");
+});
+test("a write to the kit token file is token exfiltration (R1-secret-exfiltration), not an irreversible overwrite", async () => {
+  for (const c of [
+    "echo URL >> ~/.config/jev/env", "echo URL > $HOME/.config/jev/env", "cp /tmp/u ~/.config/jev/env", "mv /tmp/u ~/.config/jev/env",
+    "install -m600 /tmp/u ~/.config/jev/env", "echo x > ~/.config/jev/../jev/env",
+  ]) {
+    const r = await g(c);
+    assert.equal(r.decision, "block", c);
+    assert.equal(r.rule, "R1-secret-exfiltration", c);
+  }
+  // tee is a reader as well as a writer, so the existing read rule already stops it on any secret path
+  assert.equal((await g("printf x | tee -a ~/.config/jev/env")).decision, "block");
+  // a write is not a read of the secret store: other files under ~/.config/jev stay writable by the rules
+  assert.notEqual((await g("echo x > ~/.config/jev/policy.json")).decision, "block");
+});
+test("dotenv WRITES are ordinary work: they are not the token-file write rule (they behave as on main)", async () => {
+  for (const c of ["cp .env.example .env", "echo X >> .env", "echo X > .env.local", "mv .env.tmp .env", "cp .env.example ~/proj/.env", "install .env.example .env"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "allow", c);
+    assert.notEqual(r.rule, "R7-irreversible", c);
+  }
+});
+test("glob and backup spellings of the kit token file block; the rest of ~/.config/jev does not", async () => {
+  for (const c of [
+    "cat ~/.config/jev/env*", "cat ~/.config/jev/en?", "cat ~/.config/jev/[e]nv", "cat ~/.config/jev/env.*", "cat ~/.c*/jev/env",
+    "cat ~/.config/jev/env.bak", "cat ~/.config/jev/env.old", "grep TOKEN ~/.config/jev/env.bak",
+  ]) assert.equal((await g(c)).decision, "block", c);
+  for (const c of ["cat ~/.config/jev/policy.json", "cat ~/.config/jev/p*", "cat ~/.config/jev/envelope.md", "cat src/jev/env.ts", "ls ~/.config/jev"]) {
     assert.equal((await g(c)).decision, "allow", c);
   }
 });

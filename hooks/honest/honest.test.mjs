@@ -40,12 +40,10 @@ test.afterEach(() => {
   process.chdir(savedCwd);
 });
 
-test("rules: the default PR rule is present with no user or repo files", () => {
+test("rules: no built-in rules ship; the list is empty with no user or repo files", () => {
   freshXdg();
   inRepo(freshRepo(), () => {
-    const list = rt.rules();
-    assert.equal(list.length, 1);
-    assert.equal(list[0].id, "pr-gstack-reviewed");
+    assert.equal(rt.rules().length, 0);
   });
 });
 
@@ -62,11 +60,14 @@ test("rules: layer merge order — user global beats built-in, repo beats user g
 });
 
 test("rules: a disabled entry at a later layer removes an earlier layer's same-id rule", () => {
-  freshXdg();
+  const xdg = freshXdg();
   inRepo(freshRepo(), (repo = process.cwd()) => {
+    fs.mkdirSync(path.join(xdg, "jev"), { recursive: true });
+    fs.writeFileSync(path.join(xdg, "jev", "rules.json"), JSON.stringify([{ id: "migration-prod-safe", when: "w", ask: "a", evidence: "e" }]));
+    assert.ok(rt.rules().some((r) => r.id === "migration-prod-safe"));
     fs.mkdirSync(path.join(repo, ".jev"), { recursive: true });
-    fs.writeFileSync(path.join(repo, ".jev", "rules.json"), JSON.stringify([{ id: "pr-gstack-reviewed", disabled: true }]));
-    assert.equal(rt.rules().find((r) => r.id === "pr-gstack-reviewed"), undefined);
+    fs.writeFileSync(path.join(repo, ".jev", "rules.json"), JSON.stringify([{ id: "migration-prod-safe", disabled: true }]));
+    assert.equal(rt.rules().find((r) => r.id === "migration-prod-safe"), undefined);
   });
 });
 
@@ -82,10 +83,10 @@ test("rules: malformed entries and an unparsable file are skipped, never crash",
     ]));
     const list = rt.rules();
     assert.ok(list.some((r) => r.id === "good-one"));
-    assert.equal(list.length, 2); // the built-in default + good-one; every malformed entry skipped
+    assert.equal(list.length, 1); // good-one only; every malformed entry skipped
     fs.writeFileSync(path.join(xdg, "jev", "rules.json"), "not json at all");
     assert.doesNotThrow(() => rt.rules());
-    assert.equal(rt.rules().length, 1); // falls back to just the built-in default
+    assert.equal(rt.rules().length, 0); // unparsable file contributes nothing; no built-in rules ship
   });
 });
 
@@ -348,4 +349,39 @@ test("repo rules: a newline between words becomes a space, not a join", async ()
   const r = await rulesInChild(repo, home);
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout).find((x) => x.id === "glued-rule").when, "alpha beta gamma");
+});
+
+const EXAMPLE = JSON.parse(fs.readFileSync(path.join(here, "..", "..", "examples", "rules", "migration-prod-safe.json"), "utf8"));
+const MIGRATION_LINE = "- [migration-prod-safe] When describing a database migration as safe: Was it run against a copy of prod data? — Evidence: the command and its output";
+
+test("injection: the opt-in migration example reaches standard and strict instructions once copied to the user layer", () => {
+  const xdg = freshXdg();
+  fs.mkdirSync(path.join(xdg, "jev"), { recursive: true });
+  fs.writeFileSync(path.join(xdg, "jev", "rules.json"), JSON.stringify(EXAMPLE));
+  inRepo(freshRepo(), () => {
+    assert.ok(rt.instructions("standard").includes(MIGRATION_LINE));
+    assert.ok(rt.instructions("strict").includes(MIGRATION_LINE));
+    assert.ok(!rt.instructions("off").includes("- [migration-prod-safe] When"));
+  });
+});
+
+test("injection: the migration line is absent with no rule files, and a repo disabled mask removes it", () => {
+  const xdg = freshXdg();
+  inRepo(freshRepo(), (repo = process.cwd()) => {
+    assert.ok(!rt.instructions("standard").includes("- [migration-prod-safe] When"));
+    fs.mkdirSync(path.join(xdg, "jev"), { recursive: true });
+    fs.writeFileSync(path.join(xdg, "jev", "rules.json"), JSON.stringify(EXAMPLE));
+    assert.ok(rt.instructions("standard").includes(MIGRATION_LINE));
+    fs.mkdirSync(path.join(repo, ".jev"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".jev", "rules.json"), JSON.stringify([{ id: "migration-prod-safe", disabled: true }]));
+    assert.ok(!rt.instructions("standard").includes("- [migration-prod-safe] When"));
+  });
+});
+
+test("parity: the SKILL.md worked example parses to exactly the shipped migration-prod-safe example", () => {
+  assert.equal(EXAMPLE.length, 1);
+  const skill = fs.readFileSync(path.join(here, "..", "..", "skills", "jev-honest", "SKILL.md"), "utf8");
+  const m = skill.match(/rule `(\{"id": "migration-prod-safe"[^`]*\})`/);
+  assert.ok(m, "SKILL.md worked example not found");
+  assert.deepEqual(JSON.parse(m[1]), EXAMPLE[0]);
 });

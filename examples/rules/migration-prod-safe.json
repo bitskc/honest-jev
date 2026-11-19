@@ -1,0 +1,8 @@
+[
+  {
+    "id": "migration-prod-safe",
+    "when": "describing a database migration as safe",
+    "ask": "Was it run against a copy of prod data?",
+    "evidence": "the command and its output"
+  }
+]

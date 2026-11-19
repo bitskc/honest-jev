@@ -78,6 +78,8 @@ const SECRET_PATH_RES = [
   // secret directories: every path under them is a secret, read or exfiltrated (.pub keys stay safe)
   /(^|\/)\.(ssh|aws|gnupg)(\/|$)/,
   /(^|\/)\.config\/gh(\/|$)/,
+  // the kit's own token file (install.sh --save-env), and a backup or copy named after it. Not the rest of ~/.config/jev: policy.json is not a secret.
+  /(^|\/)\.config\/jev\/env(?![A-Za-z0-9])/,
 ];
 const SAFE_PATH_RES = [
   /\.(example|sample|template|dist|md|rst|txt\.example)$/,
@@ -121,6 +123,20 @@ export const R1_SUGGESTION =
   "Do not print a secret. Load it into the environment in the same shell as the command that needs it " +
   "(`set -a; . ./.env; set +a`) and confirm it is present without revealing it " +
   "(`[ -n \"$KEY\" ] && echo 'key loaded'`). If output might contain a key, pipe it through sed to redact it.";
+// Interpreter fed from a pipe / `< file` / `<(...)`: the guard cannot see the script. Tell the agent how to make it visible.
+export const R1_STDIN_SCRIPT_SUGGESTION =
+  "Write the script to a file and run it as `node path/script.js` (or `python path/script.py`), or pass it inline with " +
+  "`node -e '...'` / `python -c '...'`, so the guard can read it. Do not feed the interpreter from a pipe, `< file`, or `<(...)`.";
+// Bare credential word on a content-printing program: may be a store or only a label.
+export const R1_BARE_WORD_SUGGESTION =
+  "If this names a secret file, do not print it; load values with `set -a; . ./file; set +a` and confirm with " +
+  "`[ -n \"$KEY\" ] && echo 'key loaded'`. If it is only a label or test name, confirm and proceed.";
+// A recursive (or find-fed) grep/rg for a secret NAME: the agent wants to know where the name is used, not to load it. Every command named
+// here is itself an allow; actionable-advice.test.mjs pins that. Only the `-l` forms print no values: the others print matching lines, and the
+// text says so (a tracked file can hold a hard-coded or committed secret).
+export const R1_SECRET_SEARCH_SUGGESTION =
+  "Commands that print no values: list the files (`grep -rl NAME .` or `rg -l NAME`). Then read lines only in a file you know is " +
+  "source code (`grep -n NAME src/app.js`); `git grep -n NAME` prints matching lines from tracked files, which can include committed secrets.";
 
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
 const REDIR_SPLIT_RE = /(?<!\d)\d*[<>]+&?/; // (?<!\d): a run of digits is tried from its first digit only (a bare `\d*` start at every digit was quadratic)
@@ -307,7 +323,7 @@ const SECRET_TAILS = [
     ...CRED_EXTS.flatMap((e) => [`${s}credentials.${e}`, ...CRED_BACKUPS.map((b) => `${s}credentials.${e}.${b}`)])]),
 ];
 const SECRET_DIR_NAMES = [".ssh", ".aws", ".gnupg"];
-const SECRET_DIR_FILES = [[".docker", "config.json"], [".kube", "config"], ["etc", "shadow"], ["etc", "gshadow"], ["jev-kit", "env"], ["airlock", "env"]];
+const SECRET_DIR_FILES = [[".docker", "config.json"], [".kube", "config"], ["etc", "shadow"], ["etc", "gshadow"], ["jev-kit", "env"], ["airlock", "env"], ["jev", "env"]];
 const byLength = (names) => {
   const m = new Map();
   for (const n of names) m.set(n.length, [...(m.get(n.length) ?? []), n]);
@@ -532,6 +548,10 @@ function* secretCandidates(tokens, home) {
       // `.env.example/../.env` reads `.env`: a path is judged by what it resolves to (#81), as well as by how it is spelled
       const resolved = /\/\.\.?(?:\/|$)|\/\//.test(c) ? normalizePath(c) : c;
       if (resolved !== c && !isSafePath(resolved)) yield [tok, expand(resolved, home)];
+      // macOS (APFS/HFS+ default) and Windows filesystems are case-insensitive: `cat .ENV`, `cat ~/.SSH/config` and
+      // `cat ID_RSA` open the same file the lowercase spelling names, so the folded spelling is judged as well.
+      const folded = resolved.toLowerCase();
+      if (folded !== resolved && !isSafePath(folded)) yield [tok, expand(folded, home)];
       if (isSafePath(c)) continue;
       yield [tok, expand(c, home)];
     }
@@ -766,6 +786,22 @@ const FIND_PREDICATE_OPTS = new Set(["-name", "-iname", "-path", "-ipath", "-reg
 const FIND_EXEC_OPTS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 const TEST_FILTER_OPTS = new Set(["--grep", "--testNamePattern", "-t", "-k", "-m"]);
 const TEST_PROGS = new Set(["npm", "npx", "pnpm", "yarn", "bun", "bunx", "pytest", "vitest", "jest", "mocha"]);
+// Soft bare-word asks when the program can print/stage/run the operand. Shape matches (`.env`) still
+// block for any program. Case is folded for NON_CONTENT / copiesToTerminal. Capitalized carve-out is a
+// tiny UI-verb *allowlist* (not a binary denylist): on case-insensitive exec FS, `Python3`/`Node`/
+// `Paste` resolve to real binaries, so Cap words outside the allowlist ask — same as unknown lowercase.
+const BARE_WORD_UI_VERBS = new Set(["collect", "confirm", "approve"]);
+function bareWordContextAsks(prog, args = []) {
+  if (!prog) return false;
+  const folded = prog.toLowerCase();
+  // `cp`/`install`/`mv`/`rsync` are NON_CONTENT unless they copy onto a print device (`cp token /dev/stdout`).
+  if (copiesToTerminal(folded, args)) return true;
+  if (NON_CONTENT_PROGS.has(folded) || CREDENTIAL_CONSUMER_PROGS.has(folded)) return false;
+  // Only verified agent/UI verbs that are not known binaries may skip the soft ask (`Collect token`).
+  if (/^[A-Z]/.test(prog) && BARE_WORD_UI_VERBS.has(folded)) return false;
+  // Safe default: ask for Cap interpreters (`Python3`, `Node`), Cap printers (`Paste`), and unknown lowercase.
+  return true;
+}
 const GREP_VALUE_OPTS = new Set(["-A", "-B", "-C", "-m", "-d", "-D", "-g", "-t", "-T", "--include", "--exclude",
   "--exclude-dir", "--max-count", "--label", "--glob", "--type", "--type-not", "--context", "--after-context",
   "--before-context", "--directories", "--devices", "--binary-files", "--exclude-from", "--max-depth", "--threads", "--iglob", "--pre", "--sort", "--sortr"]);
@@ -835,7 +871,7 @@ function pathArgs(prog, args, stdinFed = true) {
 const PRINT_DEVICE_RE = /^\/dev\/(?:stdout|stderr|tty|console|fd\/[12]|pts\/\d+)$|^\/proc\/(?:self|\d+)\/fd\/[12]$/;
 const COPY_PROGS = new Set(["cp", "install", "rsync", "mv"]);
 function copiesToTerminal(prog, args) {
-  if (!COPY_PROGS.has(prog)) return false;
+  if (!COPY_PROGS.has(String(prog).toLowerCase())) return false;
   const operands = args.filter((a) => !a.startsWith("-"));
   return operands.length >= 2 && PRINT_DEVICE_RE.test(normalizePath(operands[operands.length - 1]));
 }
@@ -914,7 +950,8 @@ function grepFlags(prog, args) {
     if (a.length > 1 && a.startsWith("-")) {
       for (let k = 1; k < a.length; k++) {
         const c = a[k];
-        if (c === "q" || c === "c" || c === "l") quiet = true;
+        // `-L` is --files-without-match for grep and ag; for rg it is --follow (symlinks), which still prints lines, so it stays loud there.
+        if (c === "q" || c === "c" || c === "l" || (c === "L" && prog !== "rg")) quiet = true;
         if (c === "r" || c === "R") recursive = true;
         if (!valueShort.includes(c)) continue;
         const rest = a.slice(k + 1);
@@ -1123,7 +1160,7 @@ function interpScriptSecretRead(prog, args, home) {
 function interpBodySecretRead(payload, home) {
   for (const m of payload.matchAll(STRING_LITERAL_RE)) {
     const lit = m[1] ?? m[2] ?? "";
-    if (lit && SECRET_PATH_RES.some((r) => r.test(expand(lit, home)))) return lit;
+    if (lit && SECRET_PATH_RES.some((r) => r.test(expand(lit, home)) || r.test(expand(lit.toLowerCase(), home)))) return lit;
   }
   return null;
 }
@@ -1447,13 +1484,74 @@ function findReads(ctx, args) {
   if (args.some((a) => FIND_READ_OPTS.has(a) || a.startsWith("-files0-from="))) return true;
   return [ctx.command, ...ctx.unwrappedScripts, ...ctx.inputScripts.map((b) => b.body)].some((t) => OUTPUT_ROUTING_RE.test(t));
 }
+// Secret-manager and keychain CLIs whose job is to print a stored secret to stdout. Asking (not blocking) matches how
+// `op read` / `gh auth token` already land, and keeps the capture form (`X=$(vault kv get -field=t kv/app) cmd`, which
+// prints nothing) on the assignment exemption every other reader gets.
+const SECRET_CLI_VALUE_OPTS = new Set(["--profile", "--region", "--output", "-o", "--query", "--project", "--account", "--vault",
+  "--subscription", "--config", "--namespace", "-n", "--context", "-format", "-address", "-namespace", "-mount", "--keychain", "-k"]);
+const PASS_NON_PRINTING = new Set(["ls", "list", "find", "search", "grep", "insert", "add", "edit", "generate", "rm", "remove", "delete",
+  "mv", "rename", "cp", "copy", "git", "init", "help", "version", "otp-uri", "otp-insert"]);
+/** `{why}` when this argv prints a secret held by a secret manager, keychain or credential helper, else null. */
+export function secretCliPrint(prog, args) {
+  const a = args.map(rdUnquote);
+  const pos = cleanPositionals(a, SECRET_CLI_VALUE_OPTS);
+  const has = (...flags) => a.some((t) => flags.includes(t) || flags.some((f) => f.startsWith("--") && t.startsWith(f + "=")));
+  switch (prog) {
+    case "pass": case "gopass": {
+      if (has("-c", "--clip", "-q", "--qr")) return null; // clipboard / QR only: nothing printed
+      if (!pos.length || PASS_NON_PRINTING.has(pos[0])) return null;
+      return `\`${prog} ${pos.slice(0, 2).join(" ")}\` prints a stored password`; // `show`, `otp`, or a bare entry name (pass's default is show)
+    }
+    case "vault":
+      if ((pos[0] === "kv" && pos[1] === "get") || pos[0] === "read") return `\`vault ${pos.slice(0, pos[0] === "kv" ? 2 : 1).join(" ")}\` prints a stored secret`;
+      return null;
+    case "aws":
+      if (pos[0] === "secretsmanager" && pos[1] === "get-secret-value") return "`aws secretsmanager get-secret-value` prints a secret value";
+      if (pos[0] === "ssm" && /^get-parameters?(?:-by-path)?$/.test(pos[1] || "") && has("--with-decryption")) return `\`aws ssm ${pos[1]} --with-decryption\` prints decrypted parameters`;
+      return null;
+    case "gcloud":
+      if (pos[0] === "secrets" && pos[1] === "versions" && pos[2] === "access") return "`gcloud secrets versions access` prints a secret value";
+      return null;
+    case "az":
+      if (pos[0] === "keyvault" && pos[1] === "secret" && (pos[2] === "show" || pos[2] === "download")) return `\`az keyvault secret ${pos[2]}\` prints a secret value`;
+      return null;
+    case "security":
+      if (/^find-(?:generic|internet)-password$/.test(pos[0] || "") && a.some((t) => /^-[A-Za-z]*[wg]/.test(t))) return `\`security ${pos[0]} -w/-g\` prints a keychain password`;
+      if (pos[0] === "dump-keychain" && a.some((t) => /^-[A-Za-z]*d/.test(t))) return "`security dump-keychain -d` prints every keychain secret";
+      return null;
+    case "gpg": case "gpg2":
+      if (has("--export-secret-keys", "--export-secret-subkeys", "--export-secret-key")) return "`gpg --export-secret-keys` exports private key material";
+      return null;
+    case "git":
+      if (pos[0] === "credential" && pos[1] === "fill") return "`git credential fill` prints the stored password for a host";
+      return null;
+    case "op":
+      if (pos[0] === "read" || (pos[0] === "item" && pos[1] === "get" && has("--reveal"))) return `\`op ${pos.slice(0, pos[0] === "read" ? 1 : 2).join(" ")}\` prints a 1Password secret`;
+      return null;
+    case "bw":
+      if (pos[0] === "get" && ["password", "item", "totp", "notes"].includes(pos[1])) return `\`bw get ${pos[1]}\` prints a Bitwarden secret`;
+      return null;
+    case "lpass":
+      if (pos[0] === "show") return "`lpass show` prints a LastPass secret";
+      return null;
+    case "doppler":
+      if (pos[0] === "secrets" && (pos[1] === undefined || pos[1] === "get" || pos[1] === "download")) return `\`doppler secrets${pos[1] ? " " + pos[1] : ""}\` prints secret values`;
+      return null;
+    case "kubectl":
+      if (pos[0] === "get" && /^secrets?$|^secrets?\//.test(pos[1] || "") && a.some((t) => /^(?:-o|--output)(?:=|$)|^-o\S/.test(t))) return "`kubectl get secret -o ...` prints the secret's data";
+      return null;
+    default:
+      return null;
+  }
+}
 function ruleSecret(ctx) {
   const { tool, home } = ctx;
   if (tool === "Read" || tool === "NotebookRead") {
     const fp = ctx.filePath || "";
-    if (fp && !isSafePath(fp)) {
+    if (fp && !isSafePath(fp) && !isSafePath(fp.toLowerCase())) {
       const p = expand(fp, home);
-      if (SECRET_PATH_RES.some((r) => r.test(p))) {
+      // case-insensitive filesystems (macOS, Windows): `.ENV` and `~/.SSH/id_rsa` are the stores their lowercase spelling names
+      if (SECRET_PATH_RES.some((r) => r.test(p) || r.test(p.toLowerCase()))) {
         return { rule: "R1-secret-exposure", severity: "block", reason: `Read of a secret store (${fp}): its contents would land in the transcript`, suggestion: R1_SUGGESTION };
       }
       if (AMBIGUOUS_SECRET_TOKENS.some((t) => p.toLowerCase().includes(t))) {
@@ -1475,7 +1573,7 @@ function ruleSecret(ctx) {
   if (/\b(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl|php|pwsh|powershell)\b/.test(ctx.command) && /[<|]/.test(ctx.command)) {
     stdinFindings = stdinScriptFindings(ctx);
     if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${stdinFindings.leak.prog}\` reads a script from stdin that ${stdinFindings.leak.why}`, suggestion: R1_SUGGESTION };
-    if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${stdinFindings.unseen}\` reads its script from stdin (a pipe, a file or \`<(...)\`), and the guard cannot see what that script does with the environment; confirm it is intended`, suggestion: R1_SUGGESTION };
+    if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${stdinFindings.unseen}\` reads its script from stdin (a pipe, a file or \`<(...)\`), and the guard cannot see what that script does with the environment; confirm it is intended`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
   for (const [si, seg] of secretSegs.entries()) {
     const cwds = ctx.expandedCwds[si] ?? ctx.allCwds;
@@ -1483,6 +1581,11 @@ function ruleSecret(ctx) {
     // find prints names only, but `-exec cat {}` and `find ... | xargs cat` hand the matched files to a content
     // program, so find's own operands are checked on the bare segment.
     const [bareProg, bareArgs] = programOf(seg);
+    {
+      const [cliProg, cliArgs] = resolveCommand(seg);
+      const why = cliProg && secretCliPrint(cliProg, cliArgs);
+      if (why) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `${why}: it would land in the transcript; confirm it is intended`, suggestion: R1_SUGGESTION };
+    }
     // Q6: sourcing a secrets file loads values into the shell; ask (was allow; R1_SUGGESTION still names the safer form).
     if ((bareProg === "source" || bareProg === ".") && bareArgs[0]) {
       const src = secretShapeIn([bareArgs[0]], home, true);
@@ -1533,7 +1636,7 @@ function ruleSecret(ctx) {
     if (prog === null) continue;
     if (["grep", "egrep", "rg", "ag"].includes(prog) && quietGrep(prog, args)) continue;
     if (cwds.some((c) => grepNamesSecret(prog, args, c, ctx.home)) && (grepRecursive(prog, args) || ["xargs", "find", "parallel"].includes(bareProg) || (fed ??= consumerFedListings(ctx)).size > 0)) {
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog}\` searches for a secret name across many files (recursive, or fed by find): matching lines carry their values`, suggestion: R1_SUGGESTION };
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog}\` prints every line matching a secret-looking name across many files (recursive, or fed by find). In a file like .env that line is \`NAME=value\`, so the value would land in the transcript. Approve only if showing it is acceptable.`, suggestion: R1_SECRET_SEARCH_SUGGESTION };
     }
     // openssl writes to -out/-outform's file when given one, not to stdout; a bare invocation (no -out)
     // or `-out -` (openssl's own convention for "write to stdout", not a file literally named "-") both
@@ -1570,8 +1673,11 @@ function ruleSecret(ctx) {
     }
     if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` on a secret store (${store.hit}) would print its contents`, suggestion: R1_SUGGESTION };
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
-    if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))) {
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion: R1_SUGGESTION };
+    // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
+    if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
+      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args))) {
+      const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }
     if (READERS.has(prog)) {
       const amb = ambiguousPathIn(pathArgs(prog, args));
@@ -2388,6 +2494,14 @@ const DEVICE_TOOLS = {
   "mdadm": { destructive: (args) => args.some((a) => ["--create", "-C", "--zero-superblock", "-Z"].includes(a)) },
   "blkdiscard": { destructive: () => true },
 };
+// The hooks take JEV_MCP_URL and JEV_MCP_TOKEN from this one file (#61). A write that changes it can point the token at another host,
+// so the write is blocked as token exfiltration. It is NOT the READ list (SECRET_PATH_RES): `cp .env.example .env` and `echo X >> .env`
+// are ordinary work and stay as they were.
+const KIT_TOKEN_FILE_RE = /(^|\/)\.config\/jev\/env$/;
+function isKitTokenFileTok(a, home) {
+  if (!a || a === "-") return false;
+  return KIT_TOKEN_FILE_RE.test(normalizePath(expand(a, home)));
+}
 function isBlockDeviceTok(a, home) {
   if (a === "-") return false;
   const p = normalizePath(expand(a, home));
@@ -2457,10 +2571,55 @@ function findDeleteReach(args, home, cwds) {
   if (!filtered && !roots.every((r) => r10IsTemp(r.startsWith("~") ? (home || "") + r.slice(1) : r))) return "with no name or type filter deletes everything under its roots";
   return null;
 }
+// git push's options that take a separate value (`-o ci.skip`, `--repo origin`): the value is not a refspec or a flag.
+const GIT_PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
+/** What a `git push` argv (after `push`) does to remote refs. `force` / `mirror` hold the spelling that triggered it.
+ *  Git accepts bundled short flags (`-fu`, `-uf`, `-qf`), a `+` refspec (`+main`, `+HEAD:main`, `'+refs/heads/*:...'`) forces
+ *  that one ref, and `--mirror` / `--prune` force-update or delete remote refs. A bundled `-d` (`-ud`) deletes. */
+function gitPushFlags(args) {
+  const out = { force: null, mirror: null, delete: false };
+  for (let i = 0; i < args.length; i++) {
+    const a = rdUnquote(args[i]);
+    if (a === "--") { for (const r of args.slice(i + 1)) if (rdUnquote(r).startsWith("+")) out.force ??= rdUnquote(r); break; }
+    if (GIT_PUSH_VALUE_OPTS.has(a)) { i++; continue; }
+    if (a === "--force" || a === "--force-if-includes") { out.force ??= a; continue; }
+    if (a === "--mirror" || a === "--prune") { out.mirror ??= a; continue; }
+    if (a.startsWith("--")) continue;
+    if (a.startsWith("-") && a.length > 1) {
+      for (const ch of a.slice(1)) {
+        if (ch === "o") break; // -o takes the rest of the word (or the next word) as its value
+        if (ch === "f") out.force ??= a;
+        if (ch === "d") out.delete = true;
+      }
+      if (a === "-o") i++;
+      continue;
+    }
+    if (a.startsWith("+")) out.force ??= a;
+  }
+  return out;
+}
+/** `git branch -D`, a bundle holding D (`-Dv`) or both d and f (`-df`, `-fd`), or delete with force spelled out. */
+function gitBranchForceDelete(args) {
+  let del = false;
+  let force = false;
+  for (const raw of args) {
+    const a = rdUnquote(raw);
+    if (a === "--") break;
+    if (a === "--delete") del = true;
+    else if (a === "--force") force = true;
+    else if (/^-[A-Za-z]+$/.test(a)) {
+      if (a.includes("D")) return true;
+      if (a.includes("d")) del = true;
+      if (a.includes("f")) force = true;
+    }
+  }
+  return del && force;
+}
 function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
   const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
   const block = (reason) => ({ rule: "R7-irreversible", severity: "block", reason, suggestion: R7_IRREVERSIBLE_SUGGESTION });
+  const tokenFile = (reason) => ({ rule: "R1-secret-exfiltration", severity: "block", reason, suggestion: R1_EXFIL_SUGGESTION });
   for (const [si, seg] of ctx.expandedSegments.entries()) {
     const cwds = ctx.expandedCwds[si];
     const [progRaw] = programOf(seg);
@@ -2473,14 +2632,16 @@ function* destructiveMatches(ctx) {
       if (!args.length) continue;
       const sub = args[0];
       const joined = " " + args.join(" ");
-      if (sub === "push" && /(^|\s)(--force|-f)(\s|$)/.test(joined)) yield m("`git push --force` overwrites published history");
+      const push = sub === "push" ? gitPushFlags(args.slice(1)) : null;
+      if (push && push.force) yield m(`\`git push ${push.force}\` overwrites published history`);
+      if (push && push.mirror) yield m(`\`git push ${push.mirror}\` force-updates and deletes remote refs to match the local repository`);
       if (sub === "reset" && args.includes("--hard")) yield m("`git reset --hard` discards uncommitted work irreversibly");
-      if (sub === "branch" && args.some((a) => a === "-D" || (a === "--delete" && args.includes("--force")))) yield m("`git branch -D` force-deletes a branch");
+      if (sub === "branch" && gitBranchForceDelete(args.slice(1))) yield m("`git branch -D` force-deletes a branch");
       if (sub === "clean" && args.some((a) => a.startsWith("-") && a.includes("f"))) yield m("`git clean -f` deletes untracked files irreversibly");
       if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${sub}\` rewrites history`);
       // push --delete/-d/:ref and --force-with-lease mutate published refs; update-ref -d deletes a ref
       // in place -- same "hard to reverse" tier as the existing push --force/branch -D asks.
-      if (sub === "push" && (/(^|\s)(--delete|-d)(\s|$)/.test(joined) || /--force-with-lease/.test(joined) ||
+      if (sub === "push" && (/(^|\s)(--delete|-d)(\s|$)/.test(joined) || push.delete || /--force-with-lease/.test(joined) ||
           args.slice(1).some((a) => a.startsWith(":")))) {
         yield m("\`git push\` deleting or lease-forcing published refs rewrites shared history");
       }
@@ -2575,12 +2736,15 @@ function* destructiveMatches(ctx) {
     }
     for (const t of writeRedirectTargets(seg)) {
       if (isBlockDeviceTok(t, ctx.home)) yield block(`\`${prog} ... > ${t}\` overwrites a block device`);
+      else if (isKitTokenFileTok(t, ctx.home)) yield tokenFile(`\`${prog} ... > ${t}\` rewrites the kit's token file: the hooks send the token to the URL stored there`);
     }
     if (["tee", "cp", "mv", "install"].includes(prog)) {
       const positional = nonRedirPositionals(args).filter((a) => !a.startsWith("-"));
       const dest = positional[positional.length - 1];
       if (dest && isBlockDeviceTok(dest, ctx.home)) {
         yield block(`\`${prog} ${dest}\` overwrites a block device`);
+      } else if (dest && isKitTokenFileTok(dest, ctx.home)) {
+        yield tokenFile(`\`${prog} ${dest}\` rewrites the kit's token file: the hooks send the token to the URL stored there`);
       }
     }
     if (prog === "shred") {
@@ -2633,11 +2797,42 @@ function* destructiveMatches(ctx) {
       }
     }
   }
+  const sqlDrop = sqlDropViaStdin(ctx.command);
+  if (sqlDrop) yield m(`\`DROP ${sqlDrop.kind}\` fed to \`${sqlDrop.client}\` on stdin deletes data irreversibly`);
   const shellPipe = detectShellPipe(ctx);
   if (shellPipe) yield m(`\`${shellPipe.first} ... | ${shellPipe.target}\` runs a downloaded script unread`);
 
 }
 
+const sqlClientIn = (text) => {
+  for (const seg of splitSegments(text)) {
+    const [p] = resolveCommand(seg);
+    if (p !== null && SQL_CLIENTS.has(p)) return p;
+  }
+  return null;
+};
+/** A DROP DATABASE/SCHEMA/TABLE a SQL client reads on stdin rather than in its own argv: a heredoc (`psql <<EOF`) or
+ *  here-string body on the client's line, or an earlier stage of a pipeline that ends in the client (`echo 'DROP TABLE x' | psql`).
+ *  The in-argv form (`psql -c 'DROP TABLE x'`) is the per-segment check above. Returns {client, kind} or null. */
+function sqlDropViaStdin(command) {
+  if (!command || !/drop/i.test(command)) return null;
+  for (const f of stdinFeeds(command)) {
+    const mm = SQL_DROP_RE.exec(f.body);
+    const client = mm && sqlClientIn(stripHeredocs(f.line));
+    if (client) return { client, kind: mm[1].toUpperCase() };
+  }
+  for (const pipeline of splitPipelines(stripHeredocs(command))) {
+    for (let j = 1; j < pipeline.length; j++) {
+      const [p] = resolveCommand(pipeline[j]);
+      if (p === null || !SQL_CLIENTS.has(p)) continue;
+      for (let i = 0; i < j; i++) {
+        const mm = SQL_DROP_RE.exec(pipeline[i]);
+        if (mm) return { client: p, kind: mm[1].toUpperCase() };
+      }
+    }
+  }
+  return null;
+}
 function ruleDestructive(ctx) {
   // The strictest match wins: an ask raised by an earlier segment (`rm -rf .git`) must not hide a block raised by a later one (`dd of=/dev/sda`).
   let first = null;
@@ -2968,6 +3163,8 @@ function ruleCommitSecret(ctx) {
 
 // ── R10: general risk, the catch-all (prefilter; Jev scores) ─────────────────
 export const R10_SUGGESTION = "Reaches outside the working tree; not blocked. Check it was asked for.";
+export const R10_OPAQUE_SUGGESTION =
+  "Simplify the command (fewer nestings or substitutions) so the guard can analyze it, or confirm with the user that it is intended.";
 export const R10_RISK_LEVELS = [
   "none: read-only, or fully reversible inside the working directory given in `cwd` or a temporary directory. Nothing outside this checkout is changed. Writing a file under cwd, running a container that only reads, listing a database.",
   "low: changes something outside the working directory, but it is recreatable in minutes with no outside consequence: a cache, a scratch container, a local index, a file the tool that wrote it would rebuild.",
@@ -3449,13 +3646,13 @@ async function guardOnceCore(input, deps, failures) {
   let depthBudget = 400000;
   const tooDeep = (text) => { if (depthBudget <= 0) return false; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
   if (!softAsk && SHELL_TOOLS.has(tool) && (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body)))) {
-    softAsk = { rule: "R10-general-risk", reason: `the command nests grouping (parentheses or braces) more than ${MAX_GROUPING_DEPTH} deep, which the guard does not analyze; confirm it is intended`, suggestion: null };
+    softAsk = { rule: "R10-general-risk", reason: `the command nests grouping (parentheses or braces) more than ${MAX_GROUPING_DEPTH} deep, which the guard does not analyze; confirm it is intended`, suggestion: R10_OPAQUE_SUGGESTION };
   }
   // Past these limits the guard stops analyzing inner bodies (see substitutedSegments and processSubBodies), so a command
   // that no rule blocked asks instead of passing.
   if (!softAsk && SHELL_TOOLS.has(tool)) {
-    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `the command holds more than ${MAX_SUBSTITUTIONS} command substitutions, which the guard does not fully analyze; confirm it is intended`, suggestion: null };
-    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "the command nests process substitutions (`<(`, `>(`) too deeply for the guard to analyze every body; confirm it is intended", suggestion: null };
+    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `the command holds more than ${MAX_SUBSTITUTIONS} command substitutions, which the guard does not fully analyze; confirm it is intended`, suggestion: R10_OPAQUE_SUGGESTION };
+    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "the command nests process substitutions (`<(`, `>(`) too deeply for the guard to analyze every body; confirm it is intended", suggestion: R10_OPAQUE_SUGGESTION };
   }
   if (softAsk) {
     out.decision = "ask"; out.score = 0.7;

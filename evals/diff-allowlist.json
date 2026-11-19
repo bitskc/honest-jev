@@ -486,6 +486,61 @@
         "from": "block",
         "to": "allow",
         "justification": "Round 35 (#188): a prefix assignment behind `!` or `time` (`! VAR=/tmp/x rm -rf $VAR`), or inside a heredoc or process-substitution body of its own, was hidden on main by the leading word or the missing body scope; it is read now and the decision equals the unwrapped row (allow). An assignment inside a subshell, group, branch, loop or function never proves a variable safe (it can only make one unsafe), so those forms keep their main decision."
+      },
+      {
+        "ids": [
+          "g285~subst",
+          "g371~subst",
+          "g405~subst",
+          "g434~subst",
+          "g436~subst",
+          "g437~subst",
+          "g459~subst",
+          "g460~subst",
+          "g461~subst",
+          "g462~subst",
+          "g463~subst",
+          "g464~subst",
+          "g465~subst"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 36 bare-word printer gate: main asked on `$(…)` wrappers of already-allow commands because `$()` tokenization fabricated a bare-credential operand (`$(rg token`, `$(git credentials`). The plain rows stay allow; head only soft-asks when the real program is a content printer / test runner / git-curl-sort context, so these wrapper false positives go allow."
+      },
+      {
+        "ids": [
+          "g1226",
+          "g1233",
+          "g1234"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 36c: Capitalized soft-ask carve-out is a tiny UI-verb allowlist (collect/confirm/approve), not a binary denylist. Cap interpreters/printers (Python3/Node/Paste/…) ask. Not an allowlist of those bypasses.",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g1237",
+          "g1241"
+        ],
+        "from": "ask",
+        "to": "allow",
+        "justification": "Round 37: `grep -L` and `ag -L` are --files-without-match(es): they print file names and never a line, so a secret-name search under -L cannot show a value (main already allowed the same search under -l, -c, -q and the long forms; the short -L was the one quiet mode not read). rg's -L is --follow and still asks (g1250). `--exclude` alone does not allow (g1251), a line-printing recursive search still asks (g1246-g1249).",
+        "wrapped": "all"
+      },
+      {
+        "ids": [
+          "g1254",
+          "g1255",
+          "g1256",
+          "g1257",
+          "g1258",
+          "g1259"
+        ],
+        "from": "block",
+        "to": "allow",
+        "justification": "Round 37: `-L` joined `-l`, `-c` and `-q` as a quiet mode, and a quiet grep/ag is not checked against its operands (the `continue` in ruleSecret), so a secret-store operand (`.env`, `~/.ssh/id_rsa`, `~/.aws/credentials`, `credentials.json`) now allows under -L where main blocked it. Files-without-match prints names only, never a line, the same as -l/-c/-q, which main already allows on the same operands (g1260-g1262); the store's content is not read into the transcript. Line-printing forms and rg -L (--follow) still block (g1263-g1264).",
+        "wrapped": "all"
       }
     ]
   },

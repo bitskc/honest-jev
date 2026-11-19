@@ -168,11 +168,11 @@ const rt = require("./honest/jev-honest-runtime.js");
 // ── env isolation, same shape as honest.test.mjs's ISOLATED_ENV_KEYS pattern ──────────────────────────
 const ISOLATED_ENV_KEYS = [
   "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "JEV_HONEST_DEFAULT_LEVEL",
-  "JEV_STOP_GATE", "JEV_MCP_URL", "JEV_MCP_TOKEN", "JEV_GUARD_TIMEOUT", "JEV_GUARD_DEBUG",
+  "HOME", "JEV_STOP_GATE", "JEV_MCP_URL", "JEV_MCP_TOKEN", "JEV_GUARD_TIMEOUT", "JEV_GUARD_DEBUG",
 ];
 let savedEnv;
 // The loop-guard counter lives under $XDG_STATE_HOME: every test gets its own, so no test writes into the real home.
-test.beforeEach(() => { savedEnv = Object.fromEntries(ISOLATED_ENV_KEYS.map((k) => [k, process.env[k]])); process.env.XDG_STATE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "state-")); });
+test.beforeEach(() => { savedEnv = Object.fromEntries(ISOLATED_ENV_KEYS.map((k) => [k, process.env[k]])); process.env.XDG_STATE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "state-")); process.env.HOME = process.env.XDG_STATE_HOME; });
 test.afterEach(() => {
   for (const k of ISOLATED_ENV_KEYS) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
 });

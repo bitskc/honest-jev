@@ -23,6 +23,7 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({ isToolCallEventType: (name: st
 
 process.env.JEV_MCP_URL = "https://worker-private.example.workers.dev/mcp";
 process.env.JEV_MCP_TOKEN = "stub-token";
+process.env.JEV_GUARD_LOCAL = "off"; // these tests are about the server path; the local rules are covered by tests/local-first-omp.test.ts
 process.env.JEV_LEDGER = join(mkdtempSync(join(tmpdir(), "jev-omp-stall-")), "ledger.jsonl");
 delete process.env.JEV_GUARD_MODE;
 globalThis.fetch = (async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ decision: "block", rule: "R1-secret-exposure", reason: "r", decided_by: "prefilter" }) }] } }))) as typeof fetch;

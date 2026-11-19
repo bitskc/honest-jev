@@ -23,3 +23,5 @@ jev-eval-results/
 # snapshot as evidence should summarize pass/fail counts in evals/RESULTS.md and the commit message, not
 # commit the full run output.
 evals/results/
+# generated at build time from server/src/kit by server/scripts/gen-rules-fingerprint.mjs (wrangler build.command, npm pretest/dev/deploy)
+server/src/rules-fingerprint.mjs

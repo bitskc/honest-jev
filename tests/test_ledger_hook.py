@@ -71,7 +71,9 @@ class Env:
 
     def __init__(self, **extra):
         self.home = tempfile.mkdtemp(dir=TMP)
-        self.env = {"PATH": os.environ["PATH"], "HOME": self.home, "SSL_CERT_FILE": CERT, "JEV_MCP_TOKEN": "stub-token", **extra}
+        # JEV_GUARD_LOCAL=off: these tests are about the server path (rule-decided commands would otherwise never reach the stub);
+        # tests/test_local_first.py covers the local rules and passes JEV_GUARD_LOCAL=None to remove the pin.
+        self.env = {"PATH": os.environ["PATH"], "HOME": self.home, "SSL_CERT_FILE": CERT, "JEV_MCP_TOKEN": "stub-token", "JEV_GUARD_LOCAL": "off", **extra}
         self.default_ledger = os.path.join(self.home, ".local", "state", "jev", "ledger.jsonl")
 
     def run(self, hook, stdin, cwd=None, **over):
@@ -500,7 +502,7 @@ hook.main()
     HOOK_BUDGET = 5.0  # config/claude-settings-hook.json "timeout": 5
 
     def _spawn(self, mode):
-        env = {"PATH": os.environ["PATH"], "HOME": TMP}
+        env = {"PATH": os.environ["PATH"], "HOME": TMP, "JEV_GUARD_LOCAL": "off"}  # this class is about the ledger stall, on the server path
         return subprocess.Popen([sys.executable, "-c", self.WRAP, mode, os.path.join(ROOT, "hooks", "jev_guard_hook.py")],
                                 stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)

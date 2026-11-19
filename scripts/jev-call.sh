@@ -10,6 +10,23 @@
 set -u
 [ $# -ge 1 ] || { echo "usage: jev-call <tool> [json-args]" >&2; exit 2; }
 tool="$1"; args="${2:-{\}}"
+# Same reader as install.sh env_get: quoted values only, never executed. Process environment wins.
+if [ -z "${JEV_MCP_URL:-}" ] && [ -z "${JEV_MCP_TOKEN:-}" ]; then
+  _f="${HOME:-}/.config/jev/env"
+  if [ -n "${HOME:-}" ] && [ -f "$_f" ]; then
+    _fill() {
+      local k=$1 line="" v l
+      [ -n "${!k:-}" ] && return 0
+      while IFS= read -r l || [ -n "$l" ]; do case "$l" in "$k="*) line=$l;; esac; done < "$_f"
+      [ -n "$line" ] || return 0
+      v=${line#"$k="}
+      case "$v" in \'*\') v=${v:1:${#v}-2};; *) return 0;; esac
+      printf -v "$k" '%s' "${v//"'\''"/"'"}"
+    }
+    _fill JEV_MCP_URL; _fill JEV_MCP_TOKEN
+  fi
+  unset _f _fill
+fi
 : "${JEV_MCP_TOKEN:?set JEV_MCP_TOKEN (never hardcode it)}"
 url="${JEV_MCP_URL:?set JEV_MCP_URL, e.g. https://<your-worker>.workers.dev/mcp}"
 case "$url" in https://*) ;; *) echo "jev-call: JEV_MCP_URL must be https://" >&2; exit 2;; esac
