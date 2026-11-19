@@ -133,7 +133,7 @@ test("unclear with no server: allowed, one notice per session, and the row names
   expect(await h.call(bash(UNCLEAR))).toBeUndefined();
   expect(await h.call(bash(UNCLEAR))).toBeUndefined();
   expect(notes).toEqual([mod.LOCAL_NOTICE]);
-  expect(mod.LOCAL_NOTICE).toBe("Honest Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.");
+  expect(mod.LOCAL_NOTICE).toBe("Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.");
   await h.startSession();
   await h.call(bash(UNCLEAR));
   expect(notes.length).toBe(2); // a new session hears it once more
@@ -307,7 +307,7 @@ test("parity: every row of evals/guard.jsonl, local verdict == direct guardComma
 });
 
 // ── the local rules could not run (enabled, no reply) and no server answers ──────────────────────────────────────────────────
-const DOWN_NOTICE = "Honest Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
+const DOWN_NOTICE = "Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
 const badRules = (src: string) => { const p = join(mkdtempSync(join(dir, "r-")), "guard.mjs"); writeFileSync(p, src); return p; };
 const NO_SERVER = { JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined };
 
