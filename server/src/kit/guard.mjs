@@ -796,10 +796,14 @@ const BARE_WORD_UI_VERBS = new Set(["collect", "confirm", "approve"]);
 // so (a file literally named `a=b` or `f()` is possible but contrived; a quoted word is kept out of this, see `quotedProg`). Neither can `//` or
 // `./` (a directory: the empty basename) or a `#` comment word. Braces are NOT in the set: brace expansion makes `ca{t,t}` and `{cat,}` the real
 // program `cat`, so a word with braces keeps asking. Its shape matches (`.env`) still block; only the bare-word soft ask is skipped.
-// A command word that starts a substitution (`$(which cat) token`, `` `which cat` token ``) is a runtime-chosen program: it keeps asking.
+// A word with an expansion ANYWHERE in it (`$`, a backtick, `${`, `<(`, `>(`) is a runtime-chosen program and keeps asking, however it is
+// punctuated: `$(which cat) token`, `cat$(true) token` (bash runs `cat token`), `/bin/$(echo cat) token`. A word with a `/` is a path bash runs
+// (`./a=b`), so `=` does not exempt it; `isNotAProgram` is also tried on the word as written (`pathedWord`), since `base()` drops the path.
 // Was the word `prog` (or a path ending in it) written with a quote or backslash anywhere in `seg`? Over-approximate: a quoted argument that equals the program's name counts too, which only makes the caller ask.
 const quotedWord = (seg, prog) => { const w = wordsQ(seg); return !!w.q && [...w.q].some((i) => w.t[i] === prog || base(w.t[i]) === prog); };
-const isNotAProgram = (w) => w === "" || w.startsWith("#") || (!/^[$`]/.test(w) && /[();=]/.test(w));
+const isNotAProgram = (w) => w === "" || w.startsWith("#") || (!/[$`]|[<>]\(/.test(w) && (/[();]/.test(w) || (w.includes("=") && !w.includes("/"))));
+// Some spelling of `prog` in `seg` carries a path or expansion that makes it a real program (`./a=b`, `/a$(b/c)`), though its basename alone looks like source text.
+const pathedWord = (seg, prog) => words(seg).some((t) => t !== prog && base(t) === prog && !isNotAProgram(t));
 // `head` is the segment's own first word, `prog` the command resolved behind it. They differ where the head is junk that the resolver
 // peels past (`// fetch token` resolves to `fetch`): the remainder of such a line still asks when it begins with a real reader
 // (`// cat token`), but not for an unknown word, which is script text rather than a printer.
@@ -1689,7 +1693,7 @@ function ruleSecret(ctx) {
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
     // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
     if (store && !(store.severity === "soft" && /glob too wide/.test(store.why) && isCredentialsGlobReadonly(prog, args))
-      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args, programOf(seg)[0], quotedWord(seg, prog)))) {
+      && !(store.severity === "soft" && /bare credential word/.test(store.why) && !bareWordContextAsks(prog, args, programOf(seg)[0], quotedWord(seg, prog) || pathedWord(seg, prog)))) {
       const suggestion = /bare credential word/.test(store.why || "") ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
       soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
     }

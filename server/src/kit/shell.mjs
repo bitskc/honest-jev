@@ -844,7 +844,8 @@ export function resolveCommand(segment, opts = {}) {
   if (prog0 === null) return [null, []];
   // programOf deliberately stops AT sudo/doas (R5 sees the elevation wrapper); everything else needs
   // the command behind it, so the head goes through one more peel with no stopAt.
-  let toks = peelCommand([prog0, ...args0], { headers: false });
+  // programOf already peeled every real `VAR=val`; an assignment-shaped prog0 is `./a=b` / `/x/a=b` with its path cut off by base(), a program bash runs.
+  let toks = ASSIGN_RE.test(prog0) ? [prog0, ...args0] : peelCommand([prog0, ...args0], { headers: false });
   if (!toks.length) return [null, []];
   let [prog, args] = [base(toks[0]), toks.slice(1)];
   for (let k = 0; k < 4; k++) {
