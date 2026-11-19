@@ -1596,7 +1596,7 @@ const TEST_ONLY_RE = /^\s*(?:\[\[?|test)\s+-[nz]\s+"?\$\{?[A-Za-z_][A-Za-z0-9_]*
 // An inline script or filter that reads the whole environment without a `$`: `process.env`, `os.environ`, `ENVIRON`, `getenv`, `ENV[...]`, `%ENV`.
 const ENV_READ_RE = /\bENV\b|%ENV|\benviron\b|\bENVIRON\b|\bgetenv\b|\bGetenv\b|process\s*[.[]\s*["']?env|Deno\s*\.\s*env/;
 const ENV_NAME_RE = /(?<![-\w.])(?:env|printenv)(?![\w-])/;
-// A real process-spawning call in an inline script: `system(`, `os.system(`, `popen(`, `subprocess`, `child_process`, `spawn(`, `execSync(` / `execFile(` / `execvp(`..., perl/ruby `exec "..."` / `system "..."` / `qx` / `%x`.
+// A real process-spawning call anywhere on the line (an inline script, a recipe, a pipe into an interpreter): `system(`, `os.system(`, `popen(`, `subprocess`, `child_process`, `spawn(`, `execSync(` / `execFile(` / `execvp(`..., perl/ruby `exec "..."` / `system "..."` / `qx` / `%x`.
 // A word that merely starts with `exec` (`execute_dynamic_query`) or Python's `exec(compile(...)` is not a spawn.
 const SPAWN_RE = /\bsystem\s*\(|(?<![\w.])system\s+["']|\bpopen\w*\s*\(|\bos\.(?:system|execute|popen|exec\w*|spawn\w*)\b|\bsubprocess\b|\bchild_process\b|\bspawn\w*\s*\(|\bexec(?:Sync|File\w*|l\w{0,2}|v\w{0,2})\s*\(|(?<![\w.])exec(?:\s+|\s*\()\s*["']|\b(?:shell_exec|passthru|proc_open|Open3)\b|\bqx\b|%x[({[]/;
 /** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `command` = the whole text, `src` = the loaded path (left out of the env-word test). */
@@ -1607,7 +1607,7 @@ function sourceLeaks(segs, command, src) {
     if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "another part of the command expands a variable (`$` or a backtick), which could print or send what was loaded";
     const t = wordsQ(seg).t;
     for (let k = 0; k < t.length; k++) {
-      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPS, BASH_XTRACEFD)";
+      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPTS, BASH_XTRACEFD)";
       const w = base(t[k]);
       const rest = t.slice(k + 1);
       if (w === "trap") return "a `trap` can run a command that prints what was loaded";
@@ -1621,8 +1621,8 @@ function sourceLeaks(segs, command, src) {
       if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
     }
     const [prog, args] = programOf(stripRedirects(seg));
-    // BSD `ps e` / `ps eww` print every process's environment (`ps -ef` is not that `e`)
-    if (prog === "ps" && args.some((a) => /^[A-Za-z]*e[A-Za-z]*$/.test(a) || a === "-E")) return "`ps` with an environment option shows every process's environment";
+    // `e` in any option cluster (`e`, `eww`, `-e`, `-ef`, `-E`): BSD/macOS `ps` prints every process's environment with it (`ps aux` and `ps -A` have no `e`)
+    if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an e option shows every process's environment (BSD and macOS ps)";
     if (["declare", "typeset", "readonly"].includes(prog)) return `\`${prog}\` can list variable values`;
     if (ENV_READ_RE.test(seg)) return "an inline script or filter reads the environment and can print it";
   }
@@ -1630,7 +1630,7 @@ function sourceLeaks(segs, command, src) {
   // and a spawning call (`system(`, `subprocess`, `child_process`...) can run `set` or `export` without any such word
   const text = command.split(src).join(" ");
   if (ENV_NAME_RE.test(text)) return "the line has a bare `env` or `printenv` word, which can print the whole environment (as an argument to xargs, gdb, find -exec, npm run, jq, an interpreter, ...)";
-  if (SPAWN_RE.test(text)) return "an inline script or recipe on the line spawns a process, which can print the environment";
+  if (SPAWN_RE.test(text)) return "the line has a process-spawning call (system(, subprocess, child_process, ...), which can print the environment";
   return null;
 }
 function ruleSecret(ctx) {

@@ -106,9 +106,9 @@ test("Q6: the branches that stop a dumper with no $ and no env word (each leaks 
   for (const t of [
     "trap set EXIT", "trap export EXIT", "script -qc set /dev/null", "script -qc export /dev/null", "npx sh -c set", "npx -c export", "npm exec -- bash -c export", "npm x -- sh -c set",
     "awk 'BEGIN{system(\"set\")}'", "python3 -c 'import os; os.system(\"export\")'", "node -e 'require(\"child_process\").execSync(\"set\",{stdio:\"inherit\"})'",
-    "export -n", "make -p -f /dev/null", "ps e", "ps eww", "strace -v -e execve /bin/true",
+    "export -n", "make -p -f /dev/null", "ps e", "ps eww", "ps -e", "ps -ef", "ps -E", "ps aux e", "strace -v -e execve /bin/true",
   ]) assert.notEqual((await g(L + t)).decision, "allow", t);
-  for (const t of ["ps aux", "ps -ef", "npx tsx script.ts"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
+  for (const t of ["ps aux", "ps -A", "ps -p 1 -o pid,comm", "npx tsx script.ts"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
 });
 
 test("Q6: only the exact confirm test keeps a $ allowed; a test inside a larger command, or with another operand, asks", async () => {

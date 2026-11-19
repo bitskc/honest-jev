@@ -1616,4 +1616,8 @@
 {"id":"g1587","expected":"ask","why":"cleanup of PR 110: node execSync(\"set\") spawns a shell (real bash: leaks).","input":{"command":"set -a; . ./.env; set +a; node -e 'require(\"child_process\").execSync(\"set\",{stdio:\"inherit\"})'","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1588","expected":"ask","why":"cleanup of PR 110: ps e prints process environments.","input":{"command":"set -a; . ./.env; set +a; ps e","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1589","expected":"allow","why":"cleanup of PR 110: control: ps aux lists processes without their environment.","input":{"command":". ./.env; ps aux","cwd":"/home/u/proj","home":"/home/u"}}
-{"id":"g1590","expected":"allow","why":"cleanup of PR 110: control: ps -ef lists processes without their environment (its e is not the BSD e).","input":{"command":". ./.env; ps -ef","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1590","expected":"allow","why":"cleanup of PR 110: control: ps -A lists processes without their environment (no e option).","input":{"command":". ./.env; ps -A","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1591","expected":"ask","why":"cleanup of PR 110: BSD/macOS ps -e prints every process environment.","input":{"command":"set -a; . ./.env; set +a; ps -e","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1592","expected":"ask","why":"cleanup of PR 110: BSD/macOS ps -ef prints every process environment.","input":{"command":"set -a; . ./.env; set +a; ps -ef","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1593","expected":"ask","why":"cleanup of PR 110: ps -E prints every process environment.","input":{"command":"set -a; . ./.env; set +a; ps -E","cwd":"/home/u/proj","home":"/home/u"}}
+{"id":"g1594","expected":"ask","why":"cleanup of PR 110: ps eww prints every process environment.","input":{"command":"set -a; . ./.env; set +a; ps eww","cwd":"/home/u/proj","home":"/home/u"}}
