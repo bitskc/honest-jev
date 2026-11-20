@@ -599,6 +599,14 @@ class ConcludeAdditionalContext(unittest.TestCase):
         hso = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(hso["permissionDecisionReason"], self.POLICY)
 
+    def test_a_policy_only_deny_keeps_its_own_1500_char_cap_not_the_prompt_cap(self):
+        hook = self.load_hook()
+        long_reason = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: " + "x" * 3000
+        out, _ = self.conclude_stdout(hook, hook.Outcome("allow"), hook.Outcome("deny", long_reason))
+        reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertEqual(reason, long_reason[:1500])
+        self.assertGreater(len(reason), hook.MESSAGE_CAP, "a policy's own deny is not cut at the prompt cap")
+
 
 class ConcludeTimeout(unittest.TestCase):
     """The policy thread that does not finish inside its deadline (defence in depth; the helper and the Worker call have their own

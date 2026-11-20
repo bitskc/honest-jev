@@ -141,13 +141,16 @@ export const clip = (v, n = 20) => { const t = String(v ?? "").replace(/\s+/g, "
 /** A variable name in a prompt: the head is kept (SUPABASE_SERVICE_ROLE_KEY says what it is; its tail does not), at most 32 chars. */
 export const clipName = (v, n = 32) => { const t = String(v ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 /** A network destination in a prompt (a URL, `user@host:path`, `host:path`): the host is kept WHOLE, however long, because it is what a person
- *  consents to; only the path is clipped (to `n`, tail kept), and a URL's query, fragment and password are dropped. Anything else is a plain clip. */
+ *  consents to; only the path is clipped (to `n`, tail kept). A URL keeps its scheme (`https://` and `http://`, `s3://` and `gs://` are different
+ *  consents) and loses everything that is not host or path: its userinfo (the part before the LAST `@` of the authority: a password or a token used
+ *  as a user name), query and fragment. `user@host:path` is scp/rsync/ssh syntax, where the user is a login name, so it is kept. Anything else
+ *  is a plain clip. */
 export const clipDest = (v, n = 20) => {
   const t = String(v ?? "").replace(/\s+/g, " ").trim();
   const tail = (p) => (p.length > n ? `…${p.slice(p.length - (n - 1))}` : p);
-  const url = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/i.exec(t);
-  if (url) return `${url[1].replace(/^([^@:]*)(?::[^@]*)?@/, "$1@")}${url[2] === "/" ? "" : tail(url[2])}`;
-  const m = /^(\[[^\]]*\]|[^/:\s]+):(.*)$/.exec(t);
+  const url = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)([^?#]*)/i.exec(t);
+  if (url) return `${url[1]}${url[2].slice(url[2].lastIndexOf("@") + 1)}${url[3] === "/" ? "" : tail(url[3])}`;
+  const m = /^((?:[^/:\s@]*@)?\[[^\]]*\]|[^/:\s]+):(.*)$/.exec(t);
   return m ? `${m[1]}:${tail(m[2])}` : clip(t, n);
 };
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
@@ -2041,7 +2044,7 @@ function ruleSecretExfil(ctx) {
         const recursive = args.some((a) => a === "--recursive" || a === "--archive" || /^-[A-Za-z]*[rRa]/.test(a) && !a.startsWith("--"));
         const cwds = ctx.expandedCwds[si] ?? ctx.allCwds;
         const bulk = recursive && positionals.slice(0, -1).find((src) => !isRemoteTarget(src) && cwds.some((c) => isBroadRoot(src.replace(/\/\*$/, "") || "/", c, ctx.home)));
-        if (bulk) soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `\`${clip(prog, 8)}\` copies \`${clip(bulk)}\` to \`${clipDest(dest)}\`, secret files included.`, suggestion: R1_EXFIL_SUGGESTION };
+        if (bulk) soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `\`${clip(prog, 8)}\` copies \`${clip(bulk)}\` to \`${clipDest(dest)}\`, secret files too.`, suggestion: R1_EXFIL_SUGGESTION };
       }
     }
     if (CLOUD_CP_PROGS.has(prog)) {
