@@ -911,9 +911,10 @@ const checkVerb = (command) => {
 // Default size of the evidence block: a real cap, so a long session cannot produce an unbounded block `reason`.
 const EVIDENCE_CAP = 8000;
 // The block reason embeds the evidence at this smaller budget (REASON_CAP bounds the whole reason).
-const REASON_EVIDENCE_BUDGET = 4500;
-const REASON_CAP = 8000;
-const MAX_OFFENDING_LINES = 8;
+const REASON_EVIDENCE_BUDGET = 1500;
+const REASON_CAP = 2500;
+const MAX_OFFENDING_LINES = 3;
+const REASON_CLAIM_CHARS = 120;
 const capText = (s, max) => (s.length > max ? `${s.slice(0, max - 22)}\n…[reason truncated]` : s);
 // The index of one transcript's runs, built once per evidence object: the priority order, the check line and a memo of
 // each run's rendered line. Each jev_classify item (up to one per claim) then only runs the budgeted fill, which stops at
@@ -1412,15 +1413,15 @@ async function decideInner(hookInput, { fetchImpl } = {}) {
   const reasons = [];
   if (rejections.length) {
     reasons.push(
-      'VERIFY GATE ERROR: the verify server rejected the request (' + rejections.join('; ') + '). The gate could not judge this turn; the payload must be fixed for the server to accept it.'
+      'Stop gate · VERIFY · error: server rejected the request (' + capLine(rejections.join('; '), 160) + '); the gate could not judge this turn.'
     );
   }
 
   if (verifyBlocked) {
-    reasons.push(
-      'VERIFY: kit_verify_done says this is not verified: ' + (verdict.reason || 'no reason given') +
-      "\nRun the project's real checks (tests/build/lint) on what changed, fix what fails, then send your real result — do not just reword the previous message."
-    );
+    // The server's `reason` is the Why and its `next` the step (an older server sends one long reason and no step: it is cut to one line).
+    const why = capLine(String(verdict.reason || 'no reason given').replace(/\s+/g, ' '), 200);
+    const step = typeof verdict.next === 'string' && verdict.next.trim() ? verdict.next.trim() : "run the project's real checks, fix failures, report the real result; if none can run, say so.";
+    reasons.push(`Stop gate · VERIFY · block: ${why}\nNext: ${step} Don't just reword.`);
   }
 
   if (wantsHonest && claims.length) {
@@ -1447,13 +1448,14 @@ async function decideInner(hookInput, { fetchImpl } = {}) {
           const review = classifyResult.results.filter((r) => r.decision === 'review' && !offending.includes(r));
           // Claim text is redacted (it is quoted back into the block `reason`, which re-enters the transcript) and each line
           // is cut; only the first MAX_OFFENDING_LINES are listed, so the reason stays small however long the message is.
-          const claimText = (id) => { const m = /^c(\d+)$/.exec(String(id)); return m && claims[Number(m[1])] !== undefined ? capLine(redact(claims[Number(m[1])]), 300) : '(claim text unavailable)'; };
-          const offendingLines = offending.slice(0, MAX_OFFENDING_LINES).map((r) => `- "${claimText(r.id)}" — classified ${r.classification} (${Math.round((r.top_probability || 0) * 100)}%)`);
-          if (offending.length > MAX_OFFENDING_LINES) offendingLines.push(`- … ${offending.length - MAX_OFFENDING_LINES} more offending claims`);
-          let text = `HONEST: ${offending.length} claim${offending.length === 1 ? '' : 's'} in your message ${offending.length === 1 ? 'does' : 'do'} not match the session's own tool log:\n` +
-            offendingLines.join('\n') + `\n\nWhat the tool log actually shows:\n${evidenceText(ev, REASON_EVIDENCE_BUDGET)}` +
-            '\n\nRewrite those lines to match the evidence above, or run the check they assert, before sending this message.';
-          if (review.length) text += `\n\n(${review.length} more claim${review.length === 1 ? '' : 's'} were a thin margin and could not be confirmed either way; not blocking on those alone.)`;
+          const claimText = (id) => { const m = /^c(\d+)$/.exec(String(id)); return m && claims[Number(m[1])] !== undefined ? capLine(redact(claims[Number(m[1])]), REASON_CLAIM_CHARS) : '(claim text unavailable)'; };
+          const offendingLines = offending.slice(0, MAX_OFFENDING_LINES).map((r) => `- "${claimText(r.id)}" — ${r.classification} ${Math.round((r.top_probability || 0) * 100)}%`);
+          if (offending.length > MAX_OFFENDING_LINES) offendingLines.push(`- … ${offending.length - MAX_OFFENDING_LINES} more`);
+          // Line 1 carries the why (a Claude Code Stop block may show only its first line); the Log is the session's own evidence at the small reason budget.
+          let text = `Stop gate · HONEST · block: ${offending.length} claim${offending.length === 1 ? '' : 's'} contradict${offending.length === 1 ? 's' : ''} the tool log:\n` +
+            offendingLines.join('\n') + `\nLog:\n${evidenceText(ev, REASON_EVIDENCE_BUDGET)}` +
+            '\nNext: fix those lines to match the log, or run the check they claim.';
+          if (review.length) text += `\n(${review.length} more: thin margin, not blocking.)`;
           reasons.push(text);
         }
       }

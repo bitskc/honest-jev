@@ -273,8 +273,55 @@ test("verify gate: false completion claim -> block", async () => {
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "Fixed, all tests pass." }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /VERIFY:.*not verified/s);
+  assert.match(out.reason, /Stop gate · VERIFY · block: .*\nNext: /s);
   assert.equal(calls.length, 1);
+});
+
+test("verify block: line 1 is `Stop gate · VERIFY · block: <Why>`, the server's step follows as Next, nothing else", async () => {
+  fresh(); setBaseEnv({ gate: "verify" });
+  const { fetchImpl } = stubFetch(() => ({
+    verified: false, verdict: "unverified", action: "block", answers: { discloses_unverified: 0 },
+    reason: "reports done after 1 file change with no test, build, or lint run since the last change.",
+    next: "run the project's tests/build/lint, then report the real result; if none can run, say so.",
+  }));
+  const out = await stopGate.decide({ transcript_path: writeTranscript(editedOneFile()), last_assistant_message: "Fixed, all tests pass." }, { fetchImpl });
+  assert.equal(out.reason, "Stop gate · VERIFY · block: reports done after 1 file change with no test, build, or lint run since the last change.\nNext: run the project's tests/build/lint, then report the real result; if none can run, say so. Don't just reword.");
+});
+
+test("verify block from an older server (one long reason, no `next`): one line of Why and the default Next", async () => {
+  fresh(); setBaseEnv({ gate: "verify" });
+  const { fetchImpl } = stubFetch(() => ({ verified: false, verdict: "unverified", action: "block", false_claim: true, reason: `reports completion (0.95) after 1 file change with no test run. ${"Run the project's tests. ".repeat(40)}` }));
+  const out = await stopGate.decide({ transcript_path: writeTranscript(editedOneFile()), last_assistant_message: "Fixed, all tests pass." }, { fetchImpl });
+  const [line1, next, ...rest] = out.reason.split("\n");
+  assert.ok(line1.startsWith("Stop gate · VERIFY · block: reports completion (0.95)") && line1.length <= 230, line1);
+  assert.match(next, /^Next: run the project's real checks, fix failures, report the real result; if none can run, say so\. Don't just reword\.$/);
+  assert.deepEqual(rest, []);
+});
+
+test("honest block: line 1 carries the why, at most 3 claims of at most 120 chars, a 1500-char log, one Next; the whole reason is within 2500", async () => {
+  fresh(); setBaseEnv({ gate: "honest" });
+  const claims = Array.from({ length: 6 }, (_, i) => `Claim number ${i} says everything works and every single test passes after the change ${"and more words ".repeat(20)}`);
+  const { fetchImpl } = stubFetch((name, args) => (name === "kit_verify_done"
+    ? { verified: true, verdict: "verified", action: "allow", reason: "a check passed" }
+    : { results: args.items.map((it) => ({ id: it.id, classification: "misrepresented", top_probability: 0.9, decision: "auto" })) }));
+  const lines = [userPrompt("Fix the bug."), assistantToolUse("t1", "Edit", { file_path: "src/a.js" }), toolResult("t1", "ok")];
+  for (let i = 0; i < 60; i++) { lines.push(assistantToolUse(`n${i}`, "Bash", { command: `echo step ${i} ${"x".repeat(200)}` }), toolResult(`n${i}`, `step ${i}`)); }
+  lines.push(assistantToolUse("tf", "Bash", { command: "npm test" }), toolResult("tf", "1 passed, 2 failed", false));
+  const out = await stopGate.decide({ transcript_path: writeTranscript(lines), last_assistant_message: claims.join("\n\n") }, { fetchImpl });
+  assert.ok(out && out.decision === "block");
+  const all = out.reason.split("\n");
+  const n = Number(/block: (\d+) claims contradict the tool log:$/.exec(all[0])?.[1]);
+  assert.ok(n > 3, `expected more than 3 offending claims, got ${all[0]}`);
+  const claimLines = all.slice(1, all.indexOf("Log:")).filter((l) => l.startsWith("- "));
+  assert.equal(claimLines.length, 4, "three claims and the '… N more' line");
+  assert.equal(claimLines[3], `- … ${n - 3} more`);
+  for (const l of claimLines.slice(0, 3)) assert.ok(l.length <= 120 + 30, l);
+  assert.equal(all.filter((l) => l.startsWith("Next: ")).length, 1);
+  assert.equal(all.at(-1), "Next: fix those lines to match the log, or run the check they claim.");
+  const log = out.reason.slice(out.reason.indexOf("\nLog:\n") + 6, out.reason.lastIndexOf("\nNext: "));
+  assert.ok(log.length <= 1500, `log ${log.length}`);
+  assert.ok(out.reason.length <= 2500, `reason ${out.reason.length}`);
+  assert.match(out.reason, /npm test.*failed/s, "the failing check is the first thing kept in the log");
 });
 
 test("verify gate: an honest disclosure is allowed through once the server itself doesn't flag it (e.g. a disclosed_unverified verdict)", async () => {
@@ -423,7 +470,7 @@ test("honest gate: a claim classified misrepresented at decision auto -> block, 
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "All tests pass now." }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /HONEST:.*misrepresented/s);
+  assert.match(out.reason, /Stop gate · HONEST · block.*misrepresented/s);
   assert.match(out.reason, /npm test/); // the real tool-log evidence is quoted back, not the agent's own claim
 });
 
@@ -503,7 +550,7 @@ test("honest gate: 'unverifiable' blocks by default once more (restored breadth)
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "Fixed the null check in the token refresh path. All tests pass." }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /HONEST:.*unverifiable/s);
+  assert.match(out.reason, /Stop gate · HONEST · block.*unverifiable/s);
 });
 
 test("honest gate: a gameable-sounding overclaim ('I verified everything manually') still blocks via kit_verify_done's own, always-reported verdict, even when jev_classify alone calls it 'hedged' (NEW server: 'unverified' alone is safe to block on there)", async () => {
@@ -533,8 +580,8 @@ test("honest gate: a gameable-sounding overclaim ('I verified everything manuall
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: msg }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /VERIFY:/);
-  assert.doesNotMatch(out.reason, /HONEST:/); // classify alone called it hedged, never blocking on its own
+  assert.match(out.reason, /Stop gate · VERIFY · block/);
+  assert.doesNotMatch(out.reason, /Stop gate · HONEST/); // classify alone called it hedged, never blocking on its own
 });
 
 test("honest gate: a heading-formatted false claim now blocks end to end, not just at extraction (the original P0-2 repro, through the full restored-breadth decision rule)", async () => {
@@ -552,7 +599,7 @@ test("honest gate: a heading-formatted false claim now blocks end to end, not ju
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "## Done: all tests pass, ready to merge" }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /HONEST:/);
+  assert.match(out.reason, /Stop gate · HONEST · block/);
 });
 
 test("honest gate, OLD server (no discloses_unverified field at all): 'unverifiable' blocks only when kit_verify_done's own verdict corroborates it", async () => {
@@ -570,8 +617,8 @@ test("honest gate, OLD server (no discloses_unverified field at all): 'unverifia
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "Fixed, all tests pass." }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /VERIFY:/);
-  assert.match(out.reason, /HONEST:.*unverifiable/s); // corroborated by the verify verdict, so it blocks too
+  assert.match(out.reason, /Stop gate · VERIFY · block/);
+  assert.match(out.reason, /Stop gate · HONEST · block.*unverifiable/s); // corroborated by the verify verdict, so it blocks too
 });
 
 test("honest gate, OLD server: 'unverifiable' does NOT block alone when kit_verify_done does not corroborate (avoids re-blocking a genuine disclosure the old server can't specifically recognise)", async () => {
@@ -602,7 +649,7 @@ test("honest gate, OLD server: 'misrepresented' still blocks unconditionally reg
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "All tests pass now." }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /HONEST:.*misrepresented/s);
+  assert.match(out.reason, /Stop gate · HONEST · block.*misrepresented/s);
 });
 
 test("gate both: runs verify and honest; either alone can block", async () => {
@@ -618,8 +665,8 @@ test("gate both: runs verify and honest; either alone can block", async () => {
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "All tests pass." }, { fetchImpl });
   assert.ok(out);
   assert.equal(out.decision, "block");
-  assert.match(out.reason, /HONEST:/); // verify passed (no VERIFY: section); honest still blocks
-  assert.doesNotMatch(out.reason, /VERIFY:/);
+  assert.match(out.reason, /Stop gate · HONEST · block/); // verify passed (no VERIFY section); honest still blocks
+  assert.doesNotMatch(out.reason, /Stop gate · VERIFY/);
   assert.equal(calls.length, 2);
 });
 
@@ -1226,7 +1273,7 @@ test("P2-A S1 through decide() on the server path: a failing `npm test`, then 40
   const items = calls.filter((c) => c.name === "jev_classify").flatMap((c) => c.arguments.items);
   assert.ok(items.some((i) => /`npm test` -> failed/.test(i.text)), "the failing run must reach the classifier after 40 noise commands");
   assert.ok(out && out.decision === "block", `expected block, got ${JSON.stringify(out)}`);
-  assert.match(out.reason, /HONEST:.*misrepresented/s);
+  assert.match(out.reason, /Stop gate · HONEST · block.*misrepresented/s);
 });
 test("P2-B S2 through decide() on the server path: a failing `npm test`, then 30 investigation commands, then an honest 'still fails' claim is ALLOWED", async () => {
   fresh(); setBaseEnv({ gate: "honest" });
@@ -1244,7 +1291,7 @@ test("P2 chain through decide(): `npm test ; echo done` with a clean-looking 'Er
   const transcript = writeTranscript([userPrompt("Fix the parser."), assistantToolUse("e1", "Edit", { file_path: "src/parser.js" }), toolResult("e1", "ok"), assistantToolUse("t1", "Bash", { command: "npm test ; echo done" }), toolResult("t1", "Error: boom")]);
   const out = await stopGate.decide({ transcript_path: transcript, last_assistant_message: "All tests pass." }, { fetchImpl });
   assert.ok(out && out.decision === "block", `a chained trailing command must not verify: ${JSON.stringify(out)}`);
-  assert.match(out.reason, /VERIFY:/);
+  assert.match(out.reason, /Stop gate · VERIFY · block/);
 });
 test("P2 chain control through decide(): a clean `npm test` with no trailing command still verifies", async () => {
   fresh(); setBaseEnv({ gate: "verify" });
@@ -1463,7 +1510,7 @@ test("#44: a 4xx from kit_verify_done blocks with the server's message instead o
   const fetchImpl = async () => ({ ok: false, status: 422, text: async () => "checks[0].command: too long" });
   const out = await stopGate.decide({ transcript_path: writeTranscript(editedOneFile()), last_assistant_message: "Fixed, all tests pass." }, { fetchImpl });
   assert.ok(out && out.decision === "block", "expected a block");
-  assert.match(out.reason, /VERIFY GATE ERROR/);
+  assert.match(out.reason, /Stop gate · VERIFY · error/);
   assert.match(out.reason, /HTTP 422/);
   assert.match(out.reason, /too long/);
 });
@@ -1473,7 +1520,7 @@ test("#44: a JSON-RPC error from kit_verify_done blocks with the server's messag
   const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "Invalid params" } }) });
   const out = await stopGate.decide({ transcript_path: writeTranscript(editedOneFile()), last_assistant_message: "Fixed, all tests pass." }, { fetchImpl });
   assert.ok(out && out.decision === "block", "expected a block");
-  assert.match(out.reason, /VERIFY GATE ERROR/);
+  assert.match(out.reason, /Stop gate · VERIFY · error/);
   assert.match(out.reason, /Invalid params/);
 });
 
@@ -1560,7 +1607,7 @@ test("F1: a >2000-char NON-check command is not sent at all, and the gate still 
   assert.deepEqual(sentChecks(calls), []);
   acceptedByOldSchema(calls);
   assert.ok(out && out.decision === "block", `a long git commit must not verify: ${JSON.stringify(out)}`);
-  assert.match(out.reason, /VERIFY:/);
+  assert.match(out.reason, /Stop gate · VERIFY · block/);
 });
 test("F1: a >2000-char non-check whose kept head text contains a check verb is never sent", skipNoZod, async () => {
   const { out, calls } = await verifyOut(editThen([`git commit -m "npm test ${"x".repeat(2500)}"`, "[main abc1234] msg"]));
@@ -1747,9 +1794,9 @@ test("F3: 2000 non-check Bash calls decide in linear time, with a capped evidenc
   const t0 = Date.now();
   const out = await stopGate.decide({ transcript_path: writeTranscript(lines), last_assistant_message: "Done, all tests pass." }, { fetchImpl });
   const ms = Date.now() - t0;
-  assert.ok(out && out.decision === "block" && /HONEST:/.test(out.reason));
+  assert.ok(out && out.decision === "block" && /Stop gate · HONEST · block/.test(out.reason));
   assert.ok(ms < 3000, `decide() took ${ms}ms for 2000 calls (quadratic evidence fill timed out the hook at 10s)`);
-  assert.ok(out.reason.length <= 8000, `reason length ${out.reason.length}`);
+  assert.ok(out.reason.length <= 2500, `reason length ${out.reason.length}`);
   const ev = stopGate.parseForHonest(lines);
   assert.ok(stopGate.evidenceText(ev).length <= 8000, "default evidence budget is a real cap");
   assert.ok(/commands omitted/.test(stopGate.evidenceText(ev)));
@@ -1862,7 +1909,7 @@ test("F10: the decision is flushed before the process exits, and the block reaso
   const longClaims = Array.from({ length: 200 }, (_, i) => `All tests pass for module ${i}. ${"padding ".repeat(60)}`).join("\n");
   const { fetchImpl } = stubFetch((name, args) => (name === "kit_verify_done" ? { verified: false, verdict: "unverified", action: "block", reason: "R".repeat(50000), answers: { discloses_unverified: 0 } } : { results: args.items.map((it) => ({ id: it.id, classification: "misrepresented", top_probability: 0.9, decision: "auto" })) }));
   const res = await stopGate.decide({ transcript_path: writeTranscript(editThen(["npm test", "  1 failing", true])), last_assistant_message: longClaims }, { fetchImpl });
-  assert.ok(res && res.reason.length <= 8000, `reason ${res && res.reason.length}`);
+  assert.ok(res && res.reason.length <= 2500, `reason ${res && res.reason.length}`);
 });
 test("F11: the loop-guard state lives in a per-user 0700 directory, never in the shared tmp dir; symlinks are refused", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "home-"));
