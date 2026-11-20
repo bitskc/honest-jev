@@ -20,6 +20,6 @@ process.stdin.on('end', () => {
       return;
     }
     rt.setLevel(level);
-    rt.emit('UserPromptSubmit', 'HONEST JEV LEVEL CHANGED — level: ' + level + '. Confirm in one line ("Honest Jev → ' + level + '") and apply it from this reply on.\n\n' + rt.instructions(level));
+    rt.emit('UserPromptSubmit', 'HONEST JEV LEVEL CHANGED — level: ' + level + '. Confirm in one line; applies from this reply.\n\n' + rt.instructions(level));
   } catch { /* malformed stdin: silent */ }
 });

@@ -255,9 +255,13 @@ function parseCommand(prompt) {
 
 // Inject the SKILL.md body with the level table filtered to the active level — the skill file is the single
 // source of truth; the hook never carries a second copy of the rules.
+// Everything from this marker on is reference for people and the on-demand skill load: it is not injected.
+const INJECT_END = '<!-- inject:end -->';
 function filterSkillBody(body, level) {
   const noFrontmatter = String(body || '').replace(/^---[\s\S]*?---\s*/, '');
-  return noFrontmatter.split(/\r?\n/).filter((line) => {
+  const end = noFrontmatter.indexOf(INJECT_END);
+  const injected = end === -1 ? noFrontmatter : noFrontmatter.slice(0, end).trimEnd();
+  return injected.split(/\r?\n/).filter((line) => {
     const row = line.match(/^\|\s*\*\*(.+?)\*\*\s*\|/);
     if (!row) return true;
     const rowLevel = normalizeLevel(row[1]);
@@ -269,7 +273,7 @@ function rulesSection() {
   const list = rules();
   if (!list.length) return '';
   const lines = list.map((r) => `- [${r.id}] When ${r.when}: ${r.ask}${r.evidence ? ' — Evidence: ' + r.evidence : ''}`);
-  return '\n\n## Rules\n\nBefore you say any of the following, answer the question with evidence in the same message; if you cannot, say so instead of presenting the outcome:\n\n' + lines.join('\n');
+  return '\n\n## Rules\n\nBefore saying any of these, answer in the same message, one line per rule: `<id>: YES|NO — <≤12 words>`. On NO, don\'t present the outcome.\n\n' + lines.join('\n');
 }
 
 function instructions(level) {

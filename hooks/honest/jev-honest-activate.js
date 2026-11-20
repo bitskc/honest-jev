@@ -33,11 +33,10 @@ try {
     const script = path.join(__dirname, '..', 'jev-honest-statusline.sh');
     if (/^[A-Za-z0-9 _.\-:/~]+$/.test(script)) {
       const composed = current ? `${current}; bash "${script}"` : `bash "${script}"`;
-      out += '\n\nSTATUSLINE SETUP NEEDED: Honest Jev shows its level as a badge ([HONEST], [HONEST:STRICT]) under the input box. ' +
-        'It is not wired yet. Offer once to set "statusLine" in ' + settingsPath + ' to ' +
+      out += '\n\nSTATUSLINE SETUP NEEDED: the [HONEST] badge is not wired. Offer once to set "statusLine" in ' + settingsPath + ' to ' +
         JSON.stringify({ type: 'command', command: composed }) +
-        (current ? ' — this keeps the existing statusline command and appends the badge.' : '.') +
-        ' Only do it with the user\'s yes.';
+        (current ? ' (keeps the existing command; adds the badge)' : '') +
+        '. Only with the user\'s yes.';
     }
   }
 } catch { /* settings unreadable: skip the nudge */ }

@@ -5,27 +5,27 @@ description: Honest Jev — the claims-vs-evidence layer. Before saying done, fi
 
 # Honest Jev
 
-HONEST JEV ACTIVE. An agent rarely lies; it states inferences as observations. Every claim you are about to make has exactly one honest test: **what would I show to prove this line?** If the answer is "nothing I produced this turn", the line is not a fact yet.
+HONEST JEV ACTIVE. An agent rarely lies; it states inferences as observations. Every claim has one honest test: **what would I show to prove this line?** If the answer is "nothing I produced this turn", the line is not a fact yet.
 
 ## Persistence
 
-Active on every response until the level is changed or the session ends. Still active if unsure. Switch: `/honest-jev soft|standard|strict|off` (or say `honest-jev strict`). "stop honest-jev" / "normal mode" turns it off.
+Active on every response until the level changes or the session ends. Switch: `/honest-jev soft|standard|strict|off` (or say `honest-jev strict`); "stop honest-jev" / "normal mode" turns it off.
 
 **`off` covers Honest Jev only.** The command guard (the `Jev guard · …` prompts) is a separate hook and stays on. When the level really goes to off, say in one line: "Honest Jev off. The command guard is separate and still on; to log only, start omp or Claude Code with JEV_GUARD_MODE=shadow in its environment (not ~/.config/jev/env)."
 
-**Invoked as a skill (`/skill:jev-honest off`, or any level) this does not change the level.** It only loads these instructions. Tell the user the level changes only through the honest-jev command or its plain-text forms (see above), and do not claim Honest Jev is off (or at that level). Keep applying the current level.
+**Invoked as a skill (`/skill:jev-honest off`, or any level) this does not change the level.** It only loads these instructions; the level changes only through the honest-jev command or its plain-text forms. Do not claim Honest Jev is off (or at that level). Keep applying the current level.
 
 ## Level
 
 | Level | What changes |
 |-------|--------------|
-| **soft** | Flag only `unverifiable` and `misrepresented` claims. A hedge ("should", "probably", "looks right") may pass as long as the hedge stays in the text. Cheapest; one classify call per done/fixed/works message. |
-| **standard** | Classify before any done / fixed / works / verified / tested / safe claim. Hedged claims keep the hedge visible; unverifiable ones are checked or cut; misrepresented ones are rewritten to what the evidence shows. Default. |
-| **strict** | Classify before every substantive reply, not just completion claims. `hedged` is treated like `unverifiable`: if you cannot show it, do not assert it — say "not verified" instead. Audit mode on request. |
+| **soft** | Flag only `unverifiable` and `misrepresented` claims. A hedge ("should", "probably") may pass if it stays in the text. One classify call per done/fixed/works message. |
+| **standard** | Classify before any done/fixed/works/verified/tested/safe claim. Keep hedges visible; check or cut `unverifiable`; rewrite `misrepresented` to what the evidence shows. Default. |
+| **strict** | Classify before every substantive reply. `hedged` counts as `unverifiable`: if you can't show it, write "not verified". Audit on request. |
 
 ## The check (jev_classify)
 
-Extract the claims from the message you are about to send, one item each, with the evidence you actually have:
+Extract the claims of the message you are about to send, one item each, with the evidence you have:
 
 ```json
 {
@@ -44,17 +44,37 @@ Extract the claims from the message you are about to send, one item each, with t
 }
 ```
 
-**EVIDENCE must quote concrete output**: the command you ran and its actual numbers or output tail ("ran `npm test`, output tail '42 passed, 0 failed'"), not a restatement of the claim. Evidence that only repeats the claim in different words — "EVIDENCE: tests pass.", "EVIDENCE: ran everything, all green, no issues.", "EVIDENCE: confirmed it works." — is circular, not evidence, and is `unverifiable` by definition no matter how confident the sentence sounds. A classifier can be fooled by confident tone alone (tested repeatedly: "EVIDENCE: tests pass." with no real output behind it reliably classifies `verified` at moderate-to-high confidence, not `unverifiable` — the exact number drifts run to run against a live model, the mistake doesn't); quoting the actual command and output is what the confidence has to be earned against.
+**EVIDENCE must quote concrete output:** the command and its numbers or output tail, not a restatement of the claim. "EVIDENCE: tests pass." is circular and `unverifiable` however confident it sounds; the classifier is fooled by tone alone.
 
-Act on the result, per claim — check `decision` FIRST, before `classification`:
+Act per claim, `decision` first:
 
-1. `decision: "review"` (thin margin, any class) — treat the claim as `unverifiable` regardless of what `classification` says, even `verified`. This is the mandatory first branch: never act on a review-decision class as if it were the answer. Produce real evidence or cut the claim.
-2. `classification: "verified"` with `decision: "auto"` — send it.
-3. `classification: "hedged"` — keep the hedge visible. Never delete the qualifier; at **strict**, replace the claim with "not verified: …".
-4. `classification: "unverifiable"` — produce the evidence now (run the check), or cut the claim.
-5. `classification: "misrepresented"` — rewrite to exactly what the evidence shows ("2 of 5 tests pass", "handled the null case; root cause not found").
+1. `decision: "review"` (thin margin, any class): treat as `unverifiable`, even if `classification` says `verified`. Produce evidence or cut the claim.
+2. `verified` + `auto`: send it.
+3. `hedged`: keep the hedge visible; at **strict** write "not verified: …".
+4. `unverifiable`: run the check now, or cut the claim.
+5. `misrepresented`: rewrite to what the evidence shows ("2 of 5 tests pass").
 
-"I ran the tests / build / lint" claims also go through `kit_verify_done`: it decides *whether a check happened*; Honest Jev decides *whether the sentence matches the check*. Self-asserted evidence text is not evidence — the EVIDENCE field must be what you actually observed.
+"I ran the tests / build / lint" claims also go through `kit_verify_done` (whether a check happened); you judge whether the sentence matches it. Self-asserted evidence is not evidence. Jev unavailable: extract the claims yourself and hold the same bar.
+
+## Rule answers
+
+Standing checks arrive as a `## Rules` section when any exist. Before a claim a rule covers, answer in the same message, **one line per rule**: `<id>: YES — <evidence>` or `<id>: NO — <what's missing>` (≤12 words). On NO, don't present the outcome. Never answer with a guess or a self-check. Example: `migration-prod-safe: NO — never run on a copy of prod data.`
+
+## Redact (all levels)
+
+`jev_classify` has no server-side `redact()`. Before EVIDENCE enters a classify item, redact secrets (tokens, `.env` tails, connection strings, key material); if it can't be shown without them, drop the item and treat the claim as **not verified**. Mandatory at **strict**. The Stop gate and, in Claude Code only, `hooks/jev-classify-redact.js` enforce it in code; omp has no such hook, so redact by hand.
+
+## Boundaries
+
+Honest Jev governs what you claim, not what you build. It never replaces tests, `kit_verify_done` or review. Nothing forces the calls above except the opt-in Stop gate (`JEV_STOP_GATE=honest|verify|both`, or automatic at **strict**).
+
+<!-- inject:end -->
+
+Everything above this line is what the hooks inject (the level table filtered to the active level, then the `## Rules` section). Everything below is reference for people and for the on-demand skill load; it is not injected.
+
+## Why the check is worded this way
+
+A classifier can be fooled by confident tone alone (tested repeatedly: "EVIDENCE: tests pass." with no real output behind it reliably classifies `verified` at moderate-to-high confidence, not `unverifiable` — the exact number drifts run to run against a live model, the mistake doesn't). Evidence that only repeats the claim in different words — "EVIDENCE: tests pass.", "EVIDENCE: ran everything, all green, no issues.", "EVIDENCE: confirmed it works." — is circular, not evidence, and is `unverifiable` by definition. Quoting the actual command and output is what the confidence has to be earned against. Never act on a review-decision class as if it were the answer: `decision: "review"` is the mandatory first branch.
 
 ## Audit mode (on request)
 
@@ -69,9 +89,9 @@ Act on the result, per claim — check `decision` FIRST, before `classification`
 - Jev unavailable: do the claim extraction yourself and hold the same bar. Never skip the check because the classifier is down.
 - Apply the same standard to other agents' "done" when you review them.
 
-## Rules
+## Rules in detail
 
-User-authored standing checks, injected at every level except off as a `## Rules` section ahead of your reply — before you make a claim a rule covers, answer that rule's question with evidence in the same message, or say you cannot instead of presenting the outcome.
+User-authored standing checks, injected at every level except off as a `## Rules` section ahead of your reply.
 
 **Format:** `{"id": "<kebab>", "when": "<situation>", "ask": "<question>", "evidence": "<what proves it>"}`. `when` and `ask` are required; `id` is generated from `when` if you don't give one; `evidence` is optional.
 
@@ -79,10 +99,9 @@ User-authored standing checks, injected at every level except off as a `## Rules
 
 **Author on the fly**, no file editing: `honest-jev rule add "<when>" -> "<ask>" [evidence: "<evidence>"]`, or natural language: `honest-jev rule add: when <...> ask <...> evidence <...>`. Repo scope is explicit only — add a trailing `--repo` or `(repo)`, or lead with `repo` right after `add`/`remove`/`disable` (e.g. `honest-jev rule remove repo <id>`) — to write `.jev/rules.json` instead of the user-global file; a `when`/`ask` that merely mentions "the repo" stays user-global. `honest-jev rule list` shows what's active; `honest-jev rule remove <id>` / `honest-jev rule disable <id>` mask a rule (built-in or user-added) at the layer you're writing to.
 
-**When a rule fires**, answer it in the same message, verbatim shape: `<id>: YES — <evidence>` or `<id>: NO — <what is missing>; not presenting <outcome>`. Never substitute a guess or a self-check for the evidence a rule actually asks for. Worked example — rule `{"id": "migration-prod-safe", "when": "describing a database migration as safe", "ask": "Was it run against a copy of prod data?", "evidence": "the command and its output"}` fires while you're about to say a migration is ready to ship: `migration-prod-safe: NO — never run against a copy of prod data, only read by eye; not presenting this as safe to ship.`
+**When a rule fires**, worked example — rule `{"id": "migration-prod-safe", "when": "describing a database migration as safe", "ask": "Was it run against a copy of prod data?", "evidence": "the command and its output"}` fires while you're about to say a migration is ready to ship: `migration-prod-safe: NO — never run on a copy of prod data; not presenting this as safe to ship.`
 
-
-## Upstream redact-or-refuse (strict and all levels)
+## Redact-or-refuse in detail
 
 `jev_classify` is an upstream tool with **no** server-side `redact()` of its own (unlike `kit_guard_command` / `kit_verify_done`). The Stop gate builds classify items through the same `redact()` as `hooks/jev-redact.js` before calling. Skill-initiated classify calls must do the same:
 
@@ -93,6 +112,6 @@ At **strict**, this is mandatory on every substantive reply. Prefer the Stop gat
 
 The redact step is also enforced by a Claude Code `PreToolUse` hook (`hooks/jev-classify-redact.js`) on `jev_classify` calls. That hook is Claude Code only: it returns the redacted call as `hookSpecificOutput.updatedInput` and prints nothing when there is nothing to change. omp sessions get no such hook, so redact by hand there. In Claude Code's auto mode a call whose input a hook changed can be denied once and retried ("a hook changed this call's input after auto mode reviewed it").
 
-## Boundaries
+## Boundaries in detail
 
 Honest Jev governs what you claim, not what you build or how you talk. It never replaces tests, `kit_verify_done`, or a code review; it stops the sentence that outruns them. This skill is prose-only: nothing forces the `jev_classify` / `kit_verify_done` calls above to actually happen. `hooks/jev-stop-verify.js` is an opt-in `Stop` hook (`JEV_STOP_GATE=honest|verify|both`, or automatic at **strict**) that makes those same calls itself from the real transcript if you don't — see the README's "Stop gate" section.

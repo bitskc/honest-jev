@@ -181,7 +181,7 @@ function applyRuleCommand(cmd: RuleCmd): string {
 function rulesSection(): string {
   const list = rules();
   if (!list.length) return "";
-  return `\n\n## Rules\n\nBefore you say any of the following, answer the question with evidence in the same message; if you cannot, say so instead of presenting the outcome:\n\n${list.map(ruleLine).join("\n")}`;
+  return `\n\n## Rules\n\nBefore saying any of these, answer in the same message, one line per rule: \`<id>: YES|NO — <≤12 words>\`. On NO, don't present the outcome.\n\n${list.map(ruleLine).join("\n")}`;
 }
 // Default level: JEV_HONEST_DEFAULT_LEVEL env > config.json {"honestLevel": ...} in userConfigDir() > off
 // (same resolution as the Claude Code hooks, so the README's "same levels/semantics" promise actually holds).
@@ -211,12 +211,15 @@ function writeLevel(level: Level): void {
   fs.mkdirSync(path.dirname(flagPath()), { recursive: true });
   fs.writeFileSync(flagPath(), level + "\n");
 }
+const INJECT_END = "<!-- inject:end -->";
 function instructions(level: Level): string {
   const head = `HONEST JEV ACTIVE — level: ${level}\n\n`;
   if (level === "off") return head; // defensive: no caller passes "off", but never inject rules if one does
   let body: string;
   try {
-    body = fs.readFileSync(skillPath(), "utf8").replace(/^---[\s\S]*?---\s*/, "").split(/\r?\n/).filter((line) => {
+    const noFrontmatter = fs.readFileSync(skillPath(), "utf8").replace(/^---[\s\S]*?---\s*/, "");
+    const end = noFrontmatter.indexOf(INJECT_END); // everything from the marker on is reference, not injected
+    body = (end === -1 ? noFrontmatter : noFrontmatter.slice(0, end).trimEnd()).split(/\r?\n/).filter((line) => {
       const row = line.match(/^\|\s*\*\*(.+?)\*\*\s*\|/);
       const rowLevel = row ? normalize(row[1]) : null;
       return rowLevel ? rowLevel === level : true;
@@ -249,7 +252,7 @@ export default function jevHonest(pi: ExtensionAPI) {
     setStatus(ctx);
     pi.sendMessage?.({
       customType: "jev-honest",
-      content: level === "off" ? 'HONEST JEV OFF — confirm in one line: "Honest Jev off. The command guard is separate and still on; to log only, start omp with JEV_GUARD_MODE=shadow in its environment (not ~/.config/jev/env)."' : `HONEST JEV LEVEL CHANGED — level: ${level}. Confirm in one line and apply it from this reply on.\n\n${instructions(level)}`,
+      content: level === "off" ? 'HONEST JEV OFF — confirm in one line: "Honest Jev off. The command guard is separate and still on; to log only, start omp with JEV_GUARD_MODE=shadow in its environment (not ~/.config/jev/env)."' : `HONEST JEV LEVEL CHANGED — level: ${level}. Confirm in one line; applies from this reply.\n\n${instructions(level)}`,
       display: true,
     });
   };
