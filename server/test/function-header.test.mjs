@@ -52,7 +52,7 @@ test("A: a function body is still analysed in every shape: a secret store blocks
     const r = await g(c);
     assert.equal(r.decision, "block", c);
     assert.equal(r.rule, "R1-secret-exposure", c);
-    assert.match(r.reason, /^`cat` on a secret store/, `${c} -> ${r.reason}`);
+    assert.match(r.reason, /^`cat` on secret store/, `${c} -> ${r.reason}`);
   }
 });
 
@@ -116,7 +116,7 @@ test("P1: a function named like bash allows (`a::b`, unicode, leading digit, `a@
       const c = `${def}; ${call}`;
       const r = await g(c);
       assert.equal(r.decision, "block", c);
-      assert.match(r.reason, /on a secret store \(\.env\)/, c);
+      assert.match(r.reason, /on secret store `\.env`/, c);
     }
     for (const body of ["echo $API_TOKEN", "rm -rf ~", "sudo rm -rf /"]) assert.equal((await g(`${n}() ( ${body} ); ${n}`)).decision, "block", `${n} ${body}`);
     assert.equal((await g(`${n}() { echo ok; }; ${n}`)).decision, "allow", n);

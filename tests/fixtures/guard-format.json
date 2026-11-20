@@ -1,0 +1,83 @@
+{
+  "comment": "One guard reply in, the exact prompt text out. Read by tests/guard-format-omp.test.ts (hooks/omp/jev-guard.ts) and tests/test_guard_format.py (hooks/jev_guard_hook.py): both hooks must print the same words. Line 1 is the dialog title, the rest its message. 'policy' is a policy gate's own reason, shown untouched after a blank line.",
+  "next_safer": "Next: don't retry as-is; use Safer or ask the user.",
+  "next_ask": "Next: don't retry as-is; ask the user.",
+  "cases": [
+    {
+      "name": "ask with a suggestion (the grep secret-name search)",
+      "reply": {"decision": "ask", "rule": "R1-secret-exposure", "label": "secret", "reason": "`grep` prints every line matching a secret name; in .env that line is `NAME=value`.", "suggestion": "Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`."},
+      "title": "Jev guard · secret · ask",
+      "message": "Why: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.",
+      "declined": "Jev guard · secret · declined\nWhy: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "needs_approval": "Jev guard · secret · needs approval\nWhy: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · secret · block: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "both_message": "Why: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+    },
+    {
+      "name": "block with a suggestion (cat .env)",
+      "reply": {"decision": "block", "rule": "R1-secret-exposure", "label": "secret", "reason": "`cat` on secret store `.env` would print it.", "suggestion": "Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`."},
+      "title": "Jev guard · secret · ask",
+      "message": "Why: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.",
+      "declined": "Jev guard · secret · declined\nWhy: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "needs_approval": "Jev guard · secret · needs approval\nWhy: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · secret · block: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "both_message": "Why: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.",
+      "both_block": "Jev guard · secret · block: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.\nNext: don't retry as-is; use Safer or ask the user."
+    },
+    {
+      "name": "ask with no suggestion (guard error)",
+      "reply": {"decision": "ask", "rule": "internal-error", "label": "guard error", "reason": "Guard check R1-secret-exposure failed (TypeError); this command is unchecked.", "suggestion": null},
+      "title": "Jev guard · guard error · ask",
+      "message": "Why: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.",
+      "declined": "Jev guard · guard error · declined\nWhy: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
+      "needs_approval": "Jev guard · guard error · needs approval\nWhy: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
+      "block": "Jev guard · guard error · block: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
+      "both_message": "Why: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+    },
+    {
+      "name": "a reply with no label (older server) falls back to the rule id",
+      "reply": {"decision": "ask", "rule": "R7-destructive", "reason": "`git reset --hard` discards uncommitted work irreversibly", "suggestion": "Ask the user first, unless they already asked for this."},
+      "title": "Jev guard · R7-destructive · ask",
+      "message": "Why: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.",
+      "declined": "Jev guard · R7-destructive · declined\nWhy: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
+      "needs_approval": "Jev guard · R7-destructive · needs approval\nWhy: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · R7-destructive · block: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
+      "both_message": "Why: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+    },
+    {
+      "name": "an older server's multi-line or padded text is folded onto single lines",
+      "reply": {"decision": "ask", "rule": "R7-destructive", "label": "destructive", "reason": "  `git clean -f`\n deletes   untracked files\t", "suggestion": " Ask first\n\nunless asked. "},
+      "title": "Jev guard · destructive · ask",
+      "message": "Why: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.",
+      "declined": "Jev guard · destructive · declined\nWhy: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
+      "needs_approval": "Jev guard · destructive · needs approval\nWhy: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · destructive · block: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
+      "both_message": "Why: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+    }
+  ],
+  "hook_messages": [
+    {
+      "name": "oversize command",
+      "label": "oversize",
+      "why": "command is 20001 chars; the guard judges at most 20000.",
+      "title": "Jev guard · oversize · ask",
+      "message": "Why: command is 20001 chars; the guard judges at most 20000.",
+      "declined": "Jev guard · oversize · declined\nWhy: command is 20001 chars; the guard judges at most 20000.\nNext: don't retry as-is; ask the user."
+    },
+    {
+      "name": "server rejected the call",
+      "label": "error",
+      "why": "server rejected the call (HTTP 400).",
+      "title": "Jev guard · error · ask",
+      "message": "Why: server rejected the call (HTTP 400).",
+      "declined": "Jev guard · error · declined\nWhy: server rejected the call (HTTP 400).\nNext: don't retry as-is; ask the user."
+    }
+  ],
+  "policy_only": {
+    "reason": "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.",
+    "title": "Jev policy · ask",
+    "message": "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.",
+    "declined": "Jev policy · declined\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.\nNext: don't retry as-is; ask the user.",
+    "needs_approval": "Jev policy · needs approval\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.\nNext: don't retry as-is; ask the user."
+  }
+}

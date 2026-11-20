@@ -133,7 +133,7 @@ test("unclear with no server: allowed, one notice per session, and the row names
   expect(await h.call(bash(UNCLEAR))).toBeUndefined();
   expect(await h.call(bash(UNCLEAR))).toBeUndefined();
   expect(notes).toEqual([mod.LOCAL_NOTICE]);
-  expect(mod.LOCAL_NOTICE).toBe("Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.");
+  expect(mod.LOCAL_NOTICE).toBe("Jev guard · no server: JEV_MCP_URL / JEV_MCP_TOKEN unset; an unclear command was allowed with no model check. Fix: run install.sh --doctor.");
   await h.startSession();
   await h.call(bash(UNCLEAR));
   expect(notes.length).toBe(2); // a new session hears it once more
@@ -244,7 +244,7 @@ test("a local ask stands when no server is configured: the user is asked, nothin
   notes.length = 0;
   const v = await hook().call(bash(ASK_AND_QUESTION));
   expect(v?.block).toBe(true); // ask with no UI blocks
-  expect(v?.reason).toContain("R7-destructive");
+  expect(v?.reason).toContain("Jev guard · destructive · needs approval");
   expect(notes).toEqual([]);
   expect(rows()[0]).toMatchObject({ decision: "ask", decided_by: "prefilter", rule: "R7-destructive", source: "client", fail_reason: null, server_decision_id: null });
 });
@@ -307,7 +307,7 @@ test("parity: every row of evals/guard.jsonl, local verdict == direct guardComma
 }, 60000); // every corpus row runs through the rules twice: the default 5 s bun timeout does not scale with a growing corpus or a busy CI host
 
 // ── the local rules could not run (enabled, no reply) and no server answers ──────────────────────────────────────────────────
-const DOWN_NOTICE = "Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
+const DOWN_NOTICE = "Jev guard · OFF: local rules failed to run and no server is set (JEV_MCP_URL / JEV_MCP_TOKEN); commands are unchecked. Fix: run install.sh --doctor.";
 const badRules = (src: string) => { const p = join(mkdtempSync(join(dir, "r-")), "guard.mjs"); writeFileSync(p, src); return p; };
 const NO_SERVER = { JEV_MCP_URL: undefined, JEV_MCP_TOKEN: undefined };
 

@@ -15,6 +15,7 @@ step "server: record derivation, content-free, closed fail_reason, compat" bash 
 step "server: existing suite still passes" bash -c 'cd server && npm test'
 step "hooks: ledger writes, shadow, failures, atomicity (python)" python3 -m unittest tests/test_ledger_hook.py
 step "guard hook: JEV_GUARD_ASK_AT parsing rejects NaN/Infinity (python)" python3 -m unittest tests/test_guard_ask_at.py
+step "guard prompt text: Why/Safer/Next shape against the shared fixture (python)" python3 -m unittest tests/test_guard_format.py
 step "scripts: jev-report / jev-outcome" node --test tests/ledger-report.test.mjs
 step "jev-call: a kit_decide call appends one content-free ledger row (stub curl)" python3 -W ignore -m unittest tests/test_jev_call_ledger.py
 step "local-first guard: rule-decided commands never touch the network, notice, fallbacks (python hook)" python3 -W ignore -m unittest tests/test_local_first.py
@@ -23,6 +24,7 @@ if command -v bun >/dev/null 2>&1; then
   step "omp hook, shadow mode (bun)" bun test tests/ledger-omp-shadow.test.ts
   step "omp hook, stalled ledger write does not delay the verdict (bun)" bun test tests/ledger-omp-stall.test.ts
   step "omp guard sends JEV_GUARD_ASK_AT as ask_at (bun)" bun test tests/guard-omp-ask-at.test.ts
+  step "guard prompt text: Why/Safer/Next shape against the shared fixture (bun)" bun test tests/guard-format-omp.test.ts
   step "local-first guard: omp hook, in-process rules, corpus parity (bun)" bun test tests/local-first-omp.test.ts
   step "omp honest hook: size cap, rule-text cleaning, legacy notice, FIFO (bun)" bun test tests/honest-omp.test.ts
 else

@@ -11,7 +11,7 @@ HONEST JEV ACTIVE. An agent rarely lies; it states inferences as observations. E
 
 Active on every response until the level is changed or the session ends. Still active if unsure. Switch: `/honest-jev soft|standard|strict|off` (or say `honest-jev strict`). "stop honest-jev" / "normal mode" turns it off.
 
-**`off` covers Honest Jev only.** The command guard (the `Jev guard [R…]` prompts) is a separate hook and stays on. When the level really goes to off, say in one line: "Honest Jev off. The command guard is separate and still on; to log only, start omp or Claude Code with JEV_GUARD_MODE=shadow in its environment (not ~/.config/jev/env)."
+**`off` covers Honest Jev only.** The command guard (the `Jev guard · …` prompts) is a separate hook and stays on. When the level really goes to off, say in one line: "Honest Jev off. The command guard is separate and still on; to log only, start omp or Claude Code with JEV_GUARD_MODE=shadow in its environment (not ~/.config/jev/env)."
 
 **Invoked as a skill (`/skill:jev-honest off`, or any level) this does not change the level.** It only loads these instructions. Tell the user the level changes only through the honest-jev command or its plain-text forms (see above), and do not claim Honest Jev is off (or at that level). Keep applying the current level.
 

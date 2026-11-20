@@ -266,31 +266,74 @@ def call_guard(args, tool="kit_guard_command", timeout=None):
 RANK = {"allow": 0, "ask": 1, "deny": 2}
 POLICY_TRIGGER = '"trigger"'
 POLICY_LAYER_MAX = 16384
+MESSAGE_CAP = 700  # chars of a prompt (title, Why, Safer, a policy's reason): a prompt is a few lines, never a page
 
 
-# After ask auto-deny (-p) or an enforced deny: tell the model not to re-issue the same command.
-NEXT_AFTER_DECLINE = "Do not run the same command again; use the safer route above, or ask the user what they want."
+# One shape for every guard prompt (hooks/omp/jev-guard.ts has the same code and tests/fixtures/guard-format.json pins the text):
+#   Jev guard · <label> · <ask|block|declined|needs approval>
+#   Why: <one sentence>
+#   Safer: <one step>            (only when the guard gave one)
+#   Next: ...                    (agent only: after a block or a refused ask)
+# `label` is the guard's plain name for the rule (an older reply has none: the rule id stands in).
+NEXT_SAFER = "Next: don't retry as-is; use Safer or ask the user."
+NEXT_ASK = "Next: don't retry as-is; ask the user."
 
 
-def format_guard_why(r, decision):
-    """Separate reason from suggestion so the agent gets a clear safer route (`Safer: …`)."""
-    head = "%s%s" % (
-        "Jev guard [%s]: " % r["rule"] if r.get("rule") else "Jev guard: ",
-        (r.get("reason") or "").rstrip(),
-    )
-    if r.get("suggestion") and decision != "allow":
-        if not head.endswith((".", "!", "?")):
-            head += "."
-        head += " Safer: " + r["suggestion"]
-    return head
+def _one_line(s):
+    return " ".join(str(s if s is not None else "").split())
+
+
+def make_msg(head, body, safer=False):
+    return {"head": head, "body": list(body), "safer": safer}
+
+
+def guard_msg(r):
+    """A guard reply (ask or block) as a message."""
+    label = _one_line(r.get("label")) or _one_line(r.get("rule")) or "check"
+    safer = _one_line(r.get("suggestion"))
+    return make_msg("Jev guard · " + label, ["Why: " + _one_line(r.get("reason"))] + (["Safer: " + safer] if safer else []), bool(safer))
+
+
+def hook_msg(label, why):
+    """A line the hook itself says (not a rule's reply)."""
+    return make_msg("Jev guard · " + label, ["Why: " + _one_line(why)])
+
+
+def policy_msg(reason):
+    """A policy gate's own reason, untouched."""
+    return make_msg("Jev policy", [reason])
+
+
+def join_msgs(msgs):
+    """Several parties' messages as one: the first one's head, a blank line between the bodies."""
+    body = []
+    for m in msgs:
+        body += ([""] if body else []) + m["body"]
+    return make_msg(msgs[0]["head"], body, any(m["safer"] for m in msgs))
+
+
+def render_msg(m, action, nxt=False, inline_why=False):
+    """The whole text. `nxt` adds the Next line, which is never cut: an over-long body ends in "…" instead. `inline_why` puts the Why on line 1
+    after a colon (`Jev guard · secret · block: <Why>`): interactive Claude Code shows only line 1 of a deny reason in its transcript row."""
+    body = list(m["body"])
+    title = "%s · %s" % (m["head"], action)
+    if inline_why and body and body[0].startswith("Why: "):
+        title += ": " + body.pop(0)[5:]
+    text = "\n".join([title] + body)
+    next_line = (NEXT_SAFER if m["safer"] else NEXT_ASK) if nxt else None
+    budget = MESSAGE_CAP - (len(next_line) + 1 if next_line else 0)
+    if len(text) > budget:
+        text = text[:budget - 1].rstrip() + "…"
+    return text + ("\n" + next_line if next_line else "")
 
 
 class Outcome(object):
     """One party's result: its effect (allow|ask|deny), the reason shown if it asks or denies, and the ledger row to write.
+    `msg` is the guard's message (guard_msg / hook_msg); a policy outcome has only `reason`, which stays untouched.
     Writing the row is deferred until the decision has been printed (a stalled ledger can never cost the decision)."""
 
-    def __init__(self, effect="allow", reason="", reply=None, row=None, stderr=None, tool=None, notice=None, model_context=None):
-        self.effect, self.reason, self.reply, self.row, self.stderr, self.tool, self.notice, self.model_context = effect, reason, reply, row, stderr, tool, notice, model_context
+    def __init__(self, effect="allow", reason="", reply=None, row=None, stderr=None, tool=None, notice=None, msg=None):
+        self.effect, self.reason, self.reply, self.row, self.stderr, self.tool, self.notice, self.msg = effect, reason, reply, row, stderr, tool, notice, msg
 
     def write(self):
         if self.row is None:
@@ -302,8 +345,7 @@ class Outcome(object):
 
 
 LOCAL_SETTLED = ("prefilter", "fail_closed")
-LOCAL_NOTICE = ("Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
-                "This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.")
+LOCAL_NOTICE = "Jev guard · no server: JEV_MCP_URL / JEV_MCP_TOKEN unset; an unclear command was allowed with no model check. Fix: run install.sh --doctor."
 
 
 def local_enabled():
@@ -375,8 +417,7 @@ def first_unclear_in_session():
         return False
 
 
-LOCAL_DOWN_NOTICE = ("Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
-                     "so commands are not being checked. Run install.sh --doctor for details.")
+LOCAL_DOWN_NOTICE = "Jev guard · OFF: local rules failed to run and no server is set (JEV_MCP_URL / JEV_MCP_TOKEN); commands are unchecked. Fix: run install.sh --doctor."
 
 # The local rules' fingerprint against the server's (hooks/jev-rules-fingerprint.mjs; the server reports its own on GET /health, see
 # server/src/health.mjs). Only a local ALLOW needs it: a local ask or block is honoured whatever the server's rules are.
@@ -386,13 +427,9 @@ FP_TTL_DOWN = 60       # seconds the fact "the server gave none" is remembered, 
 FP_FETCH_BUDGET = 0.8  # seconds for the whole GET /health; with the local runner's 1.5 and the server call's 2.5 the path stays under the hook's 5
 FP_HEADER = "x-jev-rules-fingerprint"
 TRUST_NOTICES = {
-    "mismatch": ("Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the "
-                 "server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which."),
-    "unverified": ("Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older "
-                   "Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. "
-                   "Run install.sh --doctor for details."),
-    "down": ("Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, "
-             "without a server call. Run install.sh --doctor for details."),
+    "mismatch": "Jev guard · rules differ: local rules differ from the server's; local allows now go to the server. Fix: run jev-update (or deploy the Worker if this machine is newer), restart; install.sh --doctor shows which.",
+    "unverified": "Jev guard · rules unchecked: can't confirm local rules match the server's (no answer, an older Worker, or incomplete/symlinked rule files); local allows go to the server. Fix: run install.sh --doctor.",
+    "down": "Jev guard · server down: no server answer; for the next minute local allows stand unverified. Fix: run install.sh --doctor.",
 }
 
 
@@ -609,8 +646,8 @@ def guard_outcome(args):
                 if MODE == "shadow":
                     return Outcome("allow", row=dict(decision="ask", decided_by="fail_closed", fail_reason="oversize", enforced=False, would_have="ask"),
                                    stderr="jev-guard (shadow): would ask: %s exceeds %d chars\n" % (key, cap))
-                return Outcome("ask", "Jev guard: %s is %d chars, over the %d-char limit the guard can judge; confirm it by hand." % (key, len(args[key]), cap),
-                               row=dict(decision="ask", decided_by="fail_closed", fail_reason="oversize"))
+                msg = hook_msg("oversize", "%s is %d chars; the guard judges at most %d." % (key, len(args[key]), cap))
+                return Outcome("ask", render_msg(msg, "ask"), row=dict(decision="ask", decided_by="fail_closed", fail_reason="oversize"), msg=msg)
             args[key] = args[key][:cap]
     local = run_local(args)
     unclear = local_unclear(local)
@@ -663,8 +700,8 @@ def server_outcome(args, local, unclear, verifying=False):
         if MODE == "shadow":
             return Outcome("allow", row=dict(decision="ask", decided_by="fail_closed", fail_reason="client_rejected", enforced=False, would_have="ask"),
                            stderr="jev-guard (shadow): would ask: server rejected call: %s\n" % str(e)[:200])
-        return Outcome("ask", "Jev guard could not judge this call (server rejected it: %s); confirm it by hand." % str(e)[:200],
-                       row=dict(decision="ask", decided_by="fail_closed", fail_reason="client_rejected"))
+        msg = hook_msg("error", "server rejected the call (%s)." % str(e)[:80])
+        return Outcome("ask", render_msg(msg, "ask"), row=dict(decision="ask", decided_by="fail_closed", fail_reason="client_rejected"), msg=msg)
     except Exception as e:  # timeout, DNS, HTTP error, bad JSON ... all fail open
         note("fail-open: %s: %s" % (type(e).__name__, str(e)[:120]))
         if verifying:
@@ -687,21 +724,14 @@ def reply_outcome(r):
     row = {"decision": decision, "enforced": would is None, "would_have": would}
     if r.get("decided_by") == "fail_closed" and r.get("fail_reason") == "rule_error":
         row["fail_reason"] = "rule_error"  # a server reply carries this in its record; a local reply has none
-    why = format_guard_why(r, decision)
-    # Ask: user sees permissionDecisionReason; model gets safer-route + next-step via additionalContext.
-    # Deny: permissionDecisionReason goes to the model, so next-step is inlined there too.
-    model_ctx = why
-    if decision == "block":
-        why = why.rstrip() + " " + NEXT_AFTER_DECLINE
-        model_ctx = why
-    elif decision == "ask":
-        model_ctx = why.rstrip() + " " + NEXT_AFTER_DECLINE
+    msg = guard_msg(r)
     note("%s score=%s rule=%s decided_by=%s" % (decision, r.get("score"), r.get("rule"), r.get("decided_by")))
     if decision not in ("ask", "block"):
         return Outcome("allow", reply=r, row=row)  # allow (including the server's own fail-open)
     if MODE == "shadow":
-        return Outcome("allow", reply=r, row=row, stderr="jev-guard (shadow): would %s: %s\n" % (decision, why[:300]))
-    return Outcome("deny" if decision == "block" else "ask", why, reply=r, row=row, model_context=model_ctx)
+        return Outcome("allow", reply=r, row=row, stderr="jev-guard (shadow): would %s: %s\n" % (decision, render_msg(msg, decision).replace("\n", " ")[:300]))
+    # what the user sees (ask) or the agent reads (deny) is built where the result is printed (emit): it may be joined with the policy's
+    return Outcome("deny" if decision == "block" else "ask", render_msg(msg, decision, decision == "block", decision == "block"), reply=r, row=row, msg=msg)
 
 
 # ── policy path (openspec add-policy-hook-adapter) ──────────────────────────────────────────────────────────────────
@@ -883,36 +913,25 @@ def conclude(g, policy):
     notice = p.notice or g.notice
     out = {}
     if final != "allow":
-        parts = []
-        if p.effect == final and p.reason:
-            parts.append(p.reason)
-        if g.effect == final and g.reason:
-            parts.append(g.reason)
-        hso = {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": final,
-            "permissionDecisionReason": " ".join(parts)[:1500],
-        }
-        # Ask: user sees permissionDecisionReason; model gets safer-route + next-step via additionalContext.
-        # Deny: reason already includes next-step; still set additionalContext so -p and interactive agree.
-        # Prefer model_context; fall back to reason so a policy ask (reason only) is not dropped when the
-        # guard also asks with model_context. Keep NEXT_AFTER_DECLINE at most once.
-        ctx_parts = []
-        for o in (p, g):
+        msgs = []
+        for o in (g, p):  # the guard's lines first, then the policy's own reason, untouched
             if o.effect != final:
                 continue
-            mc = getattr(o, "model_context", None)
-            if mc:
-                ctx_parts.append(mc)
+            if o.msg is not None:
+                msgs.append(o.msg)
             elif o.reason:
-                ctx_parts.append(o.reason)
-        if not ctx_parts and parts:
-            ctx_parts = [" ".join(parts).rstrip()]
-        if ctx_parts:
-            joined = " ".join(ctx_parts).rstrip()
-            if NEXT_AFTER_DECLINE not in joined:
-                joined = "%s %s" % (joined, NEXT_AFTER_DECLINE)
-            hso["additionalContext"] = joined[:1500]
+                msgs.append(policy_msg(o.reason))
+        guard_said = g.effect == final and g.msg is not None
+        hso = {"hookEventName": "PreToolUse", "permissionDecision": final}
+        if final == "deny":
+            # The reason is what the agent reads, so the text goes there once (no additionalContext copy). A policy's own deny is its reason as written.
+            hso["permissionDecisionReason"] = render_msg(join_msgs(msgs), "block", True, True) if guard_said else p.reason[:1500]
+        else:
+            # Ask: the user reads permissionDecisionReason; the agent gets the same lines plus what to do next via additionalContext
+            # (in -p, where nobody can answer, it is also what the agent reads).
+            joined = join_msgs(msgs) if msgs else hook_msg("check", "")
+            hso["permissionDecisionReason"] = render_msg(joined, "ask")
+            hso["additionalContext"] = render_msg(joined, "needs approval", True)
         out["hookSpecificOutput"] = hso
     if notice:
         # for the USER (systemMessage), not the model: fixed text, no command, no path, no instruction

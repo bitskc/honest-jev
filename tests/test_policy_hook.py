@@ -192,39 +192,22 @@ class HookUnits(unittest.TestCase):
             finally:
                 os.environ.pop("JEV_POLICY_USER", None)
 
-    def test_format_guard_why_separates_safer_route_and_reply_outcome_sets_model_context(self):
-        why = self.hook.format_guard_why(
-            {"rule": "R1-secret-exposure", "reason": "node reads its script from stdin; confirm it is intended",
-             "suggestion": "Write the script to a file"},
-            "ask",
-        )
-        self.assertIn("Safer: Write the script to a file", why)
-        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, why)
+    def test_reply_outcome_builds_the_message_and_keeps_safer_apart(self):
         ask = self.hook.reply_outcome({
-            "decision": "ask", "rule": "R1-secret-exposure",
-            "reason": "node reads its script from stdin; confirm it is intended",
-            "suggestion": "Write the script to a file", "decided_by": "prefilter",
+            "decision": "ask", "rule": "R1-secret-exposure", "label": "secret",
+            "reason": "`node` runs a stdin script; the guard can't see what it does with env vars.",
+            "suggestion": "Put the script in a file", "decided_by": "prefilter",
         })
         self.assertEqual(ask.effect, "ask")
-        self.assertIn("Safer:", ask.reason)
-        self.assertNotIn(self.hook.NEXT_AFTER_DECLINE, ask.reason)
-        self.assertIn(self.hook.NEXT_AFTER_DECLINE, ask.model_context)
+        self.assertEqual(ask.msg["head"], "Jev guard · secret")
+        self.assertIn("Safer: Put the script in a file", ask.reason)
+        self.assertNotIn("Next:", ask.reason, "what the user reads carries no next step")
         block = self.hook.reply_outcome({
-            "decision": "block", "rule": "R1-secret-exposure",
-            "reason": "prints a secret", "suggestion": "Do not print a secret", "decided_by": "prefilter",
+            "decision": "block", "rule": "R1-secret-exposure", "label": "secret",
+            "reason": "`cat` would print `.env`.", "suggestion": "Don't print it.", "decided_by": "prefilter",
         })
         self.assertEqual(block.effect, "deny")
-        self.assertIn("Safer: Do not print a secret", block.reason)
-        self.assertIn(self.hook.NEXT_AFTER_DECLINE, block.reason)
-        self.assertEqual(block.model_context, block.reason)
-
-    def test_format_guard_why_keeps_a_full_stop_reason_and_the_search_suggestion_apart(self):
-        reason = "`grep` prints every line matching a secret-looking name across many files. Approve only if showing it is acceptable."
-        suggestion = "To find where it is used without printing values: list only the files (`grep -rl NAME .`)."
-        why = self.hook.format_guard_why({"rule": "R1-secret-exposure", "reason": reason, "suggestion": suggestion}, "ask")
-        self.assertEqual(why, "Jev guard [R1-secret-exposure]: " + reason + " Safer: " + suggestion)
-        self.assertNotIn("..", why)
-        self.assertEqual(why.count("Safer:"), 1)
+        self.assertEqual(block.reason, "Jev guard · secret · block: `cat` would print `.env`.\nSafer: Don't print it.\n" + self.hook.NEXT_SAFER)
 
 
 class PolicyHook(unittest.TestCase):
@@ -548,7 +531,7 @@ class PolicyNotice(unittest.TestCase):
 
 
 class ConcludeAdditionalContext(unittest.TestCase):
-    """When guard+policy both ask, additionalContext must carry the policy reason even if only the guard set model_context."""
+    """What conclude() prints: ask = reason for the user + additionalContext for the agent; deny = the reason once; guard first, policy untouched."""
 
     def load_hook(self):
         import importlib.util
@@ -573,21 +556,56 @@ class ConcludeAdditionalContext(unittest.TestCase):
             hook.conclude(g, Done())
         return out.getvalue(), err.getvalue()
 
-    def test_both_ask_includes_policy_reason_and_next_step_once(self):
+    GUARD = {"decision": "ask", "rule": "R1-secret-exposure", "label": "secret", "reason": "`cat token`: a bare credential word; it may print a secret.",
+             "suggestion": "Only a label? Proceed."}
+    POLICY = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+
+    def test_both_ask_is_one_prompt_guard_first_policy_untouched_and_next_once(self):
         hook = self.load_hook()
-        guard_why = "Jev guard [R1]: `cat token` is a bare credential word. Safer: Confirm the path is not a secret."
-        policy_why = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
-        g = hook.Outcome("ask", guard_why, model_context="%s %s" % (guard_why, hook.NEXT_AFTER_DECLINE))
-        p = hook.Outcome("ask", policy_why)  # policy path sets reason only, no model_context
+        g = hook.reply_outcome(dict(self.GUARD, decided_by="prefilter"))
+        p = hook.Outcome("ask", self.POLICY)  # the policy path sets a reason only
         out, _ = self.conclude_stdout(hook, g, p)
         hso = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(hso["permissionDecision"], "ask")
-        self.assertIn(policy_why, hso["permissionDecisionReason"])
-        self.assertIn(guard_why, hso["permissionDecisionReason"])
+        self.assertEqual(
+            hso["permissionDecisionReason"],
+            "Jev guard · secret · ask\nWhy: `cat token`: a bare credential word; it may print a secret.\nSafer: Only a label? Proceed.\n\n" + self.POLICY)
         ctx = hso["additionalContext"]
-        self.assertIn(policy_why, ctx, "policy reason must reach the model, not only permissionDecisionReason")
-        self.assertIn(guard_why, ctx)
-        self.assertEqual(ctx.count(hook.NEXT_AFTER_DECLINE), 1)
+        self.assertTrue(ctx.startswith("Jev guard · secret · needs approval\n"))
+        self.assertIn(self.POLICY, ctx, "the policy's reason reaches the agent too")
+        self.assertEqual(ctx.count("Next:"), 1)
+        self.assertTrue(ctx.endswith(hook.NEXT_SAFER))
+
+    def test_policy_only_ask_is_its_reason_under_a_policy_title(self):
+        hook = self.load_hook()
+        out, _ = self.conclude_stdout(hook, hook.Outcome("allow"), hook.Outcome("ask", self.POLICY))
+        hso = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecisionReason"], "Jev policy · ask\n" + self.POLICY)
+        self.assertEqual(hso["additionalContext"], "Jev policy · needs approval\n" + self.POLICY + "\n" + hook.NEXT_ASK)
+
+    def test_guard_block_sends_the_text_once(self):
+        hook = self.load_hook()
+        g = hook.reply_outcome({"decision": "block", "rule": "R1-secret-exposure", "label": "secret", "reason": "`cat` would print `.env`.",
+                                "suggestion": "Don't print it.", "decided_by": "prefilter"})
+        out, _ = self.conclude_stdout(hook, g, hook.Outcome("allow"))
+        hso = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecision"], "deny")
+        self.assertEqual(hso["permissionDecisionReason"], "Jev guard · secret · block: `cat` would print `.env`.\nSafer: Don't print it.\n" + hook.NEXT_SAFER)
+        self.assertNotIn("additionalContext", hso, "the agent reads the deny reason; a second copy would repeat it")
+
+    def test_a_policy_only_deny_is_its_reason_as_written(self):
+        hook = self.load_hook()
+        out, _ = self.conclude_stdout(hook, hook.Outcome("allow"), hook.Outcome("deny", self.POLICY))
+        hso = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecisionReason"], self.POLICY)
+
+    def test_a_policy_only_deny_keeps_its_own_1500_char_cap_not_the_prompt_cap(self):
+        hook = self.load_hook()
+        long_reason = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: " + "x" * 3000
+        out, _ = self.conclude_stdout(hook, hook.Outcome("allow"), hook.Outcome("deny", long_reason))
+        reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertEqual(reason, long_reason[:1500])
+        self.assertGreater(len(reason), hook.MESSAGE_CAP, "a policy's own deny is not cut at the prompt cap")
 
 
 class ConcludeTimeout(unittest.TestCase):

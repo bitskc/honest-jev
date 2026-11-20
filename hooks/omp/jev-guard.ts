@@ -74,12 +74,12 @@ const askAt = (): number | undefined => parseAskAt(process.env.JEV_GUARD_ASK_AT)
 // The rules run in a worker thread with the same budget as the Claude hook (JEV_GUARD_LOCAL_TIMEOUT, default 1.5 s, clamped
 // to 0.1..1.5). A run that does not finish is killed and treated as "the rules did not run" (#49). The module stays loaded
 // in that worker, so a file rewritten on disk after the first call does not change what this process runs.
-export const LOCAL_NOTICE = "Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.";
-export const LOCAL_DOWN_NOTICE = "Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so commands are not being checked. Run install.sh --doctor for details.";
+export const LOCAL_NOTICE = "Jev guard · no server: JEV_MCP_URL / JEV_MCP_TOKEN unset; an unclear command was allowed with no model check. Fix: run install.sh --doctor.";
+export const LOCAL_DOWN_NOTICE = "Jev guard · OFF: local rules failed to run and no server is set (JEV_MCP_URL / JEV_MCP_TOKEN); commands are unchecked. Fix: run install.sh --doctor.";
 export const TRUST_NOTICES: Record<"mismatch" | "unverified" | "down", string> = {
-  mismatch: "Jev guard: the rules on this machine differ from the server's, so commands the local rules would allow are being sent to the server to decide. Run jev-update (or deploy the Worker, if this machine is the newer one), then restart the agent. install.sh --doctor shows which.",
-  unverified: "Jev guard: could not confirm that the rules on this machine match the server's (the server did not answer, or is an older Worker that does not report its rules, or the rule files here are incomplete or a symlink), so commands the local rules would allow are being sent to the server to decide. Run install.sh --doctor for details.",
-  down: "Jev guard: the server did not answer, so for the next minute commands the local rules would allow stand locally, unverified, without a server call. Run install.sh --doctor for details.",
+  mismatch: "Jev guard · rules differ: local rules differ from the server's; local allows now go to the server. Fix: run jev-update (or deploy the Worker if this machine is newer), restart; install.sh --doctor shows which.",
+  unverified: "Jev guard · rules unchecked: can't confirm local rules match the server's (no answer, an older Worker, or incomplete/symlinked rule files); local allows go to the server. Fix: run install.sh --doctor.",
+  down: "Jev guard · server down: no server answer; for the next minute local allows stand unverified. Fix: run install.sh --doctor.",
 };
 
 export function guardRulesPath(env: Record<string, string | undefined> = process.env, exists: (p: string) => boolean = existsSync): string | null {
@@ -750,6 +750,43 @@ type ToolCallEvent = { toolName?: string; input?: Record<string, unknown> };
 type ToolCallCtx = { cwd?: string; hasUI?: boolean; ui?: { confirm?: (title: string, message: string) => Promise<boolean>; notify?: (message: string, level?: string) => void } };
 type Verdict = { block: true; reason: string } | undefined;
 
+// ── prompt text ────────────────────────────────────────────────────────────────────────────────────────────────────
+// One shape for every guard prompt (the hooks/jev_guard_hook.py copy and tests/fixtures/guard-format.json pin the same text):
+//   Jev guard · <label> · <ask|block|declined|needs approval>
+//   Why: <one sentence>
+//   Safer: <one step>            (only when the guard gave one)
+//   Next: ...                    (agent only: after a block, a decline or a no-UI ask)
+// Line 1 is the dialog title, the rest its message. `label` is the guard's plain name for the rule (older replies: the rule id).
+export const NEXT_SAFER = "Next: don't retry as-is; use Safer or ask the user.";
+export const NEXT_ASK = "Next: don't retry as-is; ask the user.";
+export type Msg = { head: string; body: string[]; safer: boolean };
+const oneLine = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
+/** A guard reply (ask or block) as a message. */
+export function guardMsg(r: { label?: unknown; rule?: unknown; reason?: unknown; suggestion?: unknown }): Msg {
+  const label = oneLine(r.label) || oneLine(r.rule) || "check";
+  const safer = oneLine(r.suggestion);
+  return { head: `Jev guard · ${label}`, body: [`Why: ${oneLine(r.reason)}`, ...(safer ? [`Safer: ${safer}`] : [])], safer: safer !== "" };
+}
+/** A line the hook itself says (not a rule's reply): `Jev guard · <label>` + Why. */
+export const hookMsg = (label: string, why: string): Msg => ({ head: `Jev guard · ${label}`, body: [`Why: ${oneLine(why)}`], safer: false });
+/** A policy gate's own reason, untouched, under a `Jev policy` head. */
+export const policyMsg = (reason: string): Msg => ({ head: "Jev policy", body: [reason], safer: false });
+/** Both parties ask: one prompt, the guard's lines then the policy's, a blank line between. */
+export const joinMsg = (g: Msg, p: Msg): Msg => ({ head: g.head, body: [...g.body, "", ...p.body], safer: g.safer });
+export const msgTitle = (m: Msg, action: string): string => `${m.head} · ${action}`;
+export const MESSAGE_CAP = 700; // chars of the whole text: a prompt is a few lines, never a page
+/** The whole text. `next` adds the Next line, which is never cut: an over-long body ends in "…" instead. `inlineWhy` puts the Why on line 1 after
+ *  a colon (`Jev guard · secret · block: <Why>`): a Claude Code deny shows only line 1 in the user's transcript row, and omp's block text is the same. */
+export const renderMsg = (m: Msg, action: string, next = false, inlineWhy = false): string => {
+  const body = [...m.body];
+  const title = inlineWhy && body[0]?.startsWith("Why: ") ? `${msgTitle(m, action)}: ${body.shift()!.slice(5)}` : msgTitle(m, action);
+  const nextLine = next ? (m.safer ? NEXT_SAFER : NEXT_ASK) : null;
+  let text = [title, ...body].join("\n");
+  const budget = MESSAGE_CAP - (nextLine === null ? 0 : nextLine.length + 1);
+  if (text.length > budget) text = `${text.slice(0, budget - 1).trimEnd()}…`;
+  return nextLine === null ? text : `${text}\n${nextLine}`;
+};
+
 export default function jevGuard(pi: ExtensionAPI) {
   let noticed = false; // the "no server configured" notice goes out once per session, kept in memory
   let downNoticed = false; // so does the "local rules could not run and no server" notice, with its own flag
@@ -759,18 +796,17 @@ export default function jevGuard(pi: ExtensionAPI) {
   // is returned before any ledger I/O, so a slow filesystem cannot delay the decision. Writes keep FIFO order (the
   // decision row is queued before its outcome). Residual: a synchronous write still blocks the event loop after the
   // verdict has been delivered. recordOutcome never throws.
-  // After a decline / no-UI block: tell the agent not to re-issue the same command.
-  const NEXT_AFTER_DECLINE = "Do not run the same command again; use the safer route above, or ask the user what they want.";
-  const ask = async (ctx: ToolCallCtx, why: string, rowId: string | null = null, alsoRowId: string | null = null): Promise<Verdict> => {
-    if (shadow()) { pi.logger?.warn?.(`(shadow) would ask: ${why}`); return; }
+  // After a decline / no-UI block the agent is told not to re-issue the same command (the Next line).
+  const ask = async (ctx: ToolCallCtx, msg: Msg, rowId: string | null = null, alsoRowId: string | null = null): Promise<Verdict> => {
+    if (shadow()) { pi.logger?.warn?.(`(shadow) would ask: ${renderMsg(msg, "ask").replace(/\n+/g, " ")}`); return; }
     const ids = [rowId, alsoRowId].filter((x): x is string => !!x); // the guard's row, the policy's row, or both
     if (ctx.hasUI && typeof ctx.ui?.confirm === "function") {
-      const ok = await ctx.ui.confirm("Jev guard: run this command?", why);
+      const ok = await ctx.ui.confirm(msgTitle(msg, "ask"), msg.body.join("\n"));
       for (const id of ids) setImmediate(() => recordOutcome(id, ok ? "approved" : "denied"));
-      return ok ? undefined : { block: true, reason: `${why} (declined by user). ${NEXT_AFTER_DECLINE}` };
+      return ok ? undefined : { block: true, reason: renderMsg(msg, "declined", true) };
     }
     for (const id of ids) setImmediate(() => recordOutcome(id, "no_ui"));
-    return askNoUi() === "allow" ? undefined : { block: true, reason: `${why} Needs human approval. ${NEXT_AFTER_DECLINE}` };
+    return askNoUi() === "allow" ? undefined : { block: true, reason: renderMsg(msg, "needs approval", true) };
   };
   const led = (t0: number, reply: unknown, o: Omit<Parameters<typeof buildRow>[1], "host" | "latencyMs">): string | null => {
     const p = prepareDecision(reply, { ...o, host: "omp", latencyMs: Date.now() - t0 });
@@ -804,7 +840,7 @@ export default function jevGuard(pi: ExtensionAPI) {
         if (typeof v !== "string" || v.length <= cap) continue;
         if (key === "command" || key === "file_path") {
           const rowId = led(t0, undefined, { decision: "ask", decidedBy: "fail_closed", failReason: "oversize", enforced: !shadow(), wouldHave: shadow() ? "ask" : null });
-          return ask(ctx, `Jev guard: ${key} is ${v.length} chars, over the ${cap}-char limit the guard can judge; confirm it by hand.`, rowId);
+          return ask(ctx, hookMsg("oversize", `${key} is ${v.length} chars; the guard judges at most ${cap}.`), rowId);
         }
         args[key] = v.slice(0, cap);
       }
@@ -845,7 +881,7 @@ export default function jevGuard(pi: ExtensionAPI) {
       const g: McpResult<GuardReply> = answered.kind === "unavailable" && local?.unclear && local.reply.decision !== "allow" ? { kind: "reply", reply: local.reply as GuardReply } : answered;
 
       // the guard's own effect and reason (rows and shadow notes exactly as before)
-      let ge: Effect = "allow", gWhy = "", gRow: string | null = null;
+      let ge: Effect = "allow", gMsg: Msg = hookMsg("check", ""), gRow: string | null = null;
       if (g.kind === "unavailable") {
         // fail open. A command the local rules flagged keeps the rule id on its row (an id, never text).
         const flagged = local?.unclear && typeof local.reply.rule === "string" ? local.reply.rule : undefined;
@@ -861,22 +897,16 @@ export default function jevGuard(pi: ExtensionAPI) {
         }
       } else if (g.kind === "rejected") {
         gRow = led(t0, undefined, { decision: "ask", decidedBy: "fail_closed", failReason: "client_rejected", enforced: !shadow(), wouldHave: shadow() ? "ask" : null });
-        gWhy = `Jev guard could not judge this call (server rejected it: ${g.detail}); confirm it by hand.`;
-        if (shadow()) pi.logger?.warn?.(`(shadow) would ask: ${gWhy}`); else ge = "ask";
+        gMsg = hookMsg("error", `server rejected the call (${String(g.detail).slice(0, 80)}).`);
+        if (shadow()) pi.logger?.warn?.(`(shadow) would ask: ${renderMsg(gMsg, "ask").replace(/\n+/g, " ")}`); else ge = "ask";
       } else {
         const r = g.reply;
         const would = shadow() && (r.decision === "ask" || r.decision === "block") ? r.decision : null;
         const ruleError = r.decided_by === "fail_closed" && r.fail_reason === "rule_error" ? "rule_error" : undefined; // a server reply carries this in its record; a local reply has none
         gRow = led(t0, r, { decision: r.decision, enforced: would === null, wouldHave: would, failReason: ruleError });
         if (r.decision === "ask" || r.decision === "block") {
-          // Keep reason and safer-route suggestion distinct so the agent can follow the route, not re-issue the command.
-          let head = `Jev guard${r.rule ? ` [${r.rule}]` : ""}: ${(r.reason || "").trimEnd()}`;
-          if (r.suggestion) {
-            if (!/[.!?]$/.test(head)) head += ".";
-            head += ` Safer: ${r.suggestion}`;
-          }
-          gWhy = head;
-          if (shadow()) pi.logger?.warn?.(`(shadow) would ${r.decision}: ${gWhy}`); else ge = r.decision === "block" ? "deny" : "ask";
+          gMsg = guardMsg(r);
+          if (shadow()) pi.logger?.warn?.(`(shadow) would ${r.decision}: ${renderMsg(gMsg, r.decision).replace(/\n+/g, " ")}`); else ge = r.decision === "block" ? "deny" : "ask";
         }
       }
 
@@ -887,10 +917,10 @@ export default function jevGuard(pi: ExtensionAPI) {
       }
       const pe: Effect = shadow() || !pol ? "allow" : pol.effect;
       const gRank = EFFECT_RANK[ge], pRank = EFFECT_RANK[pe];
-      if (pRank === 0 || gRank > pRank) return ge === "deny" ? { block: true, reason: `${gWhy} ${NEXT_AFTER_DECLINE}` } : ge === "ask" ? ask(ctx, gWhy, gRow) : undefined;
-      if (pRank > gRank) return pe === "deny" ? { block: true, reason: pol!.reason } : ask(ctx, pol!.reason, pol!.rowId);
+      if (pRank === 0 || gRank > pRank) return ge === "deny" ? { block: true, reason: renderMsg(gMsg, "block", true, true) } : ge === "ask" ? ask(ctx, gMsg, gRow) : undefined;
+      if (pRank > gRank) return pe === "deny" ? { block: true, reason: pol!.reason } : ask(ctx, policyMsg(pol!.reason), pol!.rowId);
       if (pe === "deny") return { block: true, reason: pol!.reason }; // equal and non-allow: the policy's reason
-      return ask(ctx, `${gWhy} ${pol!.reason}`, gRow, pol!.rowId); // both ask: one prompt, both reasons, both rows get the outcome
+      return ask(ctx, joinMsg(gMsg, policyMsg(pol!.reason)), gRow, pol!.rowId); // both ask: one prompt, both reasons, both rows get the outcome
     } catch {
       return; // never let the guard itself break the session
     }

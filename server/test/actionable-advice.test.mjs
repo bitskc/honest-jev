@@ -8,6 +8,7 @@ import {
   R1_BARE_WORD_SUGGESTION,
   R10_OPAQUE_SUGGESTION,
   R1_SECRET_SEARCH_SUGGESTION,
+  R1_SOURCE_SUGGESTION,
 } from "../src/kit/guard.mjs";
 
 const noJev = { ask: null, jevAvailable: false };
@@ -21,6 +22,18 @@ test("stdin-fed interpreter soft-ask uses the stdin-script suggestion, not the s
     assert.equal(r.suggestion, R1_STDIN_SCRIPT_SUGGESTION, c);
     assert.notEqual(r.suggestion, R1_SUGGESTION, c);
   }
+});
+
+test("an env-file load that asks for what else is on the line does not advise the same load again", async () => {
+  for (const c of [`. ./.env; ./deploy.sh "$TARGET"`, "set -a; . ./.env; set +a; echo $HOME"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "ask", c);
+    assert.equal(r.suggestion, R1_SOURCE_SUGGESTION, c);
+    assert.notEqual(r.suggestion, R1_SUGGESTION, c);
+  }
+  assert.ok(!/set -a/.test(R1_SOURCE_SUGGESTION), "the load is what the command already did");
+  // its alternative is a real one: the program takes the env file itself, and that is an allow
+  assert.equal((await g("node --env-file=.env app.js")).decision, "allow");
 });
 
 test("bare credential word on a content printer asks with the bare-word suggestion", async () => {
@@ -132,11 +145,10 @@ test("recursive / find-fed secret-name search asks with the search suggestion an
     assert.equal(r.rule, "R1-secret-exposure", c);
     assert.equal(r.suggestion, R1_SECRET_SEARCH_SUGGESTION, c);
     assert.notEqual(r.suggestion, R1_SUGGESTION, c);
-    // what is risky, in words the human can weigh: the matching line carries the value, and it would land in the transcript
-    assert.match(r.reason, /prints every line matching a secret-looking name/, c);
+    // what is risky, in words the human can weigh: the matching line carries the value
+    assert.match(r.reason, /prints every line matching a secret name/, c);
     assert.match(r.reason, /\.env/, c);
     assert.match(r.reason, /NAME=value/, c);
-    assert.match(r.reason, /transcript/, c);
     // reason and suggestion stay two fields: the suggestion text is not mashed into the reason
     assert.ok(!r.reason.includes(R1_SECRET_SEARCH_SUGGESTION), c);
     assert.ok(!/Do not print a secret|set -a/.test(r.suggestion), "the load-a-secret advice does not belong to a search");
@@ -151,7 +163,7 @@ test("the reason names the real program (rg, ag), not always grep", async () => 
 
 test("every command the search suggestion names is itself an allow", async () => {
   const named = [...R1_SECRET_SEARCH_SUGGESTION.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-  assert.deepEqual(named, ["grep -rl NAME .", "rg -l NAME", "grep -n NAME src/app.js", "git grep -n NAME"]);
+  assert.deepEqual(named, ["grep -rl NAME .", "rg -l NAME", "grep -n NAME src/app.js"]);
   for (const name of ["API_KEY", "SECRET_X", "DB_PASS", "DATABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]) {
     for (const tpl of named) {
       const c = tpl.replace("NAME", name);
@@ -213,15 +225,10 @@ test("line-printing searches that name a secret keep asking in the tree; --exclu
   assert.equal((await g("git grep -n API_KEY")).decision, "allow");
 });
 
-test("the search suggestion does not claim that every command it names prints no values", () => {
+test("the search suggestion leads with names-only commands and does not recommend a line-printing tracked-file search", () => {
   const s = R1_SECRET_SEARCH_SUGGESTION;
-  assert.ok(!/without printing values/.test(s));
-  // the no-value commands lead; the line-printing ones come after and are qualified
-  const [noValues, printing] = s.split("Then ");
-  assert.match(noValues, /^Commands that print no values: list the files \(`grep -rl NAME \.` or `rg -l NAME`\)\.\s*$/);
-  assert.match(printing, /`grep -n NAME src\/app\.js`/);
-  assert.match(printing, /`git grep -n NAME` prints matching lines from tracked files, which can include committed secrets/);
-  assert.ok(!noValues.includes("grep -n") && !noValues.includes("git grep"));
+  assert.match(s, /^Names only: `grep -rl NAME \.` or `rg -l NAME`\. Then read lines in source: `grep -n NAME src\/app\.js`\.$/);
+  assert.ok(!s.includes("git grep"));
 });
 
 test("-L on a secret-store operand prints names only, like -l/-c/-q: allow; line-printing and rg -L still block", async () => {
@@ -238,15 +245,21 @@ test("-L on a secret-store operand prints names only, like -l/-c/-q: allow; line
   }
 });
 
-test("every command a R1 suggestion recommends is itself allowed (advice never recommends a form that asks or blocks)", async () => {
+test("every command a suggestion recommends is itself allowed (advice never recommends a form that asks or blocks)", async () => {
   const guard = await import("../src/kit/guard.mjs");
-  const names = Object.keys(guard).filter((k) => /^R1_.*SUGGESTION$/.test(k));
-  assert.ok(names.length >= 5, `found ${names.join(",")}`);
+  const names = Object.keys(guard).filter((k) => /_SUGGESTION$/.test(k));
+  assert.ok(names.length >= 12, `found ${names.join(",")}`);
+  let spansChecked = 0;
   for (const name of names) {
     const spans = [...guard[name].matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-    assert.ok(spans.length > 0, `${name} names no command`);
-    for (const c of spans) assert.equal((await g(c)).decision, "allow", `${name}: ${c}`);
+    for (const span of spans) {
+      for (const c of [span.replace("NAME", "API_KEY"), span.replace("NAME", "SUPABASE_SERVICE_ROLE_KEY")]) {
+        assert.equal((await g(c)).decision, "allow", `${name}: ${c}`);
+        spansChecked++;
+      }
+    }
   }
-  // the load-and-confirm pair, run as one line, is allowed too
-  assert.equal((await g("set -a; . ./.env; set +a; [ -n \"$KEY\" ] && echo 'key loaded'")).decision, "allow");
+  assert.ok(spansChecked >= 14, `only ${spansChecked} spans checked`);
+  // the R1 advice is the load-and-check pair; run as one line it is allowed too
+  assert.equal((await g("set -a; . ./.env; set +a; [ -n \"$KEY\" ] && echo set")).decision, "allow");
 });

@@ -826,7 +826,7 @@ test("round 21b: deeply nested grouping is decided in well under a second and a 
     const r = await timed(cmd);
     assert.equal(r.decision, "ask", cmd.slice(0, 12));
     assert.equal(r.rule, "R10-general-risk", cmd.slice(0, 12));
-    assert.match(r.reason, /nests grouping/);
+    assert.match(r.reason, /^Nests \( \) or \{ \} more than/);
   }
 });
 
@@ -1245,7 +1245,7 @@ test("round 21c: the ask starts past 256 substitutions or past the process-subst
   // few substitutions but bodies that nest over long text: past the body budget the process-substitution ask applies
   const padded = await guard(`cat ${rep("<(", 60)}${rep("x", 1200)}${rep(")", 60)}`, PROJ, HOME);
   assert.equal(padded.decision, "ask");
-  assert.match(padded.reason, /nests process substitutions/);
+  assert.match(padded.reason, /^Nests `<\(`\/`>\(` too deep/);
   assert.equal((await guard(`cat ${rep("<(", 60)}${rep("x", 1200)}${rep(")", 60)}; cat .env`, PROJ, HOME)).decision, "block");
   assert.equal((await guard(`cat ${rep("<(", 60)}${rep("x", 600)}${rep(")", 60)}`, PROJ, HOME)).decision, "allow");
   // an existing ask keeps its own reason, and the block of a later rule still wins
