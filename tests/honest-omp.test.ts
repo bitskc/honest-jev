@@ -251,27 +251,41 @@ test("omp plain text: normal mode turns Honest Jev off but reaches the model; ma
   expect(readFileSync(join(agent, ".jev-honest-active"), "utf8").trim()).toBe("strict");
 });
 
-test("parity: the omp injection is word for word the Claude hooks' (runtime.js) at every level, within 5,000 chars, with nothing below the marker", async () => {
+const RULES_INTRO = "\n\n## Rules\n\nBefore saying any of these, answer in the same message, one line per rule: `<id>: YES|NO — <≤12 words>`. On NO, don't present the outcome.\n\n";
+test("parity: the omp injection is word for word the Claude hooks' (runtime.js) at every level, with and without rules, within 5,000 chars without, with nothing below the marker", async () => {
   const skill = readFileSync(new URL("../skills/jev-honest/SKILL.md", import.meta.url), "utf8");
   const cwd = mkdtempSync(join(root, "parity-cwd-"));
   const before = process.cwd();
   process.chdir(cwd);
   try {
-    for (const level of ["soft", "standard", "strict"]) {
-      const agent = mkdtempSync(join(root, `parity-${level}-`));
-      mkdirSync(join(agent, "skills", "jev-honest"), { recursive: true });
-      writeFileSync(join(agent, "skills", "jev-honest", "SKILL.md"), skill);
-      writeFileSync(join(agent, ".jev-honest-active"), `${level}\n`);
-      const h = await freshHook(agent);
-      const omp = ((await h.handlers["before_agent_start"]({}, { ui: {} })) as { message: { content: string } }).message.content;
-      const r = spawnSync(process.execPath, ["-e", `process.stdout.write(require(${JSON.stringify(join(import.meta.dir, "..", "hooks", "honest", "jev-honest-runtime.js"))}).instructions(${JSON.stringify(level)}))`], {
-        cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: agent, XDG_CONFIG_HOME: XDG }, timeout: 10000, encoding: "utf8",
-      });
-      expect(r.status, r.stderr).toBe(0);
-      expect(omp).toBe(r.stdout);
-      expect(omp.length).toBeLessThanOrEqual(5000);
-      expect(omp).not.toContain("inject:end");
-      expect(omp).not.toContain("## Audit mode");
+    for (const withRules of [false, true]) {
+      for (const level of ["soft", "standard", "strict"]) {
+        const agent = mkdtempSync(join(root, `parity-${level}-`));
+        mkdirSync(join(agent, "skills", "jev-honest"), { recursive: true });
+        writeFileSync(join(agent, "skills", "jev-honest", "SKILL.md"), skill);
+        writeFileSync(join(agent, ".jev-honest-active"), `${level}\n`);
+        if (withRules) {
+          mkdirSync(join(agent, "jev"), { recursive: true });
+          writeFileSync(join(agent, "jev", "rules.json"), JSON.stringify([{ id: "migration-prod-safe", when: "describing a database migration as safe", ask: "Was it run against a copy of prod data?", evidence: "the command and its output" }]));
+        }
+        const h = await freshHook(agent);
+        const omp = ((await h.handlers["before_agent_start"]({}, { ui: {} })) as { message: { content: string } }).message.content;
+        const r = spawnSync(process.execPath, ["-e", `process.stdout.write(require(${JSON.stringify(join(import.meta.dir, "..", "hooks", "honest", "jev-honest-runtime.js"))}).instructions(${JSON.stringify(level)}))`], {
+          cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: agent, XDG_CONFIG_HOME: XDG }, timeout: 10000, encoding: "utf8",
+        });
+        expect(r.status, r.stderr).toBe(0);
+        expect(omp).toBe(r.stdout);
+        expect(omp).not.toContain("inject:end");
+        expect(omp).not.toContain("## Audit in detail");
+        expect(omp).toContain("## Audit (on request)");
+        if (withRules) {
+          expect(omp).toContain(`${RULES_INTRO}- [migration-prod-safe] When describing a database migration as safe: Was it run against a copy of prod data?`);
+          expect(omp.split("\n").filter((l: string) => l === "## Rules").length).toBe(1);
+        } else {
+          expect(omp.length).toBeLessThanOrEqual(5000);
+          expect(omp).not.toContain("\n## Rules\n");
+        }
+      }
     }
   } finally {
     process.chdir(before);

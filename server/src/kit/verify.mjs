@@ -719,7 +719,7 @@ export function decide(answers, evidence, { threshold = DEFAULT_THRESHOLD } = {}
 export function nextStep(evidence) {
   const last = freshChecks(evidence).filter((c) => !c.passed).at(-1);
   if (!last) return "run the project's tests/build/lint, then report the real result; if none can run, say so.";
-  const call = last.call.length > 60 ? `…${last.call.slice(-59)}` : last.call;
+  const call = last.call.length > 60 ? `${last.call.slice(0, 59)}…` : last.call; // the head: it starts with the verb that was run
   return last.unproven ? `send exit_code or paste the runner's summary lines for \`${call}\`.` : `fix the failing check \`${call}\`, rerun, report.`;
 }
 

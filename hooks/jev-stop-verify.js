@@ -913,6 +913,7 @@ const EVIDENCE_CAP = 8000;
 // The block reason embeds the evidence at this smaller budget (REASON_CAP bounds the whole reason).
 const REASON_EVIDENCE_BUDGET = 1500;
 const REASON_CAP = 2500;
+const HONEST_FIXED_CHARS = 720; // headline (<=100) + 3 claim lines (<=155 each) + "… and N more" + "Log:" + Next + thin-margin note, with room to spare
 const MAX_OFFENDING_LINES = 3;
 const REASON_CLAIM_CHARS = 120;
 const capText = (s, max) => (s.length > max ? `${s.slice(0, max - 22)}\n…[reason truncated]` : s);
@@ -1420,7 +1421,7 @@ async function decideInner(hookInput, { fetchImpl } = {}) {
   if (verifyBlocked) {
     // The server's `reason` is the Why and its `next` the step (an older server sends one long reason and no step: it is cut to one line).
     const why = capLine(String(verdict.reason || 'no reason given').replace(/\s+/g, ' '), 200);
-    const step = typeof verdict.next === 'string' && verdict.next.trim() ? verdict.next.trim() : "run the project's real checks, fix failures, report the real result; if none can run, say so.";
+    const step = typeof verdict.next === 'string' && verdict.next.trim() ? capLine(verdict.next.trim().replace(/\s+/g, ' '), 200) : "run the project's real checks, fix failures, report the real result; if none can run, say so.";
     reasons.push(`Stop gate · VERIFY · block: ${why}\nNext: ${step} Don't just reword.`);
   }
 
@@ -1450,10 +1451,20 @@ async function decideInner(hookInput, { fetchImpl } = {}) {
           // is cut; only the first MAX_OFFENDING_LINES are listed, so the reason stays small however long the message is.
           const claimText = (id) => { const m = /^c(\d+)$/.exec(String(id)); return m && claims[Number(m[1])] !== undefined ? capLine(redact(claims[Number(m[1])]), REASON_CLAIM_CHARS) : '(claim text unavailable)'; };
           const offendingLines = offending.slice(0, MAX_OFFENDING_LINES).map((r) => `- "${claimText(r.id)}" — ${r.classification} ${Math.round((r.top_probability || 0) * 100)}%`);
-          if (offending.length > MAX_OFFENDING_LINES) offendingLines.push(`- … ${offending.length - MAX_OFFENDING_LINES} more`);
+          if (offending.length > MAX_OFFENDING_LINES) offendingLines.push(`- … and ${offending.length - MAX_OFFENDING_LINES} more`);
           // Line 1 carries the why (a Claude Code Stop block may show only its first line); the Log is the session's own evidence at the small reason budget.
-          let text = `Stop gate · HONEST · block: ${offending.length} claim${offending.length === 1 ? '' : 's'} contradict${offending.length === 1 ? 's' : ''} the tool log:\n` +
-            offendingLines.join('\n') + `\nLog:\n${evidenceText(ev, REASON_EVIDENCE_BUDGET)}` +
+          // "contradict" is for a misrepresented claim (the tool log says otherwise); an unverifiable one has no evidence either way.
+          const nMis = offending.filter((r) => r.classification === 'misrepresented').length;
+          const nUnv = offending.length - nMis;
+          const claimsWord = (n) => `${n} claim${n === 1 ? '' : 's'}`;
+          const headline = nUnv === 0 ? `${claimsWord(nMis)} contradict${nMis === 1 ? 's' : ''} the tool log`
+            : nMis === 0 ? `${claimsWord(nUnv)} can't be checked against the tool log`
+            : `${claimsWord(offending.length)}: ${nMis} contradict${nMis === 1 ? 's' : ''} the tool log, ${nUnv} can't be checked against it`;
+          // The Log gets what REASON_CAP leaves after the blocks already built and this block's own lines (headline, claims, Next, thin-margin note:
+          // at most HONEST_FIXED_CHARS), up to REASON_EVIDENCE_BUDGET, so a long VERIFY block can never push the Next line out of the cap.
+          const logBudget = Math.max(300, Math.min(REASON_EVIDENCE_BUDGET, REASON_CAP - reasons.join('\n\n').length - 2 - HONEST_FIXED_CHARS));
+          let text = `Stop gate · HONEST · block: ${headline}:\n` +
+            offendingLines.join('\n') + `\nLog:\n${evidenceText(ev, logBudget)}` +
             '\nNext: fix those lines to match the log, or run the check they claim.';
           if (review.length) text += `\n(${review.length} more: thin margin, not blocking.)`;
           reasons.push(text);
@@ -1483,4 +1494,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { decide, parseForVerify, parseForHonest, evidenceText, evidenceIndex, splitClaims, classifyClasses, mcpCall, isRealUserPrompt, readTranscriptLines, bashWriteTargets, EDIT_TOOLS, runOutcome, checkSummary, exitIsMasked, CHECK_COMMAND, commandRunsCheck, writeResult, stateDir, blockStatePath };
+module.exports = { decide, parseForVerify, parseForHonest, evidenceText, evidenceIndex, splitClaims, classifyClasses, mcpCall, isRealUserPrompt, readTranscriptLines, bashWriteTargets, EDIT_TOOLS, runOutcome, checkSummary, exitIsMasked, CHECK_COMMAND, commandRunsCheck, writeResult, stateDir, blockStatePath, EVIDENCE_CAP, REASON_EVIDENCE_BUDGET, REASON_CAP, MAX_OFFENDING_LINES, REASON_CLAIM_CHARS };

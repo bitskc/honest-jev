@@ -225,7 +225,9 @@ test("instructions: the real injection is at most 5,000 chars at every level and
       assert.ok(text.includes("what would I show to prove this line?"), level);
       assert.ok(text.includes("`/honest-jev soft|standard|strict|off`"), level);
       assert.ok(text.includes("**`off` covers Honest Jev only.**") && text.includes('"Honest Jev off. The command guard is separate and still on;'), level);
-      assert.ok(text.includes("**Invoked as a skill (`/skill:jev-honest off`, or any level) this does not change the level.**"), level);
+      // the #108 paragraphs are byte for byte the originals, "Still active if unsure." included
+      assert.ok(text.includes("Active on every response until the level is changed or the session ends. Still active if unsure. Switch:"), level);
+      assert.ok(text.includes("**Invoked as a skill (`/skill:jev-honest off`, or any level) this does not change the level.** It only loads these instructions. Tell the user the level changes only through the honest-jev command or its plain-text forms (see above), and do not claim Honest Jev is off (or at that level). Keep applying the current level."), level);
       // the classify schema: ids, items, classes, in the shape jev_classify takes
       const schema = JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)[1]);
       assert.deepEqual(schema.classes.map((c) => c.id), ["verified", "hedged", "unverifiable", "misrepresented"]);
@@ -240,7 +242,9 @@ test("instructions: the real injection is at most 5,000 chars at every level and
       assert.ok(text.includes("## Redact (all levels)") && text.includes("drop the item and treat the claim as **not verified**"), level);
       assert.ok(text.includes("## Boundaries") && text.includes("JEV_STOP_GATE"), level);
       // what moved below the marker is not injected
-      for (const gone of ["inject:end", "## Audit mode", "## Principles", "## Rules in detail", "Author on the fly", "## Redact-or-refuse in detail", "## Boundaries in detail"]) assert.ok(!text.includes(gone), `${level}: ${gone} is injected`);
+      for (const gone of ["inject:end", "## Audit in detail", "## Principles", "## Rules in detail", "Author on the fly", "## Redact-or-refuse in detail", "## Boundaries in detail"]) assert.ok(!text.includes(gone), `${level}: ${gone} is injected`);
+      // audit is triggered by user text ("audit your last answer"), so its short procedure is injected, and the strict row that mentions it is not dangling
+      assert.ok(text.includes("## Audit (on request)") && text.includes("verify each flagged claim against reality") && text.includes("Report claim, bucket and what settled it"), level);
     }
   });
 });
@@ -248,7 +252,7 @@ test("instructions: the real injection is at most 5,000 chars at every level and
 test("instructions: the SKILL.md sections below the marker are all still in the file", () => {
   const skill = fs.readFileSync(path.join(here, "..", "..", "skills", "jev-honest", "SKILL.md"), "utf8");
   const below = skill.slice(skill.indexOf("<!-- inject:end -->"));
-  for (const h of ["## Why the check is worded this way", "## Audit mode (on request)", "## Principles", "## Rules in detail", "## Redact-or-refuse in detail", "## Boundaries in detail"]) assert.ok(below.includes(h), h);
+  for (const h of ["## Why the check is worded this way", "## Audit in detail", "## Principles", "## Rules in detail", "## Redact-or-refuse in detail", "## Boundaries in detail"]) assert.ok(below.includes(h), h);
   assert.equal((skill.match(/<!-- inject:end -->/g) || []).length, 1);
 });
 

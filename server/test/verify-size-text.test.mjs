@@ -27,7 +27,10 @@ test("the false-claim sentence, the failed-check step and the unproven-check ste
   assert.equal(failed.next, "fix the failing check `npm test`, rerun, report.");
   const unproven = await verifyDone({ final_message: "Done.", task: "t", file_changes: 1, checks: [{ command: "npm test || true", output: "" }] }, stub(BLOCK));
   assert.match(unproven.next, /^send exit_code or paste the runner's summary lines for `npm test \|\| true`\.$/);
-  assert.ok(nextStep({ mutations: 1, checks: [{ call: `npm test ${"x".repeat(200)}`, passed: false }], checksBeforeMutation: 0 }).length < 120, "a long command is cut in the step");
+  const long = nextStep({ mutations: 1, checks: [{ call: `cd /srv/app && npm test -- --coverage ${"x".repeat(200)}`, passed: false }], checksBeforeMutation: 0 });
+  assert.ok(long.length < 120, "a long command is cut in the step");
+  assert.ok(long.startsWith("fix the failing check `cd /srv/app && npm test -- --coverage x"), `the verb that was run is kept, not the tail: ${long}`);
+  assert.ok(long.includes("…`, rerun, report."), long);
 });
 
 test("every verify reason and note is short", async () => {

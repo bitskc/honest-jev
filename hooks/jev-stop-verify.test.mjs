@@ -314,7 +314,7 @@ test("honest block: line 1 carries the why, at most 3 claims of at most 120 char
   assert.ok(n > 3, `expected more than 3 offending claims, got ${all[0]}`);
   const claimLines = all.slice(1, all.indexOf("Log:")).filter((l) => l.startsWith("- "));
   assert.equal(claimLines.length, 4, "three claims and the '… N more' line");
-  assert.equal(claimLines[3], `- … ${n - 3} more`);
+  assert.equal(claimLines[3], `- … and ${n - 3} more`);
   for (const l of claimLines.slice(0, 3)) assert.ok(l.length <= 120 + 30, l);
   assert.equal(all.filter((l) => l.startsWith("Next: ")).length, 1);
   assert.equal(all.at(-1), "Next: fix those lines to match the log, or run the check they claim.");
@@ -322,6 +322,63 @@ test("honest block: line 1 carries the why, at most 3 claims of at most 120 char
   assert.ok(log.length <= 1500, `log ${log.length}`);
   assert.ok(out.reason.length <= 2500, `reason ${out.reason.length}`);
   assert.match(out.reason, /npm test.*failed/s, "the failing check is the first thing kept in the log");
+});
+
+// the three kinds of headline: "contradict" only for a misrepresented claim; an unverifiable one has no evidence either way
+const honestHeadline = async (classes) => {
+  fresh(); setBaseEnv({ gate: "honest" });
+  const { fetchImpl } = stubFetch((name, args) => (name === "kit_verify_done"
+    ? { verified: true, verdict: "verified", action: "allow", reason: "a check passed", answers: { discloses_unverified: 0 } }
+    : { results: args.items.map((it, i) => ({ id: it.id, classification: classes[i % classes.length], top_probability: 0.9, decision: "auto" })) }));
+  const lines = [userPrompt("Fix the bug."), assistantToolUse("t1", "Edit", { file_path: "src/a.js" }), toolResult("t1", "ok"),
+    assistantToolUse("t2", "Bash", { command: "npm test" }), toolResult("t2", "1 passed, 2 failed", false)];
+  const msg = ["All tests pass now after my change to the module.", "The whole migration is finished and verified end to end.", "Nothing else needs to change in this code base at all."].slice(0, classes.length).join("\n\n");
+  const out = await stopGate.decide({ transcript_path: writeTranscript(lines), last_assistant_message: msg }, { fetchImpl });
+  return out.reason.split("\n")[0];
+};
+test("honest block headline: misrepresented claims contradict the log, unverifiable ones can't be checked against it, a mix says both", async () => {
+  assert.equal(await honestHeadline(["misrepresented"]), "Stop gate · HONEST · block: 1 claim contradicts the tool log:");
+  assert.equal(await honestHeadline(["misrepresented", "misrepresented"]), "Stop gate · HONEST · block: 2 claims contradict the tool log:");
+  assert.equal(await honestHeadline(["unverifiable"]), "Stop gate · HONEST · block: 1 claim can't be checked against the tool log:");
+  assert.equal(await honestHeadline(["unverifiable", "unverifiable", "unverifiable"]), "Stop gate · HONEST · block: 3 claims can't be checked against the tool log:");
+  assert.equal(await honestHeadline(["misrepresented", "unverifiable"]), "Stop gate · HONEST · block: 2 claims: 1 contradicts the tool log, 1 can't be checked against it:");
+});
+
+test("a long `next` from the server is capped, so it cannot push the HONEST Next line out of the reason", async () => {
+  fresh(); setBaseEnv({ gate: "both" });
+  const { fetchImpl } = stubFetch((name, args) => (name === "kit_verify_done"
+    ? { verified: false, verdict: "unverified", action: "block", answers: { discloses_unverified: 0 }, reason: "R".repeat(5000), next: "N".repeat(5000) }
+    : { results: args.items.map((it) => ({ id: it.id, classification: "misrepresented", top_probability: 0.9, decision: "auto" })) }));
+  const lines = [userPrompt("Fix the bug."), assistantToolUse("t1", "Edit", { file_path: "src/a.js" }), toolResult("t1", "ok")];
+  for (let i = 0; i < 60; i++) { lines.push(assistantToolUse(`n${i}`, "Bash", { command: `echo step ${i} ${"x".repeat(200)}` }), toolResult(`n${i}`, `step ${i}`)); }
+  lines.push(assistantToolUse("tf", "Bash", { command: "npm test" }), toolResult("tf", "1 passed, 2 failed", false));
+  const claims = Array.from({ length: 6 }, (_, i) => `Claim number ${i} says everything works and every single test passes after the change ${"and more words ".repeat(20)}`);
+  const out = await stopGate.decide({ transcript_path: writeTranscript(lines), last_assistant_message: claims.join("\n\n") }, { fetchImpl });
+  const all = out.reason.split("\n");
+  const verifyNext = all.find((l) => l.startsWith("Next: N"));
+  assert.ok(verifyNext && verifyNext.length <= "Next: ".length + 200 + " Don't just reword.".length, `verify Next is ${verifyNext && verifyNext.length}`);
+  assert.equal(all.at(-1), "Next: fix those lines to match the log, or run the check they claim.");
+  assert.ok(!out.reason.includes("[reason truncated]"), "nothing was cut by REASON_CAP");
+  assert.ok(out.reason.length <= 2500, `reason ${out.reason.length}`);
+});
+
+test("the caps are what the README and the plan say: reason 2500, reason evidence 1500, classifier evidence 8000, 3 claims of 120", () => {
+  assert.equal(stopGate.REASON_CAP, 2500);
+  assert.equal(stopGate.REASON_EVIDENCE_BUDGET, 1500);
+  assert.equal(stopGate.EVIDENCE_CAP, 8000);
+  assert.equal(stopGate.MAX_OFFENDING_LINES, 3);
+  assert.equal(stopGate.REASON_CLAIM_CHARS, 120);
+});
+
+test("the classifier's evidence is still the full 8000-char block (only the reason's copy shrank)", () => {
+  const lines = [userPrompt("Fix the bug."), assistantToolUse("t1", "Edit", { file_path: "src/a.js" }), toolResult("t1", "ok")];
+  for (let i = 0; i < 60; i++) { lines.push(assistantToolUse(`n${i}`, "Bash", { command: `echo step ${i} ${"x".repeat(200)}` }), toolResult(`n${i}`, `step ${i}`)); }
+  lines.push(assistantToolUse("tf", "Bash", { command: "npm test" }), toolResult("tf", "1 passed, 2 failed", false));
+  const ev = stopGate.parseForHonest(lines);
+  const full = stopGate.evidenceText(ev);
+  const small = stopGate.evidenceText(ev, stopGate.REASON_EVIDENCE_BUDGET);
+  assert.ok(full.length > 7500 && full.length <= 8000, `classifier evidence ${full.length}`);
+  assert.ok(small.length <= 1500 && small.length < full.length / 4, `reason evidence ${small.length}`);
 });
 
 test("verify gate: an honest disclosure is allowed through once the server itself doesn't flag it (e.g. a disclosed_unverified verdict)", async () => {
