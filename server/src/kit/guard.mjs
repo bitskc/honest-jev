@@ -120,24 +120,21 @@ const SECRET_VAR_NAME_RE = new RegExp([
   ")",
 ].join(""), "i");
 export const R1_SUGGESTION =
-  "Do not print a secret. Load it into the environment in the same shell as the command that needs it " +
-  "(`set -a; . ./.env; set +a`) and confirm it is present without revealing it " +
-  "(`[ -n \"$KEY\" ] && echo 'key loaded'`). If output might contain a key, pipe it through sed to redact it.";
+  "Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.";
 // Interpreter fed from a pipe / `< file` / `<(...)`: the guard cannot see the script. Tell the agent how to make it visible.
 export const R1_STDIN_SCRIPT_SUGGESTION =
-  "Write the script to a file and run it as `node path/script.js` (or `python path/script.py`), or pass it inline with " +
-  "`node -e '...'` / `python -c '...'`, so the guard can read it. Do not feed the interpreter from a pipe, `< file`, or `<(...)`.";
+  "Put the script in a file (`node script.js`) or inline (`node -e '...'`) so the guard can read it.";
 // Bare credential word on a content-printing program: may be a store or only a label.
 export const R1_BARE_WORD_SUGGESTION =
-  "If this names a secret file, do not print it; load values with `set -a; . ./file; set +a` and confirm with " +
-  "`[ -n \"$KEY\" ] && echo 'key loaded'`. If it is only a label or test name, confirm and proceed.";
+  "A secret file? Don't print it: `set -a; . ./.env; set +a`. Only a label or test name? Proceed.";
 // A recursive (or find-fed) grep/rg for a secret NAME: the agent wants to know where the name is used, not to load it. Every command named
 // here is itself an allow; actionable-advice.test.mjs pins that. Only the `-l` forms print no values: the others print matching lines, and the
 // text says so (a tracked file can hold a hard-coded or committed secret).
 export const R1_SECRET_SEARCH_SUGGESTION =
-  "Commands that print no values: list the files (`grep -rl NAME .` or `rg -l NAME`). Then read lines only in a file you know is " +
-  "source code (`grep -n NAME src/app.js`); `git grep -n NAME` prints matching lines from tracked files, which can include committed secrets.";
+  "Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.";
 
+/** A value shown inside a prompt: whitespace folded to one line, at most 20 chars, tail kept (a path's end names the file). */
+export const clip = (v, n = 20) => { const t = String(v ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `…${t.slice(t.length - (n - 1))}` : t; };
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
 const REDIR_SPLIT_RE = /(?<!\d)\d*[<>]+&?/; // (?<!\d): a run of digits is tried from its first digit only (a bare `\d*` start at every digit was quadratic)
 // `--opt=value` carries a path as its value: `docker compose --env-file=.env config`.
@@ -585,9 +582,9 @@ function secretStoreIn(tokens, home) {
   const hit = secretShapeIn(tokens, home);
   if (hit) return { hit, severity: "block" };
   const word = bareSecretWordIn(tokens);
-  if (word) return { hit: word, severity: "soft", kind: "bare", why: "names a bare credential word" };
+  if (word) return { hit: word, severity: "soft", kind: "bare", short: "a bare credential word", why: "names a bare credential word" };
   const wide = wideGlobIn(tokens, home);
-  return wide ? { hit: wide, severity: "soft", kind: "wide", why: "is a glob too wide or ambiguous to prove it misses a secret store" } : null;
+  return wide ? { hit: wide, severity: "soft", kind: "wide", short: "a glob too wide to rule out a secret", why: "is a glob too wide or ambiguous to prove it misses a secret store" } : null;
 }
 function ambiguousPathIn(tokens) {
   for (const tok of tokens) {
@@ -1260,10 +1257,10 @@ function interpBodyLeak(prog, payload) {
   for (const re of rules.named) {
     for (const m of payload.matchAll(re)) {
       const name = m[m.length - 1];
-      if (SECRET_VAR_NAME_RE.test(name)) return `reads $${name} from the environment`;
+      if (SECRET_VAR_NAME_RE.test(name)) return `reads $${clip(name)}`;
     }
   }
-  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? "dumps every environment variable, secrets included" : null;
+  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? "dumps every env var, secrets included" : null;
 }
 // `env` with no command operand prints the environment; `VAR=value` operands only set variables.
 function envPrintsEnvironment(args) {
@@ -1447,7 +1444,7 @@ function stdinScriptFindings(ctx) {
           if (lit !== null) bodies.push(lit);
         }
         for (const b of bodies) {
-          const why = interpBodyLeak(prog, b) ?? (interpBodySecretRead(b, ctx.home) ? `reads a secret store (${interpBodySecretRead(b, ctx.home)})` : null);
+          const why = interpBodyLeak(prog, b) ?? (interpBodySecretRead(b, ctx.home) ? `reads secret store \`${clip(interpBodySecretRead(b, ctx.home))}\`` : null);
           if (why) res.leak ??= { prog, why };
         }
         const fed = i > 0 || args.some((a) => INPUT_REDIRECT_RE.test(a) || STDIN_PATH_RE.test(a)) || stage.includes("<(");
@@ -1518,23 +1515,23 @@ export function secretCliPrint(prog, args) {
     case "pass": case "gopass": {
       if (has("-c", "--clip", "-q", "--qr")) return null; // clipboard / QR only: nothing printed
       if (!pos.length || PASS_NON_PRINTING.has(pos[0])) return null;
-      return `\`${prog} ${pos.slice(0, 2).join(" ")}\` prints a stored password`; // `show`, `otp`, or a bare entry name (pass's default is show)
+      return `\`${prog} ${clip(pos.slice(0, 2).join(" "))}\` prints a stored password`; // `show`, `otp`, or a bare entry name (pass's default is show)
     }
     case "vault":
-      if ((pos[0] === "kv" && pos[1] === "get") || pos[0] === "read") return `\`vault ${pos.slice(0, pos[0] === "kv" ? 2 : 1).join(" ")}\` prints a stored secret`;
+      if ((pos[0] === "kv" && pos[1] === "get") || pos[0] === "read") return `\`vault ${clip(pos.slice(0, pos[0] === "kv" ? 2 : 1).join(" "))}\` prints a stored secret`;
       return null;
     case "aws":
       if (pos[0] === "secretsmanager" && pos[1] === "get-secret-value") return "`aws secretsmanager get-secret-value` prints a secret value";
-      if (pos[0] === "ssm" && /^get-parameters?(?:-by-path)?$/.test(pos[1] || "") && has("--with-decryption")) return `\`aws ssm ${pos[1]} --with-decryption\` prints decrypted parameters`;
+      if (pos[0] === "ssm" && /^get-parameters?(?:-by-path)?$/.test(pos[1] || "") && has("--with-decryption")) return `\`aws ssm ${clip(pos[1])} --with-decryption\` prints decrypted parameters`;
       return null;
     case "gcloud":
       if (pos[0] === "secrets" && pos[1] === "versions" && pos[2] === "access") return "`gcloud secrets versions access` prints a secret value";
       return null;
     case "az":
-      if (pos[0] === "keyvault" && pos[1] === "secret" && (pos[2] === "show" || pos[2] === "download")) return `\`az keyvault secret ${pos[2]}\` prints a secret value`;
+      if (pos[0] === "keyvault" && pos[1] === "secret" && (pos[2] === "show" || pos[2] === "download")) return `\`az keyvault secret ${clip(pos[2])}\` prints a secret value`;
       return null;
     case "security":
-      if (/^find-(?:generic|internet)-password$/.test(pos[0] || "") && a.some((t) => /^-[A-Za-z]*[wg]/.test(t))) return `\`security ${pos[0]} -w/-g\` prints a keychain password`;
+      if (/^find-(?:generic|internet)-password$/.test(pos[0] || "") && a.some((t) => /^-[A-Za-z]*[wg]/.test(t))) return `\`security ${clip(pos[0])} -w/-g\` prints a keychain password`;
       if (pos[0] === "dump-keychain" && a.some((t) => /^-[A-Za-z]*d/.test(t))) return "`security dump-keychain -d` prints every keychain secret";
       return null;
     case "gpg": case "gpg2":
@@ -1544,16 +1541,16 @@ export function secretCliPrint(prog, args) {
       if (pos[0] === "credential" && pos[1] === "fill") return "`git credential fill` prints the stored password for a host";
       return null;
     case "op":
-      if (pos[0] === "read" || (pos[0] === "item" && pos[1] === "get" && has("--reveal"))) return `\`op ${pos.slice(0, pos[0] === "read" ? 1 : 2).join(" ")}\` prints a 1Password secret`;
+      if (pos[0] === "read" || (pos[0] === "item" && pos[1] === "get" && has("--reveal"))) return `\`op ${clip(pos.slice(0, pos[0] === "read" ? 1 : 2).join(" "))}\` prints a 1Password secret`;
       return null;
     case "bw":
-      if (pos[0] === "get" && ["password", "item", "totp", "notes"].includes(pos[1])) return `\`bw get ${pos[1]}\` prints a Bitwarden secret`;
+      if (pos[0] === "get" && ["password", "item", "totp", "notes"].includes(pos[1])) return `\`bw get ${clip(pos[1])}\` prints a Bitwarden secret`;
       return null;
     case "lpass":
       if (pos[0] === "show") return "`lpass show` prints a LastPass secret";
       return null;
     case "doppler":
-      if (pos[0] === "secrets" && (pos[1] === undefined || pos[1] === "get" || pos[1] === "download")) return `\`doppler secrets${pos[1] ? " " + pos[1] : ""}\` prints secret values`;
+      if (pos[0] === "secrets" && (pos[1] === undefined || pos[1] === "get" || pos[1] === "download")) return `\`doppler secrets${pos[1] ? " " + clip(pos[1]) : ""}\` prints secret values`;
       return null;
     case "kubectl":
       if (pos[0] === "get" && /^secrets?$|^secrets?\//.test(pos[1] || "") && a.some((t) => /^(?:-o|--output)(?:=|$)|^-o\S/.test(t))) return "`kubectl get secret -o ...` prints the secret's data";
@@ -1602,35 +1599,35 @@ const SPAWN_RE = /\bsystem\s*\(|(?<![\w.])system\s+["']|\bpopen\w*\s*\(|\bos\.(?
 /** Why a command that loads an env file is not just a load, or null when every segment is clean (the loading one included). `command` = the whole text, `src` = the loaded path (left out of the env-word test). */
 function sourceLeaks(segs, command, src) {
   // a heredoc body is not a segment: any `$` or backtick on a line that has one asks
-  if (/<<(?!<)/.test(command) && /[$`]/.test(command)) return "a heredoc on the line may expand a variable";
+  if (/<<(?!<)/.test(command) && /[$`]/.test(command)) return "a heredoc may expand a variable";
   for (const seg of segs) {
-    if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "another part of the command expands a variable (`$` or a backtick), which could print or send what was loaded";
+    if (/[$`]/.test(seg) && !TEST_ONLY_RE.test(seg)) return "the line expands a variable (`$` or a backtick)";
     const t = wordsQ(seg).t;
     for (let k = 0; k < t.length; k++) {
-      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a tracing or startup-hook variable (BASH_ENV, ENV, PS4, SHELLOPTS, BASH_XTRACEFD)";
+      if (TRACE_ASSIGN_RE.test(t[k])) return "it sets a trace/startup hook (BASH_ENV, PS4, ...)";
       const w = base(t[k]);
       const rest = t.slice(k + 1);
-      if (w === "trap") return "a `trap` can run a command that prints what was loaded";
-      if (w === "script") return "`script` runs another command that can print the environment";
-      if ((w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) && rest.some((a) => a === "-c" || a === "--call" || LOAD_SHELLS.has(base(a)))) return `\`${w}\` runs a shell, which can print the environment`;
+      if (w === "trap") return "a `trap` can print what was loaded";
+      if (w === "script") return "`script` can print the environment";
+      if ((w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) && rest.some((a) => a === "-c" || a === "--call" || LOAD_SHELLS.has(base(a)))) return `\`${clip(w)}\` runs a shell that can print it`;
       if (w === "export" && rest.some((a) => /^-[A-Za-z]*n[A-Za-z]*$/.test(a))) return "`export -n` lists the variables";
-      if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable, the environment included";
-      if ((w === "docker-compose" || w === "podman-compose" || ((w === "docker" || w === "podman") && rest.includes("compose"))) && rest.some((a) => a === "config" || a === "convert")) return "`compose config` prints the compose file with every ${VAR} filled in from the loaded environment";
-      if (w === "strace" || w === "ltrace") return `\`${w}\` prints the environment of every process it traces`;
+      if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable";
+      if ((w === "docker-compose" || w === "podman-compose" || ((w === "docker" || w === "podman") && rest.includes("compose"))) && rest.some((a) => a === "config" || a === "convert")) return "`compose config` prints the loaded variables";
+      if (w === "strace" || w === "ltrace") return `\`${clip(w)}\` prints each traced process's environment`;
       if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
-      if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing (x, v, xtrace, verbose), which echoes each assignment";
+      if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing, which echoes assignments";
     }
     const [prog, args] = programOf(stripRedirects(seg));
     // `e` in any option cluster (`e`, `eww`, `-e`, `-ef`, `-E`): BSD/macOS `ps` prints every process's environment with it (`ps aux` and `ps -A` have no `e`)
-    if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an e option shows every process's environment (BSD and macOS ps)";
-    if (["declare", "typeset", "readonly"].includes(prog)) return `\`${prog}\` can list variable values`;
-    if (ENV_READ_RE.test(seg)) return "an inline script or filter reads the environment and can print it";
+    if (prog === "ps" && args.some((a) => /^-?[A-Za-z]*[eE][A-Za-z]*$/.test(a))) return "`ps` with an e option shows process environments";
+    if (["declare", "typeset", "readonly"].includes(prog)) return `\`${clip(prog)}\` can list variable values`;
+    if (ENV_READ_RE.test(seg)) return "an inline script can print the environment";
   }
   // the whole line, the loaded path left out: a bare `env` / `printenv` word anywhere (an argument to xargs, gdb, find -exec, vim -c, npm run, jq, an inline script...) can print the environment,
   // and a spawning call (`system(`, `subprocess`, `child_process`...) can run `set` or `export` without any such word
   const text = command.split(src).join(" ");
-  if (ENV_NAME_RE.test(text)) return "the line has a bare `env` or `printenv` word, which can print the whole environment (as an argument to xargs, gdb, find -exec, npm run, jq, an interpreter, ...)";
-  if (SPAWN_RE.test(text)) return "the line has a process-spawning call (system(, subprocess, child_process, ...), which can print the environment";
+  if (ENV_NAME_RE.test(text)) return "a bare `env`/`printenv` word can print the environment";
+  if (SPAWN_RE.test(text)) return "a process-spawning call can print the environment";
   return null;
 }
 function ruleSecret(ctx) {
@@ -1641,10 +1638,10 @@ function ruleSecret(ctx) {
       const p = expand(fp, home);
       // case-insensitive filesystems (macOS, Windows): `.ENV` and `~/.SSH/id_rsa` are the stores their lowercase spelling names
       if (SECRET_PATH_RES.some((r) => r.test(p) || r.test(p.toLowerCase()))) {
-        return { rule: "R1-secret-exposure", severity: "block", reason: `Read of a secret store (${fp}): its contents would land in the transcript`, suggestion: R1_SUGGESTION };
+        return { rule: "R1-secret-exposure", severity: "block", reason: `Read of secret store \`${clip(fp)}\` puts its contents in the transcript.`, suggestion: R1_SUGGESTION };
       }
       if (AMBIGUOUS_SECRET_TOKENS.some((t) => p.toLowerCase().includes(t))) {
-        return { rule: "R1-secret-exposure", severity: "ambiguous", jev: "secret", reason: `Read of a path that may hold secrets (${fp})`, suggestion: R1_SUGGESTION, target: fp };
+        return { rule: "R1-secret-exposure", severity: "ambiguous", jev: "secret", reason: `Read of \`${clip(fp)}\`, which may hold secrets.`, suggestion: R1_SUGGESTION, target: fp };
       }
     }
     return null;
@@ -1661,8 +1658,8 @@ function ruleSecret(ctx) {
   let feedIndex = null;
   if (/\b(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl|php|pwsh|powershell)\b/.test(ctx.command) && /[<|]/.test(ctx.command)) {
     stdinFindings = stdinScriptFindings(ctx);
-    if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${stdinFindings.leak.prog}\` reads a script from stdin that ${stdinFindings.leak.why}`, suggestion: R1_SUGGESTION };
-    if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${stdinFindings.unseen}\` reads its script from stdin (a pipe, a file or \`<(...)\`), and the guard cannot see what that script does with the environment; confirm it is intended`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
+    if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(stdinFindings.leak.prog)}\` reads a stdin script that ${stdinFindings.leak.why}.`, suggestion: R1_SUGGESTION };
+    if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(stdinFindings.unseen)}\` runs a stdin script; the guard can't see what it does with env vars.`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
   let sourced = null;
   for (const [si, seg] of secretSegs.entries()) {
@@ -1674,13 +1671,13 @@ function ruleSecret(ctx) {
     {
       const [cliProg, cliArgs] = resolveCommand(seg);
       const why = cliProg && secretCliPrint(cliProg, cliArgs);
-      if (why) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `${why}: it would land in the transcript; confirm it is intended`, suggestion: R1_SUGGESTION };
+      if (why) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `${why}.`, suggestion: R1_SUGGESTION };
     }
     // `source F` / `. F`: an env file is judged after the loop (allowed unless sourceLeaks finds something else); any other secret store keeps the ask.
     if ((bareProg === "source" || bareProg === ".") && bareArgs[0]) {
       const src = secretShapeIn([bareArgs[0]], home, true);
       if (src && sourcedStoreIsEnvFile(bareArgs[0], home)) sourced ??= { prog: bareProg, src };
-      else if (src) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg} ${src}\` loads a secret store that is not an env file (bash prints a non-shell file's lines as errors); confirm it is intended`, suggestion: R1_SUGGESTION };
+      else if (src) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg} ${clip(src)}\` loads a non-env secret file; bash echoes its lines as errors.`, suggestion: R1_SUGGESTION };
     }
     // Q6 metadata verbs: kubectl --kubeconfig, and docker/podman *compose* --env-file → ask.
     // Plain `docker run --env-file` stays on the consumer exemption (prints nothing unless the command dumps env).
@@ -1690,13 +1687,13 @@ function ruleSecret(ctx) {
       const isKubectl = bareProg === "kubectl";
       if (isKubectl || isCompose) {
         const metaOpt = metadataSecretOptionValue(bareArgs, home);
-        if (metaOpt) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg}\` references secret store \`${metaOpt}\` via a config/env-file option (metadata); confirm it is intended`, suggestion: R1_SUGGESTION };
+        if (metaOpt) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(bareProg)}\` points at secret file \`${clip(metaOpt)}\` via an env-file option.`, suggestion: R1_SUGGESTION };
       }
     }
     if (bareProg === "xargs") {
       const f = xargsArgFile(bareArgs);
       const hit = f !== null && secretShapeIn([f], home);
-      if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`xargs -a ${hit}\` runs a command on every line of a secret store, and each line comes back in its output or error text`, suggestion: R1_SUGGESTION };
+      if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`xargs -a ${clip(hit)}\` feeds each line of a secret file to a command; lines echo back.`, suggestion: R1_SUGGESTION };
     }
     if (bareProg === "find" || bareProg === "ls") {
       // find prints names only, but a consumer reads what it matches (`find ... | xargs cat`, `for f in $(find ...)`).
@@ -1708,26 +1705,26 @@ function ruleSecret(ctx) {
         fed ??= consumerFedListings(ctx);
         const reads = findReads(ctx, bareArgs) || fed.has(listingKey(seg));
         const hit = reads && secretShapeIn(pathArgs("find", bareArgs), home, true);
-        if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`find\` on a secret store (${hit}) hands what it matches to a reader`, suggestion: R1_SUGGESTION };
+        if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`find\` on secret store \`${clip(hit)}\` hands matches to a reader.`, suggestion: R1_SUGGESTION };
         // a credentials directory alone: find prints names, so it asks (main allowed it); `cat credentials/id` and `git add credentials/` still block
         const dirOnly = reads && secretShapeIn(pathArgs("find", bareArgs), home);
-        if (dirOnly) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`find\` on a credentials directory (${dirOnly}) hands what it matches to a reader`, suggestion: R1_SUGGESTION };
+        if (dirOnly) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`find\` in credentials dir \`${clip(dirOnly)}\` hands matches to a reader.`, suggestion: R1_SUGGESTION };
         if (!reads) {
           const metaPath = secretShapeIn(pathArgs("find", bareArgs), home); // include credentials/ dirs (Q6 metadata)
           const metaName = findMetadataSecretName(bareArgs, home);
           const meta = metaPath || metaName;
-          if (meta) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`find\` names a secret store (${meta}) without reading its contents (metadata); confirm it is intended`, suggestion: R1_SUGGESTION };
+          if (meta) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`find\` names secret store \`${clip(meta)}\` (names only, no contents).`, suggestion: R1_SUGGESTION };
         }
       }
       fed ??= consumerFedListings(ctx);
       const glob = fed.has(listingKey(seg)) && secretShapeIn(bareArgs, home);
-      if (glob) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${bareProg}\` matches a secret-looking file (${glob}) and feeds a reader`, suggestion: R1_SUGGESTION };
+      if (glob) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(bareProg)}\` globs a secret-looking file (\`${clip(glob)}\`) into a reader.`, suggestion: R1_SUGGESTION };
     }
     const [prog, args] = resolveCommand(seg);
     if (prog === null) continue;
     if (["grep", "egrep", "rg", "ag"].includes(prog) && quietGrep(prog, args)) continue;
     if (cwds.some((c) => grepNamesSecret(prog, args, c, ctx.home)) && (grepRecursive(prog, args) || ["xargs", "find", "parallel"].includes(bareProg) || (fed ??= consumerFedListings(ctx)).size > 0)) {
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog}\` prints every line matching a secret-looking name across many files (recursive, or fed by find). In a file like .env that line is \`NAME=value\`, so the value would land in the transcript. Approve only if showing it is acceptable.`, suggestion: R1_SECRET_SEARCH_SUGGESTION };
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)}\` prints every line matching a secret name; in .env that line is \`NAME=value\`.`, suggestion: R1_SECRET_SEARCH_SUGGESTION };
     }
     // openssl writes to -out/-outform's file when given one, not to stdout; a bare invocation (no -out)
     // or `-out -` (openssl's own convention for "write to stdout", not a file literally named "-") both
@@ -1744,8 +1741,8 @@ function ruleSecret(ctx) {
         const fedShell = c.interactive && stdinFed; // `-i` with a fed stdin: the image's default shell runs the script
         const printing = c.commands.find((cmd) => containerCommandPrints(cmd) === "print");
         const other = printing ? null : c.commands.find((cmd) => cmd.length);
-        if (printing || fedShell) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog} ${c.sub}\` passes the host's $${c.secrets[0]} into a container whose ${printing ? `command (\`${printing[0]}\`)` : "stdin script"} can print it`, suggestion: R1_SUGGESTION };
-        if (other) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${c.sub}\` passes the host's $${c.secrets[0]} into a container that runs \`${other[0]}\`; the guard cannot tell it does not print the value, so it asks`, suggestion: R1_SUGGESTION };
+        if (printing || fedShell) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` passes $${clip(c.secrets[0])} to a container whose ${printing ? `command \`${clip(printing[0])}\`` : "stdin script"} can print it.`, suggestion: R1_SUGGESTION };
+        if (other) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)}\` passes $${clip(c.secrets[0])} to a container running \`${clip(other[0])}\`; may print it.`, suggestion: R1_SUGGESTION };
       }
     }
     const operands = outputOperands(prog, args, stdinFed);
@@ -1754,38 +1751,38 @@ function ruleSecret(ctx) {
     // `.env` and `.netrc` among them. The guard cannot know what the directory holds, so it asks (the literal spellings still block).
     if (!store && operands) {
       const dot = grepPatternExempt(prog, args, operands).find((a) => DOT_GLOB_RE.test(a));
-      if (dot) store = { hit: dot, severity: "soft", kind: "dot", why: "expands to every hidden file, `.env` and credential dotfiles included" };
+      if (dot) store = { hit: dot, severity: "soft", kind: "dot", short: "every hidden file (`.env` too)", why: "expands to every hidden file, `.env` and credential dotfiles included" };
     }
     // A credentials DIRECTORY is the only reason for the block, and the program is not a content reader (`git log -- credentials/`,
     // `git diff --stat -- src/credentials/`, `find credentials/ -name x`, `tree`): main allowed these. They ask: `git diff credentials/id`
     // does print the file, but only a reader is certain to. `cat credentials/id`, `git add credentials/`, `scp credentials/..` still block.
     if (store?.severity === "block" && !READERS.has(prog) && !secretShapeIn(grepPatternExempt(prog, args, operands), home, true)) {
-      store = { hit: store.hit, severity: "soft", kind: "creddir", why: "names a credentials directory and may print what is in it" };
+      store = { hit: store.hit, severity: "soft", kind: "creddir", short: "a credentials directory", why: "names a credentials directory and may print what is in it" };
     }
-    if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` on a secret store (${store.hit}) would print its contents`, suggestion: R1_SUGGESTION };
+    if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` on secret store \`${clip(store.hit)}\` would print it.`, suggestion: R1_SUGGESTION };
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
     // Bare credential words ask unless the program is NON_CONTENT or a Capitalized UI-verb allowlist hit.
     if (store && !(store.severity === "soft" && store.kind === "wide" && isCredentialsGlobReadonly(prog, args))
       && !(store.severity === "soft" && store.kind === "bare" && !bareWordContextAsks(prog, args, programOf(seg)[0], quotedWord(seg, prog) || pathedWord(seg, prog)))) {
       const suggestion = store.kind === "bare" ? R1_BARE_WORD_SUGGESTION : R1_SUGGESTION;
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} ${store.hit}\` ${store.why}, so it asks: confirm it is not a secret file`, suggestion };
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)} ${clip(store.hit)}\`: ${store.short}; it may print a secret.`, suggestion };
     }
     if (READERS.has(prog)) {
       const amb = ambiguousPathIn(pathArgs(prog, args));
-      if (amb && !ambiguous) ambiguous = { rule: "R1-secret-exposure", severity: "ambiguous", jev: "secret", reason: `\`${prog}\` on a path that may hold secrets (${amb})`, suggestion: R1_SUGGESTION, target: amb };
+      if (amb && !ambiguous) ambiguous = { rule: "R1-secret-exposure", severity: "ambiguous", jev: "secret", reason: `\`${clip(prog)}\` on a path that may hold secrets (\`${clip(amb)}\`).`, suggestion: R1_SUGGESTION, target: amb };
     }
     const interpHit = interpScriptSecretRead(prog, args, home);
-    if (interpHit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` runs an inline script that reads a secret store (${interpHit})`, suggestion: R1_SUGGESTION };
+    if (interpHit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that reads secret store \`${clip(interpHit)}\`.`, suggestion: R1_SUGGESTION };
     const interpEnv = interpEnvLeak(prog, args);
-    if (interpEnv) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` runs an inline script that ${interpEnv}`, suggestion: R1_SUGGESTION };
+    if (interpEnv) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv}.`, suggestion: R1_SUGGESTION };
     // The same body check for a script the interpreter reads from STDIN (#185), run here so every segment walk reaches it: substitutions, subshells,
     // function bodies and both quote styles of `bash -c`. The here-string is in the segment; a heredoc body is found by the line it is attached to.
     if (interpFamily(prog) && /<</.test(seg) && interpReadsStdinScript(prog, args)) {
       for (const body of stdinBodiesOf(seg, (feedIndex ??= buildFeedIndex(ctx)))) {
         const why = interpBodyLeak(prog, body);
-        if (why) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` reads a script from stdin that ${why}`, suggestion: R1_SUGGESTION };
+        if (why) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why}.`, suggestion: R1_SUGGESTION };
         const hit = interpBodySecretRead(body, home);
-        if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` reads a script from stdin that reads a secret store (${hit})`, suggestion: R1_SUGGESTION };
+        if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that reads secret store \`${clip(hit)}\`.`, suggestion: R1_SUGGESTION };
       }
     }
     if (prog === "echo" || prog === "printf") {
@@ -1797,18 +1794,18 @@ function ruleSecret(ctx) {
         const named = values?.find((v) => SECRET_VAR_NAME_RE.test(v));
         const opaque = values?.some((v) => v.includes("$") || v.includes("`"));
         if (values && !opaque) {
-          if (named !== undefined) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` would print $${named} through the indirect expansion \${!${m[1]}}, and the name says it holds a secret`, suggestion: R1_SUGGESTION };
-        } else soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog} \${!${m[1]}}\` prints whichever variable \$${m[1]} names, and the guard cannot tell it is not a secret`, suggestion: R1_SUGGESTION };
+          if (named !== undefined) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clip(named)} via indirect expansion; its name says secret.`, suggestion: R1_SUGGESTION };
+        } else soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)}\` prints a variable chosen by indirection; it could be a secret.`, suggestion: R1_SUGGESTION };
       }
       for (const m of seg.matchAll(SECRET_VAR_RE)) {
-        if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` would print $${m[1]}, whose name says it holds a secret`, suggestion: R1_SUGGESTION };
+        if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clip(m[1])}; its name says secret.`, suggestion: R1_SUGGESTION };
       }
     }
     // `cat <<< $DB_PASS` (#57): a here-string hands the expansion to the program's stdin, and a program that prints its stdin prints the secret.
     if (PRINTS_STDIN_PROGS.has(prog) && seg.includes("<<<")) {
       for (const hs of seg.matchAll(HERE_STRING_RE)) {
         for (const m of hs[1].matchAll(SECRET_VAR_RE)) {
-          if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` would print $${m[1]} fed to it as a here-string, and its name says it holds a secret`, suggestion: R1_SUGGESTION };
+          if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clip(m[1])} (here-string); its name says secret.`, suggestion: R1_SUGGESTION };
         }
       }
     }
@@ -1816,40 +1813,39 @@ function ruleSecret(ctx) {
     const argsNR = nonRedirPositionals(args);
     const dumpsEnv = prog === "env" && envPrintsEnvironment(argsNR) || prog === "printenv" && !argsNR.some((a) => !a.startsWith("-"));
     if (dumpsEnv && envDumpIsOnlyFiltered(listingKey(seg))) {
-      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${prog}\` piped into a name filter prints every variable whose name or value contains that word: confirm none is a secret`, suggestion: R1_SUGGESTION };
+      soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)}\` into a name filter prints every variable matching that word; one may be a secret.`, suggestion: R1_SUGGESTION };
       continue;
     }
     if (prog === "printenv") {
       const names = argsNR.filter((a) => !a.startsWith("-"));
       if (!names.length) return { rule: "R1-secret-exposure", severity: "block", reason: "bare `printenv` dumps every variable, secrets included", suggestion: R1_SUGGESTION };
-      for (const a of names) if (SECRET_VAR_NAME_RE.test(a)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`printenv ${a}\` would print a secret value`, suggestion: R1_SUGGESTION };
+      for (const a of names) if (SECRET_VAR_NAME_RE.test(a)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`printenv ${clip(a)}\` would print a secret value`, suggestion: R1_SUGGESTION };
     }
-    if ((prog === "env" && envPrintsEnvironment(argsNR)) || (prog === "set" && !argsNR.length)) return { rule: "R1-secret-exposure", severity: "block", reason: `bare \`${prog}\` dumps every variable, secrets included`, suggestion: R1_SUGGESTION };
+    if ((prog === "env" && envPrintsEnvironment(argsNR)) || (prog === "set" && !argsNR.length)) return { rule: "R1-secret-exposure", severity: "block", reason: `bare \`${clip(prog)}\` dumps every variable, secrets included`, suggestion: R1_SUGGESTION };
     if (prog === "export" && argsNR.every((a) => a.startsWith("-")) && (!argsNR.length || argsNR.includes("-p"))) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${argsNR.length ? "export -p" : "export"}\` dumps every exported variable, secrets included`, suggestion: R1_SUGGESTION };
     if (prog === "declare" || prog === "typeset") {
       const flags = argsNR.filter((a) => /^[-+][A-Za-z]+$/.test(a)).join("");
       const names = argsNR.filter((a) => !/^[-+]/.test(a)).map((a) => a.split("=")[0]);
-      if (!names.length && /[px]/.test(flags)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog} ${argsNR.join(" ")}\` dumps every variable, secrets included`, suggestion: R1_SUGGESTION };
-      if (flags.includes("p")) for (const n of names) if (SECRET_VAR_NAME_RE.test(n)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog} -p ${n}\` would print a secret value`, suggestion: R1_SUGGESTION };
+      if (!names.length && /[px]/.test(flags)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)} ${clip(argsNR.join(" "))}\` dumps every variable, secrets included`, suggestion: R1_SUGGESTION };
+      if (flags.includes("p")) for (const n of names) if (SECRET_VAR_NAME_RE.test(n)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)} -p ${clip(n)}\` would print a secret value`, suggestion: R1_SUGGESTION };
     }
     if (["curl", "http", "wget"].includes(prog)) {
       const verbose = args.some((a) => ["-v", "--verbose", "--trace", "--trace-ascii", "-i", "--include"].includes(a));
       if (verbose && /authorization\s*:/i.test(seg)) {
-        return { rule: "R1-secret-exposure", severity: "block", reason: `\`${prog}\` in verbose mode echoes the Authorization header, including the token`, suggestion: "Drop -v/--verbose when a credential is on the command line, or move the token into a variable and redact the output." };
+        return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)} -v\` echoes the Authorization header, token included.`, suggestion: "Drop -v, or keep the token in a variable and redact the output." };
       }
     }
   }
   if (sourced && !soft) {
     const why = sourceLeaks(secretSegs, ctx.command, sourced.src);
-    if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${sourced.src}\` loads an env file, but ${why}; confirm it is intended`, suggestion: R1_SUGGESTION };
+    if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${why}.`, suggestion: R1_SUGGESTION };
   }
   return soft ?? ambiguous;
 }
 
 // ── R1-secret-exfiltration (block, deterministic): a secret file's contents reaching a network sink ──
 export const R1_EXFIL_SUGGESTION =
-  "Never send a secret file's contents to a network destination. Load individual values into the " +
-  "environment instead (`set -a; . ./.env; set +a`) and reference those, never the whole file.";
+  "Send only the values you need, via env vars ($KEY), never the whole secret file.";
 const CURL_DATA_OPTS = new Set(["-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode"]);
 const CURL_FORM_OPTS = new Set(["-F", "--form"]);
 const CURL_UPLOAD_OPTS = new Set(["-T", "--upload-file"]);
@@ -2004,8 +2000,8 @@ function ruleSecretExfil(ctx) {
   const check = (tokens, why) => {
     const store = secretStoreIn(tokens, home);
     if (!store) return null;
-    if (store.severity === "block") return { rule: "R1-secret-exfiltration", severity: "block", reason: why(store.hit), suggestion: R1_EXFIL_SUGGESTION };
-    soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `${why(store.hit)}; \`${store.hit}\` ${store.why}, so it asks`, suggestion: R1_EXFIL_SUGGESTION };
+    if (store.severity === "block") return { rule: "R1-secret-exfiltration", severity: "block", reason: why(`secret store \`${clip(store.hit)}\``), suggestion: R1_EXFIL_SUGGESTION };
+    soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: why(`\`${clip(store.hit)}\` (${store.short})`), suggestion: R1_EXFIL_SUGGESTION };
     return null;
   };
   for (const [si, seg] of ctx.expandedSegments.entries()) {
@@ -2016,38 +2012,38 @@ function ruleSecretExfil(ctx) {
       const other = progSpecificFileArg(prog, args);
       if (other) found.push(other);
       const files = found.filter((f) => f !== "-");
-      const m = files.length ? check(files, (h) => `\`${prog}\` would send the contents of a secret store (${h}) as request data`) : null;
+      const m = files.length ? check(files, (what) => `\`${clip(prog)}\` would send ${what} as request data.`) : null;
       if (m) return m;
     }
     if (REMOTE_COPY_PROGS.has(prog)) {
       const positionals = (prog === "rsync" ? dropOptionValues(args, RSYNC_TEXT_OPTS) : args).filter((a) => !a.startsWith("-"));
       const dest = positionals.at(-1);
       if (dest && isRemoteTarget(dest)) {
-        const m = check(positionals.slice(0, -1), (h) => `\`${prog}\` would copy a secret store (${h}) to the remote host \`${dest}\``);
+        const m = check(positionals.slice(0, -1), (what) => `\`${clip(prog)}\` would copy ${what} to \`${clip(dest)}\`.`);
         if (m) return m;
         // `scp -r . host:`, `rsync -a ./ host:` (#100): a recursive copy of the working tree, home, or a parent of either ships every file under it, `.env` and
         // `~/.ssh` among them. The tree's contents are unknown to the guard, so it asks (a person confirms what is being sent).
         const recursive = args.some((a) => a === "--recursive" || a === "--archive" || /^-[A-Za-z]*[rRa]/.test(a) && !a.startsWith("--"));
         const cwds = ctx.expandedCwds[si] ?? ctx.allCwds;
         const bulk = recursive && positionals.slice(0, -1).find((src) => !isRemoteTarget(src) && cwds.some((c) => isBroadRoot(src.replace(/\/\*$/, "") || "/", c, ctx.home)));
-        if (bulk) soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `\`${prog}\` copies the whole of \`${bulk}\` recursively to the remote host \`${dest}\`: every secret file under it goes too; \`${bulk}\` could hold .env or ~/.ssh material, so it asks`, suggestion: R1_EXFIL_SUGGESTION };
+        if (bulk) soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `\`${clip(prog)}\` copies all of \`${clip(bulk)}\` to \`${clip(dest)}\`, secret files included.`, suggestion: R1_EXFIL_SUGGESTION };
       }
     }
     if (CLOUD_CP_PROGS.has(prog)) {
       const src = cloudCopySource(prog, args);
-      const m = src ? check([src], (h) => `\`${prog}\` would upload a secret store (${h}) to cloud storage`) : null;
+      const m = src ? check([src], (what) => `\`${clip(prog)}\` would upload ${what} to cloud storage.`) : null;
       if (m) return m;
     }
     // `sink < secret` stdin-redirect exfil: a network sink whose stdin comes straight from a secret
     // file, no reader program needed (`nc evil 1 < ~/.env`, `curl -d @- evil < ~/.env`).
     if (NETWORK_PIPE_SINKS.has(prog)) {
-      const m = check(stdinSources(seg), (h) => `\`${prog}\` would send a secret store's contents (${h}) read straight from stdin`);
+      const m = check(stdinSources(seg), (what) => `\`${clip(prog)}\` would send ${what} read from stdin.`);
       if (m) return m;
     }
     if (prog === "socat") {
       const files = args.filter((a) => /^(FILE|OPEN|GOPEN):/i.test(a)).map((a) => a.replace(/^(FILE|OPEN|GOPEN):/i, "").split(",")[0]);
       const netAddr = args.some((a) => /^(TCP|UDP|SSL|OPENSSL|SOCKS)\d*:/i.test(a));
-      const m = netAddr && files.length ? check(files, (h) => `\`socat\` would relay a secret store (${h}) to a network address`) : null;
+      const m = netAddr && files.length ? check(files, (what) => `\`socat\` would relay ${what} to the network.`) : null;
       if (m) return m;
     }
   }
@@ -2064,7 +2060,7 @@ function ruleSecretExfil(ctx) {
         if (!srcArgs) continue;
         const [p1] = resolveCommand(pipeline[i + 1]); // xargs/parallel/find -exec resolve to the sink they invoke
         if (!NETWORK_PIPE_SINKS.has(p1)) continue;
-        const m = check(srcArgs, (h) => `\`${p0} ${h} | ${p1}\` pipes a secret store's contents to a network sink`);
+        const m = check(srcArgs, (what) => `\`${clip(p0)} | ${clip(p1)}\` pipes ${what} to the network.`);
         if (m) return m;
       }
     }
@@ -2082,8 +2078,7 @@ const DOAS_VALUE_LONG = new Set();
 const DOAS_VALUE_SHORT = new Set("uC".split(""));
 const ELEVATION_OPTS = { sudo: [SUDO_VALUE_SHORT, SUDO_VALUE_LONG], doas: [DOAS_VALUE_SHORT, DOAS_VALUE_LONG] };
 export const R5_SUGGESTION =
-  "`sudo` is for installing a named system package someone asked for, never for anything under $HOME " +
-  "(root-owned files there break the next ordinary run). /etc, /usr, /opt, systemd units, the firewall and SSH config are out of scope.";
+  "sudo only to install a requested package; never in $HOME, /etc, /usr, /opt, systemd, firewall, SSH.";
 
 function sudoRest(toks, idx, prog = "sudo") {
   const [shortVals, longVals] = ELEVATION_OPTS[prog] || ELEVATION_OPTS.sudo;
@@ -2134,19 +2129,19 @@ function ruleSudo(ctx) {
     for (const t of toks.slice(idx + 1)) {
       const p = expand(t, ctx.home);
       if (p === "~" || p.startsWith("~/")) {
-        return { rule: "R5-sudo", severity: "block", reason: `\`${prog0}\` on a path under $HOME (${t}) leaves root-owned files behind`, suggestion: R5_SUGGESTION };
+        return { rule: "R5-sudo", severity: "block", reason: `\`${clip(prog0)}\` under $HOME (\`${clip(t)}\`) leaves root-owned files behind.`, suggestion: R5_SUGGESTION };
       }
     }
     const prog = rest.length ? base(rest[0]) : "";
     if (isNamedInstall(rest)) continue;
     if (PKG_INSTALLERS.has(prog) && rest.length === 2 && rest[1] === "update" && hasNamedInstall) continue;
-    return { rule: "R5-sudo", severity: "block", reason: `\`${prog0} ${rest.slice(0, 3).join(" ") || "<nothing>"}\` is not a named system package install`, suggestion: R5_SUGGESTION };
+    return { rule: "R5-sudo", severity: "block", reason: `\`${clip(prog0)} ${clip(rest.slice(0, 3).join(" ") || "<nothing>")}\` is not a named package install.`, suggestion: R5_SUGGESTION };
   }
   return null;
 }
 
 // ── R7: destructive / outward-facing (ask) ───────────────────────────────────
-export const R7_SUGGESTION = "Hard to reverse: ask first unless the human already said to do this.";
+export const R7_SUGGESTION = "Ask the user first, unless they already asked for this.";
 const SQL_CLIENTS = new Set(["psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "duckdb", "clickhouse-client", "cockroach", "mongosh", "mongo"]);
 const SQL_DROP_RE = /\bDROP\s+(DATABASE|SCHEMA|TABLE)\b/i;
 const DD_HARMLESS = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/"];
@@ -2157,8 +2152,7 @@ const DD_BLOCK_DEVICE_RE = /^\/dev\/(?:sd|hd|xvd|vd|nvme|loop|disk|mapper|rdisk|
 // identically to `helm uninstall`; they are not a separate, lesser command).
 const HELM_UNINSTALL_SUBS = new Set(["uninstall", "delete", "del", "un"]);
 export const R7_IRREVERSIBLE_SUGGESTION =
-  "A raw-device write or a recursive permission change across the whole filesystem (or home directory) is " +
-  "never a single task step. Name the exact target, or ask the human.";
+  "Never a single task step. Name the exact target, or ask the user.";
 const GIT_VALUE_OPTS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix"]);
 const REDIS_VALUE_OPTS = new Set(["-h", "-p", "-s", "-a", "-u", "-n", "-r", "-i", "-d", "--user", "--pass",
   "--sni", "--cacert", "--cacertdir", "--cert", "--key", "--tls-ciphers", "--tls-ciphersuites", "--pattern",
@@ -2638,7 +2632,7 @@ function rmValuableTarget(operand, home, cwd) {
   const n = normalizePath(p);
   if (/(^|\/)\.git$/.test(n)) return "a repository's whole history";
   const h = home ? normalizePath(home).replace(/\/+$/, "") : "";
-  if (h && n.startsWith(`${h}/`)) { const rest = n.slice(h.length + 1); if (!rest.includes("/") && HOME_VALUABLE.has(rest)) return `${rest} under the home directory (personal files or credentials)`; }
+  if (h && n.startsWith(`${h}/`)) { const rest = n.slice(h.length + 1); if (!rest.includes("/") && HOME_VALUABLE.has(rest)) return `${rest} under home (personal or credential files)`; }
   return null;
 }
 // `find ... -delete` (#59): unfiltered it removes everything under its roots; filtered it is routine inside the project, but a root that
@@ -2659,9 +2653,9 @@ function findDeleteReach(args, home, cwds) {
   };
   for (const r of roots) {
     const valued = cwds.map((c) => rmValuableTarget(r, home, c)).find(Boolean); // `find ~/.ssh -type f -delete` empties what `rm -rf ~/.ssh` asks about
-    if (valued) return `starts at ${r}, which is ${valued}`;
-    if (cwds.some((c) => resolvesToRootOrHome(r, home, c))) return `starts at ${r}, which is the filesystem root, the home directory or a system tree`;
-    if (cwds.some((c) => ancestor(c, r))) return `starts at ${r}, above the working directory`;
+    if (valued) return `starts at ${clip(r)}, which is ${valued}`;
+    if (cwds.some((c) => resolvesToRootOrHome(r, home, c))) return `starts at ${clip(r)}: the filesystem root, home or a system tree`;
+    if (cwds.some((c) => ancestor(c, r))) return `starts at ${clip(r)}, above the working directory`;
   }
   if (!filtered && !roots.every((r) => r10IsTemp(r.startsWith("~") ? (home || "") + r.slice(1) : r))) return "with no name or type filter deletes everything under its roots";
   return null;
@@ -2728,12 +2722,12 @@ function* destructiveMatches(ctx) {
       const sub = args[0];
       const joined = " " + args.join(" ");
       const push = sub === "push" ? gitPushFlags(args.slice(1)) : null;
-      if (push && push.force) yield m(`\`git push ${push.force}\` overwrites published history`);
-      if (push && push.mirror) yield m(`\`git push ${push.mirror}\` force-updates and deletes remote refs to match the local repository`);
+      if (push && push.force) yield m(`\`git push ${clip(push.force)}\` overwrites published history`);
+      if (push && push.mirror) yield m(`\`git push ${clip(push.mirror)}\` overwrites and deletes remote refs to match local.`);
       if (sub === "reset" && args.includes("--hard")) yield m("`git reset --hard` discards uncommitted work irreversibly");
       if (sub === "branch" && gitBranchForceDelete(args.slice(1))) yield m("`git branch -D` force-deletes a branch");
       if (sub === "clean" && args.some((a) => a.startsWith("-") && a.includes("f"))) yield m("`git clean -f` deletes untracked files irreversibly");
-      if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${sub}\` rewrites history`);
+      if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${clip(sub)}\` rewrites history`);
       // push --delete/-d/:ref and --force-with-lease mutate published refs; update-ref -d deletes a ref
       // in place -- same "hard to reverse" tier as the existing push --force/branch -D asks.
       if (sub === "push" && (/(^|\s)(--delete|-d)(\s|$)/.test(joined) || push.delete || /--force-with-lease/.test(joined) ||
@@ -2751,12 +2745,12 @@ function* destructiveMatches(ctx) {
       if (!isRecursiveRm(args)) continue;
       for (const a of args) {
         if (a.startsWith("-")) continue;
-        if (cwds.some((c) => wholeTreeTarget(a, ctx.home, c))) yield m(`\`rm -rf ${a}\` would delete a whole tree`);
+        if (cwds.some((c) => wholeTreeTarget(a, ctx.home, c))) yield m(`\`rm -rf ${clip(a)}\` would delete a whole tree`);
         const valued = cwds.map((c) => rmValuableTarget(a, ctx.home, c)).find(Boolean);
-        if (valued) yield m(`\`rm -r ${a}\` deletes ${valued}`);
+        if (valued) yield m(`\`rm -r ${clip(a)}\` deletes ${valued}`);
       }
       const subst = cwds.map((c) => substWholeTreeGlob(args, ctx.home, c)).find(Boolean);
-      if (subst) yield m(`\`rm -rf\` on a command substitution that expands \`${subst}\` would delete a whole tree`);
+      if (subst) yield m(`\`rm -rf\` on a substitution expanding to \`${clip(subst)}\` deletes a whole tree.`);
     }
     if (prog === "find" && args.includes("-delete")) {
       const why = findDeleteReach(args, ctx.home, cwds);
@@ -2765,7 +2759,7 @@ function* destructiveMatches(ctx) {
     if (prog === "docker" || prog === "docker-compose") {
       const pos = cleanPositionals(args, CLOUD_VALUE_OPTS.docker || new Set());
       const flags = args.filter((a) => a.startsWith("-")).join(" ");
-      if (pos[0] === "system" && pos[1] === "prune" && /(^|\s)(-[a-z]*a[a-z]*|--all|--volumes)(\s|$)/.test(flags)) yield m("`docker system prune -a/--volumes` deletes every unused image, container and volume");
+      if (pos[0] === "system" && pos[1] === "prune" && /(^|\s)(-[a-z]*a[a-z]*|--all|--volumes)(\s|$)/.test(flags)) yield m("`docker system prune -a/--volumes` deletes all unused images, containers and volumes.");
       if (pos[0] === "volume" && (pos[1] === "prune" || pos[1] === "rm")) yield m("`docker volume rm/prune` deletes volume data");
       // compose's own options (`-f x.yml`, `-p name`) sit before the subcommand and take values, so the subcommand is found by its own table
       const composeSub = prog === "docker-compose" ? firstSubcommand(args, COMPOSE_VALUE_OPTS) : pos[0] === "compose" || args.includes("compose") ? firstSubcommand(args.slice(args.indexOf("compose") + 1), COMPOSE_VALUE_OPTS) : null;
@@ -2779,7 +2773,7 @@ function* destructiveMatches(ctx) {
     if (progRaw === "xargs" || progRaw === "parallel" || progRaw === "find") {
       const what = progRaw === "find" ? "every match" : "whatever is piped in";
       if (prog === "rm" && isRecursiveRm(args)) {
-        yield m(`\`${progRaw} rm -r\` recursively deletes ${what}`);
+        yield m(`\`${clip(progRaw)} rm -r\` recursively deletes ${what}`);
       }
       const script = scriptOf(prog, args, { interp: false });
       if (script !== null) {
@@ -2787,7 +2781,7 @@ function* destructiveMatches(ctx) {
           for (const innerSeg of splitSegments(inner)) {
             const [p2, a2] = resolveCommand(innerSeg);
             if (p2 === "rm" && isRecursiveRm(a2)) {
-              yield m(`\`${progRaw} ${prog} -c\` recursively deletes ${what}`);
+              yield m(`\`${clip(progRaw)} ${clip(prog)} -c\` recursively deletes ${what}`);
             }
           }
         }
@@ -2795,7 +2789,7 @@ function* destructiveMatches(ctx) {
     }
     if (SQL_CLIENTS.has(prog)) {
       const mm = SQL_DROP_RE.exec(seg);
-      if (mm) yield m(`\`DROP ${mm[1].toUpperCase()}\` deletes data irreversibly`);
+      if (mm) yield m(`\`DROP ${clip(mm[1].toUpperCase())}\` deletes data irreversibly`);
     }
     if (prog === "redis-cli") {
       const i = firstPositional(args, REDIS_VALUE_OPTS);
@@ -2807,8 +2801,8 @@ function* destructiveMatches(ctx) {
       // `-auto-approve=true`/`--auto-approve=true` is valid Go-flag boolean syntax (common in scripted/CI
       // invocations) and applies exactly like the bare flag; only an explicit `=false` turns it off.
       const isAutoApprove = (a) => a === "-auto-approve" || a === "--auto-approve" || /^--?auto-approve=(?!false$)/.test(a);
-      if (sub === "destroy" || (sub === "apply" && args.slice(i + 1).includes("-destroy"))) yield m(`\`${prog} destroy\` tears down real infrastructure`);
-      if (sub === "apply" && args.slice(i + 1).some(isAutoApprove)) yield m(`\`${prog} apply -auto-approve\` applies infrastructure changes with no confirmation`);
+      if (sub === "destroy" || (sub === "apply" && args.slice(i + 1).includes("-destroy"))) yield m(`\`${clip(prog)} destroy\` tears down real infrastructure`);
+      if (sub === "apply" && args.slice(i + 1).some(isAutoApprove)) yield m(`\`${clip(prog)} apply -auto-approve\` changes infrastructure with no confirmation.`);
     }
     if (prog === "pulumi") {
       const i = firstPositional(args, new Set());
@@ -2817,7 +2811,7 @@ function* destructiveMatches(ctx) {
     if (prog === "helm") {
       const i = firstPositional(args, new Set());
       // delete/del/un are Helm 3's own documented aliases for uninstall, not a separate, lesser command.
-      if (i !== null && HELM_UNINSTALL_SUBS.has(args[i])) yield m(`\`helm ${args[i]}\` removes a deployed release`);
+      if (i !== null && HELM_UNINSTALL_SUBS.has(args[i])) yield m(`\`helm ${clip(args[i])}\` removes a deployed release`);
     }
     // Any write landing on a raw block device is the dd case, regardless of which program produces
     // the bytes: dd's own of=, a `>`/`>>` redirect onto the device, or tee/cp/mv/install's last
@@ -2826,48 +2820,48 @@ function* destructiveMatches(ctx) {
     if (prog === "dd") {
       for (const a of args) {
         if (!a.startsWith("of=")) continue;
-        if (isBlockDeviceTok(a.slice(3), ctx.home)) yield block(`\`dd ${a}\` overwrites a device`);
+        if (isBlockDeviceTok(a.slice(3), ctx.home)) yield block(`\`dd ${clip(a)}\` overwrites a device`);
       }
     }
     for (const t of writeRedirectTargets(seg)) {
-      if (isBlockDeviceTok(t, ctx.home)) yield block(`\`${prog} ... > ${t}\` overwrites a block device`);
-      else if (isKitTokenFileTok(t, ctx.home)) yield tokenFile(`\`${prog} ... > ${t}\` rewrites the kit's token file: the hooks send the token to the URL stored there`);
+      if (isBlockDeviceTok(t, ctx.home)) yield block(`\`${clip(prog)} ... > ${clip(t)}\` overwrites a block device`);
+      else if (isKitTokenFileTok(t, ctx.home)) yield tokenFile(`\`${clip(prog)}\` would rewrite the kit's token file; hooks send the token to the URL in it.`);
     }
     if (["tee", "cp", "mv", "install"].includes(prog)) {
       const positional = nonRedirPositionals(args).filter((a) => !a.startsWith("-"));
       const dest = positional[positional.length - 1];
       if (dest && isBlockDeviceTok(dest, ctx.home)) {
-        yield block(`\`${prog} ${dest}\` overwrites a block device`);
+        yield block(`\`${clip(prog)} ${clip(dest)}\` overwrites a block device`);
       } else if (dest && isKitTokenFileTok(dest, ctx.home)) {
-        yield tokenFile(`\`${prog} ${dest}\` rewrites the kit's token file: the hooks send the token to the URL stored there`);
+        yield tokenFile(`\`${clip(prog)}\` would rewrite the kit's token file; hooks send the token to the URL in it.`);
       }
     }
     if (prog === "shred") {
       const target = args.find((a) => !a.startsWith("-") && isBlockDeviceTok(a, ctx.home));
-      if (target) yield block(`\`shred ${target}\` destroys a block device's contents`);
+      if (target) yield block(`\`shred ${clip(target)}\` destroys a block device's contents`);
       const store = secretStoreIn(args, ctx.home);
-      if (store) yield m(`\`shred ${store.hit}\` destroys a secret file beyond recovery`);
+      if (store) yield m(`\`shred ${clip(store.hit)}\` destroys a secret file beyond recovery`);
     }
     if (DEVICE_DEST_PREFIX.test(prog) ||
         (DEVICE_TOOLS[prog] && DEVICE_TOOLS[prog].destructive(args))) {
       const target = args.find((a) => !a.startsWith("-") && isBlockDeviceTok(a, ctx.home));
-      if (target) yield block(`\`${prog} ${target}\` rewrites a block device`);
+      if (target) yield block(`\`${clip(prog)} ${clip(target)}\` rewrites a block device`);
     }
     if (prog === "hdparm" && args.some((a) => /security|sanitize/i.test(a))) {
       const target = args.find((a) => !a.startsWith("-") && a.startsWith("/dev/"));
-      yield block(`\`hdparm ${target || ""} ${args.find((a) => /security|sanitize/i.test(a))}\` runs a drive-erase/security operation`);
+      yield block(`\`hdparm ${clip(target || "")} ${clip(args.find((a) => /security|sanitize/i.test(a)))}\` runs a drive erase/security operation.`);
     }
     // Cloud-CLI destructive verbs: ask tier (kubectl delete/terraform apply precedent), resolved
     // through cleanPositionals so global flag-shift can't hide the subcommand.
     if (cloudDestructiveVerb(prog, args)) {
-      yield m(`\`${prog}\` delete/terminate/purge-class operation destroys cloud resources`);
+      yield m(`\`${clip(prog)}\` delete/terminate/purge-class operation destroys cloud resources`);
     }
     if (prog === "pulumi" && args.includes("--yes") && args.some((a) => a === "up" || a === "destroy")) {
-      yield m("\`pulumi --yes\` applies infrastructure changes with no confirmation");
+      yield m("`pulumi --yes` changes infrastructure with no confirmation.");
     }
     if (["pip", "pip3"].includes(prog) && args.some((a) => a === "install") &&
         args.some((a) => /^file:\/\/|^--index-url(?:=|\s)/.test(a) || (a === "--index-url" && args[args.indexOf("--index-url") + 1]))) {
-      yield m("\`pip install\` from a file path or custom index runs arbitrary setup code at install time");
+      yield m("`pip install` from a path or custom index runs setup code at install time.");
     }
     if ((prog === "chmod" || prog === "chown") && args.some((a) => a === "--recursive" || (a.startsWith("-") && !a.startsWith("--") && a.includes("R")))) {
       // Only a target that RESOLVES to /, home or a system root is a hard block. `.`, `./`, `*`, `./*` name the segment's
@@ -2876,8 +2870,8 @@ function* destructiveMatches(ctx) {
       // no hook cwd) they cannot be told apart from a catastrophic one, so they ask. Every possible cwd is checked.
       for (const a of args.slice(1)) {
         if (a.startsWith("-")) continue;
-        if (cwds.some((c) => resolvesToRootOrHome(a, ctx.home, c))) yield block(`\`${prog} -R\` on \`${a}\` rewrites permissions on a whole tree`);
-        else if (cwds.some((c) => !c.startsWith("/")) && wholeTreeTarget(a, ctx.home)) yield m(`\`${prog} -R ${a}\` rewrites permissions on the current directory tree, and the working directory is unknown`);
+        if (cwds.some((c) => resolvesToRootOrHome(a, ctx.home, c))) yield block(`\`${clip(prog)} -R\` on \`${clip(a)}\` rewrites permissions on a whole tree`);
+        else if (cwds.some((c) => !c.startsWith("/")) && wholeTreeTarget(a, ctx.home)) yield m(`\`${clip(prog)} -R ${clip(a)}\` rewrites permissions here, and the working directory is unknown.`);
       }
     }
   }
@@ -2888,14 +2882,14 @@ function* destructiveMatches(ctx) {
     for (const bseg of splitSegments(b.crontab ? crontabCommands(b.body).join("\n") : b.body)) {
       const [p2, a2] = resolveCommand(bseg);
       if (p2 === "rm" && isRecursiveRm(a2)) {
-        yield m("a heredoc-fed script runs a recursive delete per piped/matched item");
+        yield m("A heredoc script runs a recursive delete per piped/matched item.");
       }
     }
   }
   const sqlDrop = sqlDropViaStdin(ctx.command);
-  if (sqlDrop) yield m(`\`DROP ${sqlDrop.kind}\` fed to \`${sqlDrop.client}\` on stdin deletes data irreversibly`);
+  if (sqlDrop) yield m(`\`DROP ${clip(sqlDrop.kind)}\` piped to \`${clip(sqlDrop.client)}\` deletes data irreversibly.`);
   const shellPipe = detectShellPipe(ctx);
-  if (shellPipe) yield m(`\`${shellPipe.first} ... | ${shellPipe.target}\` runs a downloaded script unread`);
+  if (shellPipe) yield m(`\`${clip(shellPipe.first)} ... | ${clip(shellPipe.target)}\` runs a downloaded script unread.`);
 
 }
 
@@ -2941,7 +2935,7 @@ function ruleDestructive(ctx) {
 
 // ── R7-root-delete (block) ───────────────────────────────────────────────────
 export const R7_ROOT_SUGGESTION =
-  "A recursive delete of / or of the home directory is never a step in a task. Name the exact directory you mean, or ask the human.";
+  "Never a task step. Name the exact directory you mean, or ask the user.";
 
 function rdUnquote(tok) {
   const out = [];
@@ -3161,15 +3155,14 @@ function ruleRootDelete(ctx) {
     // safety would be wrong in the unsafe direction.
     let hit = null;
     for (const c of segCwds[si]) { hit = rdHit(seg, ctx.home, 0, segScopes[si] ?? ctx.segments, c); if (hit) break; }
-    if (hit) return { rule: "R7-root-delete", severity: "block", strict: true, reason: `\`rm -r ${hit}\` would delete the whole filesystem or home directory`, suggestion: R7_ROOT_SUGGESTION };
+    if (hit) return { rule: "R7-root-delete", severity: "block", strict: true, reason: `\`rm -r ${clip(hit)}\` would delete the whole filesystem or home directory.`, suggestion: R7_ROOT_SUGGESTION };
   }
   return null;
 }
 
 // ── R9: committing a secret (belt from jev-commit) ───────────────────────────
 export const R9_SUGGESTION =
-  "Never commit secrets: .env files, private keys, credentials*, *.key, tokens. Add the path to .gitignore instead. " +
-  "If one is ALREADY tracked, flag it to the owner rather than quietly rewriting history to hide it.";
+  "Add it to .gitignore instead. Already tracked? Tell the owner; don't rewrite history to hide it.";
 const LEFT = "(?<![A-Za-z0-9])";
 const HIGH_PRECISION = [
   ["aws_access_key", new RegExp(LEFT + "AKIA[0-9A-Z]{16}")],
@@ -3247,19 +3240,19 @@ function ruleCommitSecret(ctx) {
     if (i === null || !["add", "commit", "stage"].includes(args[i])) continue;
     gitWrite = true;
     const store = secretStoreIn(dropOptionValues(args.slice(i + 1), COMMIT_MSG_OPTS), ctx.home);
-    if (store?.severity === "block") return { rule: "R9-commit-secret", severity: "block", reason: `\`git ${args[i]}\` would stage a secret file (${store.hit})`, suggestion: R9_SUGGESTION };
-    if (store) stageAsk ??= { rule: "R9-commit-secret", severity: "soft", reason: `\`git ${args[i]} ${store.hit}\` ${store.why}, so it asks: stage it only if it is a secret file`, suggestion: R9_SUGGESTION };
+    if (store?.severity === "block") return { rule: "R9-commit-secret", severity: "block", reason: `\`git ${clip(args[i])}\` would stage secret file \`${clip(store.hit)}\`.`, suggestion: R9_SUGGESTION };
+    if (store) stageAsk ??= { rule: "R9-commit-secret", severity: "soft", reason: `\`git ${clip(args[i])} ${clip(store.hit)}\`: ${store.short}; it may stage a secret.`, suggestion: R9_SUGGESTION };
   }
   if (!gitWrite) return null;
   const cred = firstBlockingHit(ctx.command);
-  if (cred) return { rule: "R9-commit-secret", severity: "block", reason: `this command stages or commits something carrying a credential (${cred.kind}, starts \`${cred.redacted}\`)`, suggestion: R9_SUGGESTION };
+  if (cred) return { rule: "R9-commit-secret", severity: "block", reason: `Stages or commits a credential (${clip(cred.kind)}, starts \`${clip(cred.redacted)}\`).`, suggestion: R9_SUGGESTION };
   return stageAsk;
 }
 
 // ── R10: general risk, the catch-all (prefilter; Jev scores) ─────────────────
-export const R10_SUGGESTION = "Reaches outside the working tree; not blocked. Check it was asked for.";
+export const R10_SUGGESTION = "Not blocked; check the user asked for this.";
 export const R10_OPAQUE_SUGGESTION =
-  "Simplify the command (fewer nestings or substitutions) so the guard can analyze it, or confirm with the user that it is intended.";
+  "Simplify it (less nesting, fewer substitutions) so the guard can read it, or ask the user.";
 export const R10_RISK_LEVELS = [
   "none: read-only, or fully reversible inside the working directory given in `cwd` or a temporary directory. Nothing outside this checkout is changed. Writing a file under cwd, running a container that only reads, listing a database.",
   "low: changes something outside the working directory, but it is recreatable in minutes with no outside consequence: a cache, a scratch container, a local index, a file the tool that wrote it would rebuild.",
@@ -3352,46 +3345,46 @@ function ruleGeneralRisk(ctx) {
     if (!prog) continue;
     const positional = args.filter((a) => !a.startsWith("-"));
     const sub = positional[0] || "";
-    for (const t of r10RedirectTargets(seg)) if (r10OutsideCwd(t, cwd, home)) return hit(`writes to \`${t}\`, outside this working tree`, "write_outside_cwd", seg);
+    for (const t of r10RedirectTargets(seg)) if (r10OutsideCwd(t, cwd, home)) return hit(`writes to \`${clip(t)}\`, outside this working tree`, "write_outside_cwd", seg);
     if (["cp", "mv", "install", "rsync", "tee", "ln"].includes(prog) && positional.length) {
       const t = positional[positional.length - 1];
-      if (r10OutsideCwd(t, cwd, home)) return hit(`\`${prog}\` writes to \`${t}\`, outside this working tree`, "write_outside_cwd", seg);
+      if (r10OutsideCwd(t, cwd, home)) return hit(`\`${clip(prog)}\` writes to \`${clip(t)}\`, outside this working tree`, "write_outside_cwd", seg);
     }
-    if (prog === "dd") for (const a of args) if (a.startsWith("of=") && r10OutsideCwd(a.slice(3), cwd, home)) return hit(`\`dd of=${a.slice(3)}\` writes outside this working tree`, "write_outside_cwd", seg);
+    if (prog === "dd") for (const a of args) if (a.startsWith("of=") && r10OutsideCwd(a.slice(3), cwd, home)) return hit(`\`dd of=${clip(a.slice(3))}\` writes outside this working tree`, "write_outside_cwd", seg);
     if (["scp", "rsync", "sftp"].includes(prog)) {
       const candidates = prog === "sftp" ? positional : positional.slice(-1);
-      for (const a of candidates) if (r10IsRemoteTarget(a)) return hit(`\`${prog}\` copies to the remote host \`${a.split(":", 1)[0]}\``, "network_upload", seg);
+      for (const a of candidates) if (r10IsRemoteTarget(a)) return hit(`\`${clip(prog)}\` copies to the remote host \`${clip(a.split(":", 1)[0])}\``, "network_upload", seg);
     }
     if (prog === "curl") {
       const uploading = args.some((a) => ["-T", "--upload-file", "-F", "--form", "--data-binary", "--data-raw", "-d"].includes(a) ||
         ["--upload-file=", "--form=", "--data-binary=", "--data-raw="].some((p) => a.startsWith(p))) ||
         args.some((a) => a === "-X" || a === "--request");
-      if (uploading) for (const a of positional) if (r10UrlIsRemote(a)) return hit(`\`curl\` sends a body to \`${a.slice(0, 120)}\``, "network_upload", seg);
+      if (uploading) for (const a of positional) if (r10UrlIsRemote(a)) return hit(`\`curl\` sends a body to \`${clip(a)}\``, "network_upload", seg);
     }
     if (R10_PUBLISH.has(`${prog} ${sub}`) || (prog === "gh" && args[0] === "release" && args[1] === "create")) {
-      return hit(`\`${prog} ${sub}\` publishes outward, and a publish is not undone by deleting it`, "publish", seg);
+      return hit(`\`${clip(prog)} ${clip(sub)}\` publishes; deleting it won't undo that.`, "publish", seg);
     }
-    if (R10_DB_PROGRAMS.has(prog) && R10_DB_WRITE_RE.test(seg)) return hit(`\`${prog}\` is being given a statement that writes`, "database_write", seg);
-    if (R10_SERVICE_PROGRAMS.has(prog) && R10_SERVICE_VERBS.has(sub) && !r10UserLevelService(prog, args)) return hit(`\`${prog} ${sub}\` changes what is running on this machine`, "service_control", seg);
-    if (["docker", "podman", "docker-compose", "nerdctl"].includes(prog) && R10_DOCKER_VERBS.has(sub) && !r10DockerReadOnly(positional)) return hit(`\`${prog} ${sub}\` changes container or image state`, "service_control", seg);
+    if (R10_DB_PROGRAMS.has(prog) && R10_DB_WRITE_RE.test(seg)) return hit(`\`${clip(prog)}\` is being given a statement that writes`, "database_write", seg);
+    if (R10_SERVICE_PROGRAMS.has(prog) && R10_SERVICE_VERBS.has(sub) && !r10UserLevelService(prog, args)) return hit(`\`${clip(prog)} ${clip(sub)}\` changes what is running on this machine`, "service_control", seg);
+    if (["docker", "podman", "docker-compose", "nerdctl"].includes(prog) && R10_DOCKER_VERBS.has(sub) && !r10DockerReadOnly(positional)) return hit(`\`${clip(prog)} ${clip(sub)}\` changes container or image state`, "service_control", seg);
     if (prog === "kubectl" && R10_K8S_VERBS.has(sub)) {
       if (sub === "delete") {
         const target = positional[1] || "";
         const isNsDelete = ["ns", "namespace", "namespaces"].includes(target) || args.includes("--all");
         const prodLike = R10_PROD_RE.test(seg);
-        return hit(`\`kubectl delete\` removes a live cluster resource${isNsDelete ? " (a whole namespace)" : ""}${prodLike ? ", and the target looks production-like" : ""}`, "cluster_control", seg);
+        return hit(`\`kubectl delete\` removes a live resource${isNsDelete ? " (a whole namespace)" : ""}${prodLike ? "; the target looks like production" : ""}`, "cluster_control", seg);
       }
-      if (sub === "drain" || sub === "cordon") return hit(`\`kubectl ${sub}\` changes which workloads a cluster node can run`, "cluster_control", seg);
+      if (sub === "drain" || sub === "cordon") return hit(`\`kubectl ${clip(sub)}\` changes which workloads a cluster node can run`, "cluster_control", seg);
       if (sub === "scale" && r10K8sScaleToZero(args)) return hit("`kubectl scale --replicas=0` takes a deployment to zero replicas", "cluster_control", seg);
     }
-    if (R10_MASS_PROGRAMS.has(prog)) for (const a of positional) if (r10GlobHighInTree(a, home)) return hit(`\`${prog} ${a}\` matches a wildcard high in the tree`, "mass_file_op", seg);
+    if (R10_MASS_PROGRAMS.has(prog)) for (const a of positional) if (r10GlobHighInTree(a, home)) return hit(`\`${clip(prog)} ${clip(a)}\` matches a wildcard high in the tree`, "mass_file_op", seg);
     // find's own args (the paths searched) live on the RAW programOf result: resolveCommand returns
     // the -exec'd command's argv, not find's.
     if (progRaw === "find" && (argsRaw.includes("-delete") || argsRaw.includes("-exec"))) {
       const findPositional = argsRaw.filter((a) => !a.startsWith("-"));
       for (const a of findPositional) {
         if (r10GlobHighInTree(a, home) || (r10OutsideCwd(a, cwd, home) && (a.replace(/\/+$/, "").match(/\//g) || []).length <= 2)) {
-          return hit(`\`find ${a}\` deletes or executes across a broad tree`, "mass_file_op", seg);
+          return hit(`\`find ${clip(a)}\` deletes or executes across a broad tree`, "mass_file_op", seg);
         }
       }
     }
@@ -3526,7 +3519,7 @@ export const guardRules = new Map([
 /** The decision for a guard that threw: `ask`, rule `internal-error`, and a reason that names the failing rule and the error CLASS only (never the
  *  command, a path or the error's message: either could carry the text being judged). A guard that has not finished looking is not an allow. */
 const errorName = (e) => (e && e.constructor && typeof e.constructor.name === "string" ? e.constructor.name.slice(0, 40) : "Error");
-const internalReason = (ruleId, e) => `The guard could not finish checking this command: its ${ruleId} check failed internally (${errorName(e)}), so nothing is known about it. Confirm it is intended.`;
+const internalReason = (ruleId, e) => `Guard check ${ruleId} failed (${errorName(e)}); this command is unchecked.`;
 /** Mark a result produced while rules threw: a content-free note and the closed `fail_reason` the ledger carries (`rule_error`). An allow becomes an
  *  ask (`internal-error`, decided_by fail_closed); an ask or a block keeps its own decision, since another rule did see the command. */
 function markRuleFailures(out, failures, askAt) {
@@ -3724,12 +3717,12 @@ async function guardOnceCore(input, deps, failures) {
     allCwds,
   };
   const out = {
-    tool: "kit_guard_command", decision: "allow", score: 0, reason: "No rule matched: nothing here reaches outside the working tree or prints a secret.",
+    tool: "kit_guard_command", decision: "allow", score: 0, reason: "No rule matched.",
     rule: null, suggestion: null, decided_by: "prefilter", ask_at: askAt,
     jev: { used: false, status: "not_needed" }, notes: [],
   };
   if (!ctx.command && !ctx.filePath) {
-    out.reason = "Nothing to judge: no command or file_path was given.";
+    out.reason = "Nothing to judge: no command or file_path.";
     return out;
   }
 
@@ -3763,13 +3756,13 @@ async function guardOnceCore(input, deps, failures) {
   let depthBudget = 400000;
   const tooDeep = (text) => { if (depthBudget <= 0) return false; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
   if (!softAsk && SHELL_TOOLS.has(tool) && (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body)))) {
-    softAsk = { rule: "R10-general-risk", reason: `the command nests grouping (parentheses or braces) more than ${MAX_GROUPING_DEPTH} deep, which the guard does not analyze; confirm it is intended`, suggestion: R10_OPAQUE_SUGGESTION };
+    softAsk = { rule: "R10-general-risk", reason: `Nests ( ) or { } more than ${MAX_GROUPING_DEPTH} deep; the guard doesn't analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
   }
   // Past these limits the guard stops analyzing inner bodies (see substitutedSegments and processSubBodies), so a command
   // that no rule blocked asks instead of passing.
   if (!softAsk && SHELL_TOOLS.has(tool)) {
-    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `the command holds more than ${MAX_SUBSTITUTIONS} command substitutions, which the guard does not fully analyze; confirm it is intended`, suggestion: R10_OPAQUE_SUGGESTION };
-    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "the command nests process substitutions (`<(`, `>(`) too deeply for the guard to analyze every body; confirm it is intended", suggestion: R10_OPAQUE_SUGGESTION };
+    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
+    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION };
   }
   if (softAsk) {
     out.decision = "ask"; out.score = 0.7;
@@ -3796,7 +3789,7 @@ async function guardOnceCore(input, deps, failures) {
     out.score = null;
     out.decided_by = "fail_open";
     out.jev = { used: false, status: "unavailable", detail: why };
-    out.notes.push(`Prefilter flagged this (${candidate.rule}: ${candidate.reason}) but Jev could not judge it (${why}), so the guard fails open and allows. Treat as unreviewed.`);
+    out.notes.push(`Flagged (${candidate.rule}: ${candidate.reason}); Jev could not judge (${why}); fails open, allowed unreviewed.`);
     return out;
   };
   if (!deps.ask || deps.jevAvailable === false) return failOpen("no Jev credentials configured on this server (set AI_GATEWAY_API_KEY, or TYPESAFE_API_KEY)");
@@ -3819,10 +3812,10 @@ async function guardOnceCore(input, deps, failures) {
     out.score = c.choice === "yes" ? c.confidence : 1 - c.confidence;
     if (c.choice === "yes" && c.confidence >= JEV_DENY_CONFIDENCE && (c.margin ?? 0) >= JEV_DENY_MARGIN) {
       out.decision = "block";
-      out.reason = `${candidate.reason}; Jev judged it prints a secret value (confidence ${c.confidence.toFixed(2)}).`;
+      out.reason = `${candidate.reason.replace(/\.+$/, "")}; Jev agrees (${c.confidence.toFixed(2)}).`;
     } else {
       out.decision = "allow";
-      out.reason = `Prefilter saw a possible secret path; Jev judged "${c.choice}" (confidence ${c.confidence.toFixed(2)}), below the block bar of ${JEV_DENY_CONFIDENCE}/${JEV_DENY_MARGIN}.`;
+      out.reason = `Possible secret path; Jev said "${c.choice}" (${c.confidence.toFixed(2)}), under the block bar.`;
     }
     return out;
   }
@@ -3835,15 +3828,15 @@ async function guardOnceCore(input, deps, failures) {
   if (r.p_moderate_or_worse >= askAt) {
     if (requested !== null && requested >= USER_REQUESTED_SOFTEN_AT) {
       out.decision = "allow";
-      out.reason = `${candidate.reason}; risk ${out.score} >= ask_at ${askAt}, but the user's own message asked for this (user_requested ${requested.toFixed(2)}), so it is allowed.`;
+      out.reason = `${candidate.reason.replace(/\.+$/, "")}; allowed: the user's own message asked for it (${requested.toFixed(2)}).`;
       out.notes.push("Softened by user_requested; that answer can only ever soften, never tighten.");
     } else {
       out.decision = "ask";
-      out.reason = `${candidate.reason}; Jev scored P(moderate-or-worse) ${out.score} >= ask_at ${askAt}.`;
+      out.reason = candidate.reason;
     }
   } else {
     out.decision = "allow";
-    out.reason = `${candidate.reason}; Jev scored P(moderate-or-worse) ${out.score} < ask_at ${askAt}.`;
+    out.reason = `${candidate.reason.replace(/\.+$/, "")}; Jev: below the ask bar (${out.score}).`;
   }
   return out;
 }
