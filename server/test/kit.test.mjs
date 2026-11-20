@@ -702,7 +702,7 @@ test("verify_done: missing task doesn't lower protection below what a supplied t
   const r = await verifyDone({ final_message: "done", file_changes: 2, checks: [] }, j);
   assert.equal(r.verdict, "unverified"); assert.equal(r.action, "block");
   assert.equal(r.answers.verification_applies, 0.6);
-  assert.ok(r.notes.some((n) => /task.*was supplied/.test(n)));
+  assert.ok(r.notes.some((n) => /No `task` given; verification assumed to apply/.test(n)));
 });
 test("verify_done: a supplied task is never overridden, even when applies scores low", async () => {
   const j = spy({ claims_done: { type: "noul", noul: 0.98 }, claims_verified: { type: "noul", noul: 0.03 },

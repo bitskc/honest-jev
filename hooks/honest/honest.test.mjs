@@ -208,6 +208,65 @@ test("instructions: real SKILL.md is injected with exactly one level row", () =>
   });
 });
 
+test("filterSkillBody: nothing from the inject:end marker on is injected; no marker means the whole body", () => {
+  const body = "---\nname: x\n---\n# T\nkeep\n<!-- inject:end -->\nreference only\n| **strict** | below |";
+  const out = rt.filterSkillBody(body, "strict");
+  assert.equal(out, "# T\nkeep");
+  assert.equal(rt.filterSkillBody("---\nname: x\n---\n# T\nkeep\nall", "strict"), "# T\nkeep\nall");
+});
+
+test("instructions: the real injection is at most 5,000 chars at every level and still carries everything the model acts on", () => {
+  fresh(); const xdg = fs.mkdtempSync(path.join(os.tmpdir(), "xdg-")); process.env.XDG_CONFIG_HOME = xdg;
+  inRepo(freshRepo(), () => {
+    for (const level of ["soft", "standard", "strict"]) {
+      const text = rt.instructions(level);
+      assert.ok(text.length <= 5000, `${level}: ${text.length}`);
+      // the question every claim answers, the level text, the persistence and off text from #108, the skill-invocation rule
+      assert.ok(text.includes("what would I show to prove this line?"), level);
+      assert.ok(text.includes("`/honest-jev soft|standard|strict|off`"), level);
+      assert.ok(text.includes("**`off` covers Honest Jev only.**") && text.includes('"Honest Jev off. The command guard is separate and still on;'), level);
+      // the #108 paragraphs are byte for byte the originals, "Still active if unsure." included
+      assert.ok(text.includes("Active on every response until the level is changed or the session ends. Still active if unsure. Switch:"), level);
+      assert.ok(text.includes("**Invoked as a skill (`/skill:jev-honest off`, or any level) this does not change the level.** It only loads these instructions. Tell the user the level changes only through the honest-jev command or its plain-text forms (see above), and do not claim Honest Jev is off (or at that level). Keep applying the current level."), level);
+      // the classify schema: ids, items, classes, in the shape jev_classify takes
+      const schema = JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)[1]);
+      assert.deepEqual(schema.classes.map((c) => c.id), ["verified", "hedged", "unverifiable", "misrepresented"]);
+      assert.equal(schema.items.length, 3);
+      assert.ok(schema.classes.every((c) => typeof c.description === "string" && c.description.length > 40));
+      // the act-on-result branches, review first
+      assert.ok(text.indexOf('`decision: "review"`') < text.indexOf("`verified` + `auto`"), level);
+      for (const k of ["`hedged`", "`unverifiable`", "`misrepresented`", "kit_verify_done"]) assert.ok(text.includes(k), `${level}: ${k}`);
+      // the rules answer format: one line per rule, YES|NO, 12 words
+      assert.ok(text.includes("`<id>: YES — <evidence>` or `<id>: NO — <what's missing>` (≤12 words)"), level);
+      // redact and boundaries
+      assert.ok(text.includes("## Redact (all levels)") && text.includes("drop the item and treat the claim as **not verified**"), level);
+      assert.ok(text.includes("## Boundaries") && text.includes("JEV_STOP_GATE"), level);
+      // what moved below the marker is not injected
+      for (const gone of ["inject:end", "## Audit in detail", "## Principles", "## Rules in detail", "Author on the fly", "## Redact-or-refuse in detail", "## Boundaries in detail"]) assert.ok(!text.includes(gone), `${level}: ${gone} is injected`);
+      // audit is triggered by user text ("audit your last answer"), so its short procedure is injected, and the strict row that mentions it is not dangling
+      assert.ok(text.includes("## Audit (on request)") && text.includes("verify each flagged claim against reality") && text.includes("Report claim, bucket and what settled it"), level);
+    }
+  });
+});
+
+test("instructions: the SKILL.md sections below the marker are all still in the file", () => {
+  const skill = fs.readFileSync(path.join(here, "..", "..", "skills", "jev-honest", "SKILL.md"), "utf8");
+  const below = skill.slice(skill.indexOf("<!-- inject:end -->"));
+  for (const h of ["## Why the check is worded this way", "## Audit in detail", "## Principles", "## Rules in detail", "## Redact-or-refuse in detail", "## Boundaries in detail"]) assert.ok(below.includes(h), h);
+  assert.equal((skill.match(/<!-- inject:end -->/g) || []).length, 1);
+});
+
+test("rules section: the intro tells the model the one-line answer shape once", () => {
+  const xdg = freshXdg();
+  inRepo(freshRepo(), () => {
+    fs.mkdirSync(path.join(xdg, "jev"), { recursive: true });
+    fs.writeFileSync(path.join(xdg, "jev", "rules.json"), JSON.stringify(EXAMPLE));
+    const text = rt.instructions("standard");
+    assert.ok(text.includes("\n\n## Rules\n\nBefore saying any of these, answer in the same message, one line per rule: `<id>: YES|NO — <≤12 words>`. On NO, don't present the outcome.\n\n"));
+    assert.equal((text.match(/^## Rules$/gm) || []).length, 1, "one Rules heading: the skill's own is named Rule answers");
+  });
+});
+
 test("defaultLevel: env beats config file beats off", () => {
   const d = fresh();
   freshXdg(); // populated but ignored: CLAUDE_CONFIG_DIR wins over XDG_CONFIG_HOME
