@@ -306,7 +306,7 @@ class UnclearCommands(unittest.TestCase):
         p, _ = e.run(event("Bash", {"command": UNCLEAR}))
         self.assertFalse(os.path.exists(bomb))
         self.assertEqual(decision_of(p), "none")
-        self.assertIn("no server is configured", message_of(p) or "")
+        self.assertIn("Jev guard · no server", message_of(p) or "")
         with open(os.path.join(d, "env"), "w") as f:
             f.write("JEV_MCP_URL='https://127.0.0.1:%d/mcp'\nJEV_MCP_TOKEN='stub-token'\n" % LISTENER.port)
         before = LISTENER.count
@@ -325,8 +325,7 @@ class UnclearCommands(unittest.TestCase):
         out = json.loads(p.stdout)
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
         self.assertNotIn("hookSpecificOutput", out)  # a notice, not a decision
-        self.assertEqual(out["systemMessage"], "Jev guard: no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), so the local rules run unverified and are not checked against the server's. "
-                         "This command was unclear to the rules and was allowed without a model check. Run install.sh --doctor for details.")
+        self.assertEqual(out["systemMessage"], "Jev guard · no server: JEV_MCP_URL / JEV_MCP_TOKEN unset; an unclear command was allowed with no model check. Fix: run install.sh --doctor.")
         p2, _ = e.run(event("Bash", {"command": UNCLEAR}, session="s-A"))
         self.assertEqual(p2.stdout, "")  # same session: nothing again
         p3, _ = e.run(event("Bash", {"command": COMMENT_QUOTE_UNCLEAR}, session="s-A"))
@@ -475,8 +474,7 @@ class LocalRunnerFallsThroughToTheServer(unittest.TestCase):
         self.assertEqual((r["decided_by"], r["fail_reason"], r["source"]), ("fail_closed", "rule_error", "client"))
 
 
-DOWN_NOTICE = ("Jev guard: the local rules could not run and no server is configured (JEV_MCP_URL / JEV_MCP_TOKEN), "
-               "so commands are not being checked. Run install.sh --doctor for details.")
+DOWN_NOTICE = "Jev guard · OFF: local rules failed to run and no server is set (JEV_MCP_URL / JEV_MCP_TOKEN); commands are unchecked. Fix: run install.sh --doctor."
 
 
 class LocalRulesDidNotRun(unittest.TestCase):
@@ -677,7 +675,7 @@ class RulesAgainstTheServer(unittest.TestCase):
             p, _ = e.run(event("Bash", {"command": "ls"}))
             self.assertEqual((p.returncode, decision_of(p)), (0, "none"), tag)
             msg = json.loads(p.stdout)["systemMessage"]
-            self.assertIn("could not confirm", msg, tag)
+            self.assertIn("can't confirm", msg, tag)
             self.assertIn("older Worker", msg, tag)
             if tag == "old-fp-none":
                 self.assert_worker(e.rows()[0], "allow")  # (the oldworker stub sends no ledger record, so its row is the client's own synthesis)
@@ -692,7 +690,7 @@ class RulesAgainstTheServer(unittest.TestCase):
         p, _ = e.run(event("Bash", {"command": "ls"}))
         time.sleep(0.2)
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
-        self.assertIn("the server did not answer", json.loads(p.stdout)["systemMessage"])
+        self.assertIn("no server answer", json.loads(p.stdout)["systemMessage"])
         self.assertEqual(LISTENER.count - before, 1, "one fingerprint fetch; it failed with a network-class error, so no guard call follows")
         r = e.rows()[0]
         self.assertEqual((r["decision"], r["decided_by"], r["source"]), ("allow", "fail_open", "client"))
@@ -765,7 +763,7 @@ class RulesAgainstTheServer(unittest.TestCase):
         port = stub(tag="symlink-plant")
         e = Env(JEV_GUARD_RULES=os.path.join(kit, "guard.mjs"), **server_env(port))
         p, _ = e.run(event("Bash", {"command": "ls"}))
-        self.assertIn("could not confirm", json.loads(p.stdout)["systemMessage"])
+        self.assertIn("can't confirm", json.loads(p.stdout)["systemMessage"])
         self.assert_worker(e.rows()[0], "allow")  # the Worker decided: the local allow was not trusted
         self.assertEqual(health_hits(port), [])  # no fingerprint of its own, so nothing to compare and nothing fetched
         # and the genuine layout reached through a symlinked DIRECTORY is still trusted
@@ -837,7 +835,7 @@ class RulesAgainstTheServer(unittest.TestCase):
         p, took = e.run(event("Bash", {"command": "ls"}))
         self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
         self.assertLess(took, 2.0, "only the 0.8 s fingerprint fetch is paid: it opens the server-down window, so there is no guard call after it")
-        self.assertIn("the server did not answer", json.loads(p.stdout)["systemMessage"])
+        self.assertIn("no server answer", json.loads(p.stdout)["systemMessage"])
 
 
 class ServerDownWindow(unittest.TestCase):
@@ -861,7 +859,7 @@ class ServerDownWindow(unittest.TestCase):
             p, took = e.run(event("Bash", {"command": "ls"}))
             self.assertEqual((p.returncode, decision_of(p)), (0, "none"))
             self.assertLess(took, 2.0, "the first command pays the 0.8 s fingerprint fetch only")
-            self.assertIn("the server did not answer", json.loads(p.stdout)["systemMessage"])
+            self.assertIn("no server answer", json.loads(p.stdout)["systemMessage"])
             self.assertIn("for the next minute", json.loads(p.stdout)["systemMessage"])
             self.assertEqual(hang.count, 1)
             self.assertEqual(len(self.windows(e)), 1)
