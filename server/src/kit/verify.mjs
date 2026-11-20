@@ -709,19 +709,18 @@ export function decide(answers, evidence, { threshold = DEFAULT_THRESHOLD } = {}
   if (unverified) {
     const failed = freshChecks(evidence).filter((c) => !c.passed);
     const detail = failed.length ? `${failed.length} failed check${failed.length === 1 ? "" : "s"} and no passing one` : "no test, build, or lint run since the last change";
-    reasons.push(`reports completion (${claimsDone.toFixed(2)}) after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${detail}`);
+    reasons.push(`reports done after ${evidence.mutations} file change${evidence.mutations === 1 ? "" : "s"} with ${detail}`);
   }
-  if (falseClaim) reasons.push(`claims checks passed (${claimsVerified.toFixed(2)}) but none ran`);
+  if (falseClaim) reasons.push("says checks passed, but none ran");
   return { block: unverified, disclosedUnverified, falseClaim, verified, reasons, claimsDone, claimsVerified, applies, disclosesUnverified, outcome };
 }
 
-export function nudge(verdict, evidence) {
-  const failed = freshChecks(evidence).filter((c) => !c.passed);
-  const last = failed.at(-1);
-  const next = !last ? "Run the project's tests, build, or lint (whatever exists) on what you changed."
-    : last.unproven ? `The last check (\`${last.call}\`) could not be proven: no trustworthy pass/fail result (no recognised summary and no exit_code, or its exit status is masked). Send exit_code or paste the runner's summary lines.`
-    : `The last check that ran failed: ${last.call}. Fix that first.`;
-  return `${verdict.reasons.join("; ")}. ${next} Then report the actual result. If no check exists or can run, say so plainly instead of presenting the work as done.`;
+/** What to do about a blocked verdict: one step, in lower case (the stop gate prints it after `Next:`). */
+export function nextStep(evidence) {
+  const last = freshChecks(evidence).filter((c) => !c.passed).at(-1);
+  if (!last) return "run the project's tests/build/lint, then report the real result; if none can run, say so.";
+  const call = last.call.length > 60 ? `…${last.call.slice(-59)}` : last.call;
+  return last.unproven ? `send exit_code or paste the runner's summary lines for \`${call}\`.` : `fix the failing check \`${call}\`, rerun, report.`;
 }
 
 /**
@@ -759,14 +758,14 @@ export async function verifyDone(input, deps = {}) {
         // `passed` only fills in for an unrecognised run. Failure text or a nonzero exit_code beats every pass signal, the
         // override included: `passed: true` beside `Tests: 3 failed` or `exit_code: 1` is a failed check, not a verified one.
         if (c.passed && outcome === "fail") {
-          notes.push(`Check '${call}' was sent passed:true, but its own output or exit_code reports a failure; the failure wins.`);
+          notes.push(`Check '${call}' passed:true, but its output/exit_code shows a failure; the failure wins.`);
           return { call, passed: false };
         }
         return { call, passed: c.passed };
       }
       if (outcome !== "unknown") return { call, passed: outcome === "pass" };
       // No trustworthy result (no recognised summary and no exit_code, or a masked exit status): never a pass.
-      notes.push(`Check '${call}' has no trustworthy pass/fail result (no recognised summary and no exit_code, or its exit status is masked by || true or a pipe). Send exit_code or paste the runner's summary lines.`);
+      notes.push(`Check '${call}' has no trustworthy result (no summary or exit_code, or its status is masked by \`|| true\` or a pipe). Send exit_code or paste the summary.`);
       return { call, passed: false, unproven: true };
     }).filter(Boolean);
     // supplied checks are assumed to have run after the supplied changes
@@ -776,7 +775,7 @@ export async function verifyDone(input, deps = {}) {
   if (!evidence) {
     evidence = { mutations: 1, checks: [], checksBeforeMutation: 0 };
     evidenceSource = "none";
-    notes.push("No transcript_tail, file_changes or checks supplied: assumed one file change and no checks run. Send evidence for a trustworthy verdict.");
+    notes.push("No transcript_tail, file_changes or checks given: assumed 1 change, no checks. Send evidence for a real verdict.");
   }
   const out = {
     tool: "kit_verify_done", verified: null, verdict: "unknown", action: "allow", reason: "",
@@ -786,22 +785,22 @@ export async function verifyDone(input, deps = {}) {
   // deterministic gates, no Jev
   if (freshChecks(evidence).some((c) => c.passed)) {
     out.verified = true; out.verdict = "verified";
-    out.reason = "A check passed after the last change, so the work is verified and nothing is asked (hard veto: this can never block).";
+    out.reason = "A check passed after the last change: verified.";
     return out;
   }
   if (evidence.mutations === 0) {
     out.verified = null; out.verdict = "not_applicable";
-    out.reason = "No file changes were made this turn, so there is nothing to verify.";
+    out.reason = "No file changes this turn; nothing to verify.";
     return out;
   }
   if (!finalMessage.trim()) {
-    out.reason = "Changes with no passing check, but no final_message was supplied to judge a completion claim against.";
+    out.reason = "Changes, no passing check, and no final_message to judge a claim against.";
     out.notes.push("Supply final_message (or a transcript_tail that ends with one).");
     return out;
   }
   if (!deps.ask || deps.jevAvailable === false) {
     out.jev = { used: false, status: "unavailable", detail: "no Jev credentials configured on this server" };
-    out.reason = `Changes were made (${evidence.mutations}) and no check passed since, but whether the message overclaims needs Jev, which is unavailable. Failing open: no verdict.`;
+    out.reason = `${evidence.mutations} change${evidence.mutations === 1 ? "" : "s"}, no passing check; Jev is unavailable to judge the claim. Failing open.`;
     return out;
   }
   let reply;
@@ -822,20 +821,21 @@ export async function verifyDone(input, deps = {}) {
   if (!task.trim() && evidence.mutations > 0) {
     const applies = readNoul(answers.verification_applies) ?? 0;
     answers.verification_applies = { ...answers.verification_applies, noul: Math.max(applies, 0.6) };
-    notes.push("No `task` was supplied; verification is assumed to apply rather than letting a missing task silently lower protection.");
+    notes.push("No `task` given; verification assumed to apply.");
   }
   const v = decide(answers, evidence, { threshold });
   out.answers = { claims_done: v.claimsDone, claims_verified: v.claimsVerified, verification_applies: v.applies, discloses_unverified: v.disclosesUnverified, outcome: v.outcome };
   out.false_claim = v.falseClaim;
   if (v.block) {
     out.verified = false; out.verdict = "unverified"; out.action = "block";
-    out.reason = nudge(v, evidence);
+    out.reason = `${v.reasons.join("; ")}.`;
+    out.next = nextStep(evidence);
   } else if (v.disclosedUnverified) {
     out.verified = null; out.verdict = "disclosed_unverified"; out.action = "allow";
     out.reason = "Unverified, and the message says so plainly.";
   } else {
     out.verified = null; out.verdict = "not_flagged"; out.action = "allow";
-    out.reason = `Not flagged: completion claim ${v.claimsDone.toFixed(2)} (needs >= ${threshold}), verification applies ${v.applies.toFixed(2)} (needs >= ${APPLIES_THRESHOLD}), outcome ${v.outcome}. Nothing was proven either, since no check passed.`;
+    out.reason = `Not flagged: claim ${v.claimsDone.toFixed(2)} (needs >= ${threshold}), applies ${v.applies.toFixed(2)} (needs >= ${APPLIES_THRESHOLD}), outcome ${v.outcome}. No check passed, so nothing is proven.`;
   }
   return out;
 }

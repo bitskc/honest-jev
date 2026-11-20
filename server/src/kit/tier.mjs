@@ -130,11 +130,11 @@ export async function sizeDispatch(input, deps = {}) {
     mismatch: null, verdict: "unknown", action: "allow",
     reason: "", notes: [], jev: { used: false, status: "not_needed" },
   };
-  if (!chosen.recognised) out.notes.push(`"${input.model}" is not in the ladder; treated as the second most expensive rung, as the kit does. Pass \`ladder\` with your own names.`);
+  if (!chosen.recognised) out.notes.push(`\`${input.model}\` is not in the ladder; treated as the 2nd most expensive rung. Pass \`ladder\` to use your own names.`);
   if (!deps.ask || deps.jevAvailable === false) {
     out.jev = { used: false, status: "unavailable", detail: "no Jev credentials configured on this server" };
-    out.reason = "Jev unavailable, so the task could not be classified. The guard fails open: no mismatch is claimed.";
-    out.notes.push("Only the chosen tier was resolved (deterministic). Set AI_GATEWAY_API_KEY or TYPESAFE_API_KEY on the Worker for a verdict.");
+    out.reason = "Jev unavailable; task not classified. Failing open.";
+    out.notes.push("Only the tier was resolved. Set AI_GATEWAY_API_KEY or TYPESAFE_API_KEY on the Worker for a verdict.");
     return out;
   }
   const state = {
@@ -147,7 +147,7 @@ export async function sizeDispatch(input, deps = {}) {
   try { reply = await deps.ask(state, tierQuestions()); }
   catch (e) {
     out.jev = { used: false, status: "unavailable", detail: `Jev call failed: ${String(e?.message || e).slice(0, 160)}` };
-    out.reason = "Jev call failed; the guard fails open: no mismatch is claimed.";
+    out.reason = "Jev call failed; failing open.";
     return out;
   }
   out.jev = { used: true, status: "ok", model: reply.model, usage: reply.usage };
@@ -173,23 +173,23 @@ export async function sizeDispatch(input, deps = {}) {
     out.mismatch = true;
     if (diff >= 2) { out.verdict = "over_tiered"; out.action = "block"; }
     else { out.verdict = "over_tiered"; out.action = "warn"; }
-    out.reason = `Dispatched to '${chosen.rung}', but Jev judged this '${kind.choice}' (confidence ${kind.confidence.toFixed(2)}, margin ${(kind.margin ?? 0).toFixed(2)}), which '${adequate}' covers (${diff} rung${diff === 1 ? "" : "s"} over). Use ${out.recommended_model ?? adequate}.`;
+    out.reason = `Over-tiered: '${chosen.rung}' for a '${kind.choice}' task; '${adequate}' covers it (${diff} rung${diff === 1 ? "" : "s"} up). Use ${out.recommended_model ?? adequate}.`;
   } else if (diff !== null && diff < 0) {
     out.mismatch = true; out.verdict = "under_tiered"; out.action = "allow";
-    out.reason = `Jev judged this '${kind.choice}', which needs '${adequate}' or above; '${chosen.rung}' is cheaper. Logged as under-tiered, never blocked (the kit never "corrects" upward).`;
+    out.reason = `'${chosen.rung}' is cheaper than the '${adequate}' a '${kind.choice}' task needs; logged, never blocked.`;
   } else if (diff !== null && diff > 0) {
     out.mismatch = false; out.verdict = "ok"; out.action = "allow";
-    out.reason = `Possibly over-tiered ('${kind.choice}' suggests '${adequate}') but below the confidence/margin bar of ${CONFIDENCE}/${MARGIN}, so nothing is flagged.`;
+    out.reason = `Maybe over-tiered ('${kind.choice}' suggests '${adequate}'); under the ${CONFIDENCE}/${MARGIN} bar, so not flagged.`;
   } else if (diff === null) {
     out.mismatch = null; out.verdict = kind.choice === "unclear" ? "unclear" : "unknown";
-    out.reason = kind.choice === "unclear" ? "The brief is too unclear to size; no verdict (the kit never acts on 'unclear')." : "Tier could not be compared against this ladder.";
+    out.reason = kind.choice === "unclear" ? "Brief too unclear to size; no verdict." : "Tier could not be compared against this ladder.";
   } else {
     out.mismatch = false; out.verdict = "ok"; out.action = "allow";
     out.reason = `'${chosen.rung}' matches the task ('${kind.choice}').`;
   }
   if (fableNoFailure) {
     out.mismatch = true; out.verdict = out.verdict === "ok" ? "over_tiered" : out.verdict; out.action = "block";
-    out.reason += " Also: the top rung ('fable') was chosen without a stated prior failed attempt, which the kit always blocks.";
+    out.reason += " Also blocked: 'fable' needs a stated prior failed attempt.";
   }
   return out;
 }
