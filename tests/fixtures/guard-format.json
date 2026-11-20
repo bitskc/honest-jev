@@ -10,7 +10,7 @@
       "message": "Why: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.",
       "declined": "Jev guard · secret · declined\nWhy: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
       "needs_approval": "Jev guard · secret · needs approval\nWhy: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
-      "block": "Jev guard · secret · block\nWhy: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · secret · block: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\nNext: don't retry as-is; use Safer or ask the user.",
       "both_message": "Why: `grep` prints every line matching a secret name; in .env that line is `NAME=value`.\nSafer: Names only: `grep -rl NAME .` or `rg -l NAME`. Then read lines in source: `grep -n NAME src/app.js`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
     },
     {
@@ -20,8 +20,9 @@
       "message": "Why: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.",
       "declined": "Jev guard · secret · declined\nWhy: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
       "needs_approval": "Jev guard · secret · needs approval\nWhy: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
-      "block": "Jev guard · secret · block\nWhy: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
-      "both_message": "Why: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
+      "block": "Jev guard · secret · block: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\nNext: don't retry as-is; use Safer or ask the user.",
+      "both_message": "Why: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.",
+      "both_block": "Jev guard · secret · block: `cat` on secret store `.env` would print it.\nSafer: Don't print it. Load it: `set -a; . ./.env; set +a`. Check it's set: `[ -n \"$KEY\" ] && echo set`.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.\nNext: don't retry as-is; use Safer or ask the user."
     },
     {
       "name": "ask with no suggestion (guard error)",
@@ -30,7 +31,7 @@
       "message": "Why: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.",
       "declined": "Jev guard · guard error · declined\nWhy: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
       "needs_approval": "Jev guard · guard error · needs approval\nWhy: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
-      "block": "Jev guard · guard error · block\nWhy: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
+      "block": "Jev guard · guard error · block: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\nNext: don't retry as-is; ask the user.",
       "both_message": "Why: Guard check R1-secret-exposure failed (TypeError); this command is unchecked.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
     },
     {
@@ -40,7 +41,7 @@
       "message": "Why: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.",
       "declined": "Jev guard · R7-destructive · declined\nWhy: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
       "needs_approval": "Jev guard · R7-destructive · needs approval\nWhy: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
-      "block": "Jev guard · R7-destructive · block\nWhy: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · R7-destructive · block: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\nNext: don't retry as-is; use Safer or ask the user.",
       "both_message": "Why: `git reset --hard` discards uncommitted work irreversibly\nSafer: Ask the user first, unless they already asked for this.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
     },
     {
@@ -50,7 +51,7 @@
       "message": "Why: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.",
       "declined": "Jev guard · destructive · declined\nWhy: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
       "needs_approval": "Jev guard · destructive · needs approval\nWhy: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
-      "block": "Jev guard · destructive · block\nWhy: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
+      "block": "Jev guard · destructive · block: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\nNext: don't retry as-is; use Safer or ask the user.",
       "both_message": "Why: `git clean -f` deletes untracked files\nSafer: Ask first unless asked.\n\nJev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first."
     }
   ],

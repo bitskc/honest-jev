@@ -312,11 +312,19 @@ def join_msgs(msgs):
     return make_msg(msgs[0]["head"], body, any(m["safer"] for m in msgs))
 
 
-def render_msg(m, action, nxt=False):
-    lines = ["%s · %s" % (m["head"], action)] + m["body"]
-    if nxt:
-        lines.append(NEXT_SAFER if m["safer"] else NEXT_ASK)
-    return "\n".join(lines)
+def render_msg(m, action, nxt=False, inline_why=False):
+    """The whole text. `nxt` adds the Next line, which is never cut: an over-long body ends in "…" instead. `inline_why` puts the Why on line 1
+    after a colon (`Jev guard · secret · block: <Why>`): interactive Claude Code shows only line 1 of a deny reason in its transcript row."""
+    body = list(m["body"])
+    title = "%s · %s" % (m["head"], action)
+    if inline_why and body and body[0].startswith("Why: "):
+        title += ": " + body.pop(0)[5:]
+    text = "\n".join([title] + body)
+    next_line = (NEXT_SAFER if m["safer"] else NEXT_ASK) if nxt else None
+    budget = MESSAGE_CAP - (len(next_line) + 1 if next_line else 0)
+    if len(text) > budget:
+        text = text[:budget - 1].rstrip() + "…"
+    return text + ("\n" + next_line if next_line else "")
 
 
 class Outcome(object):
@@ -723,7 +731,7 @@ def reply_outcome(r):
     if MODE == "shadow":
         return Outcome("allow", reply=r, row=row, stderr="jev-guard (shadow): would %s: %s\n" % (decision, render_msg(msg, decision).replace("\n", " ")[:300]))
     # what the user sees (ask) or the agent reads (deny) is built where the result is printed (emit): it may be joined with the policy's
-    return Outcome("deny" if decision == "block" else "ask", render_msg(msg, decision, decision == "block"), reply=r, row=row, msg=msg)
+    return Outcome("deny" if decision == "block" else "ask", render_msg(msg, decision, decision == "block", decision == "block"), reply=r, row=row, msg=msg)
 
 
 # ── policy path (openspec add-policy-hook-adapter) ──────────────────────────────────────────────────────────────────
@@ -917,13 +925,13 @@ def conclude(g, policy):
         hso = {"hookEventName": "PreToolUse", "permissionDecision": final}
         if final == "deny":
             # The reason is what the agent reads, so the text goes there once (no additionalContext copy). A policy's own deny is its reason as written.
-            hso["permissionDecisionReason"] = (render_msg(join_msgs(msgs), "block", True) if guard_said else p.reason)[:MESSAGE_CAP]
+            hso["permissionDecisionReason"] = render_msg(join_msgs(msgs), "block", True, True) if guard_said else p.reason[:1500]
         else:
             # Ask: the user reads permissionDecisionReason; the agent gets the same lines plus what to do next via additionalContext
             # (in -p, where nobody can answer, it is also what the agent reads).
             joined = join_msgs(msgs) if msgs else hook_msg("check", "")
-            hso["permissionDecisionReason"] = render_msg(joined, "ask")[:MESSAGE_CAP]
-            hso["additionalContext"] = render_msg(joined, "needs approval", True)[:MESSAGE_CAP]
+            hso["permissionDecisionReason"] = render_msg(joined, "ask")
+            hso["additionalContext"] = render_msg(joined, "needs approval", True)
         out["hookSpecificOutput"] = hso
     if notice:
         # for the USER (systemMessage), not the model: fixed text, no command, no path, no instruction

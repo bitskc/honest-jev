@@ -774,8 +774,18 @@ export const policyMsg = (reason: string): Msg => ({ head: "Jev policy", body: [
 /** Both parties ask: one prompt, the guard's lines then the policy's, a blank line between. */
 export const joinMsg = (g: Msg, p: Msg): Msg => ({ head: g.head, body: [...g.body, "", ...p.body], safer: g.safer });
 export const msgTitle = (m: Msg, action: string): string => `${m.head} · ${action}`;
-/** The whole text (title, body, and the Next line when `next`). */
-export const renderMsg = (m: Msg, action: string, next = false): string => [msgTitle(m, action), ...m.body, ...(next ? [m.safer ? NEXT_SAFER : NEXT_ASK] : [])].join("\n");
+export const MESSAGE_CAP = 700; // chars of the whole text: a prompt is a few lines, never a page
+/** The whole text. `next` adds the Next line, which is never cut: an over-long body ends in "…" instead. `inlineWhy` puts the Why on line 1 after
+ *  a colon (`Jev guard · secret · block: <Why>`): a Claude Code deny shows only line 1 in the user's transcript row, and omp's block text is the same. */
+export const renderMsg = (m: Msg, action: string, next = false, inlineWhy = false): string => {
+  const body = [...m.body];
+  const title = inlineWhy && body[0]?.startsWith("Why: ") ? `${msgTitle(m, action)}: ${body.shift()!.slice(5)}` : msgTitle(m, action);
+  const nextLine = next ? (m.safer ? NEXT_SAFER : NEXT_ASK) : null;
+  let text = [title, ...body].join("\n");
+  const budget = MESSAGE_CAP - (nextLine === null ? 0 : nextLine.length + 1);
+  if (text.length > budget) text = `${text.slice(0, budget - 1).trimEnd()}…`;
+  return nextLine === null ? text : `${text}\n${nextLine}`;
+};
 
 export default function jevGuard(pi: ExtensionAPI) {
   let noticed = false; // the "no server configured" notice goes out once per session, kept in memory
@@ -907,7 +917,7 @@ export default function jevGuard(pi: ExtensionAPI) {
       }
       const pe: Effect = shadow() || !pol ? "allow" : pol.effect;
       const gRank = EFFECT_RANK[ge], pRank = EFFECT_RANK[pe];
-      if (pRank === 0 || gRank > pRank) return ge === "deny" ? { block: true, reason: renderMsg(gMsg, "block", true) } : ge === "ask" ? ask(ctx, gMsg, gRow) : undefined;
+      if (pRank === 0 || gRank > pRank) return ge === "deny" ? { block: true, reason: renderMsg(gMsg, "block", true, true) } : ge === "ask" ? ask(ctx, gMsg, gRow) : undefined;
       if (pRank > gRank) return pe === "deny" ? { block: true, reason: pol!.reason } : ask(ctx, policyMsg(pol!.reason), pol!.rowId);
       if (pe === "deny") return { block: true, reason: pol!.reason }; // equal and non-allow: the policy's reason
       return ask(ctx, joinMsg(gMsg, policyMsg(pol!.reason)), gRow, pol!.rowId); // both ask: one prompt, both reasons, both rows get the outcome

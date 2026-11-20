@@ -127,6 +127,9 @@ export const R1_STDIN_SCRIPT_SUGGESTION =
 // Bare credential word on a content-printing program: may be a store or only a label.
 export const R1_BARE_WORD_SUGGESTION =
   "A secret file? Don't print it: `set -a; . ./.env; set +a`. Only a label or test name? Proceed.";
+// An env-file load that asks because of what else is on the line: the load itself is fine, so the advice is to separate it or skip the shell.
+export const R1_SOURCE_SUGGESTION =
+  "Load it on a line with no $ or tracing; or pass it to the program, e.g. `node --env-file=.env app.js`.";
 // A recursive (or find-fed) grep/rg for a secret NAME: the agent wants to know where the name is used, not to load it. Every command named
 // here is itself an allow; actionable-advice.test.mjs pins that. Only the `-l` forms print no values: the others print matching lines, and the
 // text says so (a tracked file can hold a hard-coded or committed secret).
@@ -135,6 +138,18 @@ export const R1_SECRET_SEARCH_SUGGESTION =
 
 /** A value shown inside a prompt: whitespace folded to one line, at most 20 chars, tail kept (a path's end names the file). */
 export const clip = (v, n = 20) => { const t = String(v ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `…${t.slice(t.length - (n - 1))}` : t; };
+/** A variable name in a prompt: the head is kept (SUPABASE_SERVICE_ROLE_KEY says what it is; its tail does not), at most 32 chars. */
+export const clipName = (v, n = 32) => { const t = String(v ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+/** A network destination in a prompt (a URL, `user@host:path`, `host:path`): the host is kept WHOLE, however long, because it is what a person
+ *  consents to; only the path is clipped (to `n`, tail kept), and a URL's query, fragment and password are dropped. Anything else is a plain clip. */
+export const clipDest = (v, n = 20) => {
+  const t = String(v ?? "").replace(/\s+/g, " ").trim();
+  const tail = (p) => (p.length > n ? `…${p.slice(p.length - (n - 1))}` : p);
+  const url = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/i.exec(t);
+  if (url) return `${url[1].replace(/^([^@:]*)(?::[^@]*)?@/, "$1@")}${url[2] === "/" ? "" : tail(url[2])}`;
+  const m = /^(\[[^\]]*\]|[^/:\s]+):(.*)$/.exec(t);
+  return m ? `${m[1]}:${tail(m[2])}` : clip(t, n);
+};
 const isSafePath = (tok) => SAFE_PATH_RES.some((r) => r.test(tok));
 const REDIR_SPLIT_RE = /(?<!\d)\d*[<>]+&?/; // (?<!\d): a run of digits is tried from its first digit only (a bare `\d*` start at every digit was quadratic)
 // `--opt=value` carries a path as its value: `docker compose --env-file=.env config`.
@@ -582,9 +597,9 @@ function secretStoreIn(tokens, home) {
   const hit = secretShapeIn(tokens, home);
   if (hit) return { hit, severity: "block" };
   const word = bareSecretWordIn(tokens);
-  if (word) return { hit: word, severity: "soft", kind: "bare", short: "a bare credential word", why: "names a bare credential word" };
+  if (word) return { hit: word, severity: "soft", kind: "bare", short: "a bare credential word" };
   const wide = wideGlobIn(tokens, home);
-  return wide ? { hit: wide, severity: "soft", kind: "wide", short: "a glob too wide to rule out a secret", why: "is a glob too wide or ambiguous to prove it misses a secret store" } : null;
+  return wide ? { hit: wide, severity: "soft", kind: "wide", short: "a glob too wide to rule out a secret" } : null;
 }
 function ambiguousPathIn(tokens) {
   for (const tok of tokens) {
@@ -1257,7 +1272,7 @@ function interpBodyLeak(prog, payload) {
   for (const re of rules.named) {
     for (const m of payload.matchAll(re)) {
       const name = m[m.length - 1];
-      if (SECRET_VAR_NAME_RE.test(name)) return `reads $${clip(name)}`;
+      if (SECRET_VAR_NAME_RE.test(name)) return `reads $${clipName(name)}`;
     }
   }
   return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? "dumps every env var, secrets included" : null;
@@ -1515,7 +1530,7 @@ export function secretCliPrint(prog, args) {
     case "pass": case "gopass": {
       if (has("-c", "--clip", "-q", "--qr")) return null; // clipboard / QR only: nothing printed
       if (!pos.length || PASS_NON_PRINTING.has(pos[0])) return null;
-      return `\`${prog} ${clip(pos.slice(0, 2).join(" "))}\` prints a stored password`; // `show`, `otp`, or a bare entry name (pass's default is show)
+      return `\`${clip(prog, 8)} ${clip(pos.slice(0, 2).join(" "))}\` prints a stored password`; // `show`, `otp`, or a bare entry name (pass's default is show)
     }
     case "vault":
       if ((pos[0] === "kv" && pos[1] === "get") || pos[0] === "read") return `\`vault ${clip(pos.slice(0, pos[0] === "kv" ? 2 : 1).join(" "))}\` prints a stored secret`;
@@ -1609,11 +1624,11 @@ function sourceLeaks(segs, command, src) {
       const rest = t.slice(k + 1);
       if (w === "trap") return "a `trap` can print what was loaded";
       if (w === "script") return "`script` can print the environment";
-      if ((w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) && rest.some((a) => a === "-c" || a === "--call" || LOAD_SHELLS.has(base(a)))) return `\`${clip(w)}\` runs a shell that can print it`;
+      if ((w === "npx" || (w === "npm" && (rest[0] === "exec" || rest[0] === "x"))) && rest.some((a) => a === "-c" || a === "--call" || LOAD_SHELLS.has(base(a)))) return `\`${clip(w, 8)}\` runs a shell that can print it`;
       if (w === "export" && rest.some((a) => /^-[A-Za-z]*n[A-Za-z]*$/.test(a))) return "`export -n` lists the variables";
       if (/^g?make$/.test(w) && rest.some((a) => /^-[A-Za-z]*p[A-Za-z]*$|^--print-data-base$/.test(a))) return "`make -p` prints every variable";
       if ((w === "docker-compose" || w === "podman-compose" || ((w === "docker" || w === "podman") && rest.includes("compose"))) && rest.some((a) => a === "config" || a === "convert")) return "`compose config` prints the loaded variables";
-      if (w === "strace" || w === "ltrace") return `\`${clip(w)}\` prints each traced process's environment`;
+      if (w === "strace" || w === "ltrace") return `\`${clip(w, 8)}\` prints each traced process's environment`;
       if (!OPTION_BUILTINS.has(w) && !LOAD_SHELLS.has(w)) continue;
       if (rest.some((a) => TRACE_CLUSTER_RE.test(a) || TRACE_NAME_RE.test(a))) return "it turns on tracing, which echoes assignments";
     }
@@ -1741,8 +1756,8 @@ function ruleSecret(ctx) {
         const fedShell = c.interactive && stdinFed; // `-i` with a fed stdin: the image's default shell runs the script
         const printing = c.commands.find((cmd) => containerCommandPrints(cmd) === "print");
         const other = printing ? null : c.commands.find((cmd) => cmd.length);
-        if (printing || fedShell) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` passes $${clip(c.secrets[0])} to a container whose ${printing ? `command \`${clip(printing[0])}\`` : "stdin script"} can print it.`, suggestion: R1_SUGGESTION };
-        if (other) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)}\` passes $${clip(c.secrets[0])} to a container running \`${clip(other[0])}\`; may print it.`, suggestion: R1_SUGGESTION };
+        if (printing || fedShell) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog, 10)}\` passes $${clipName(c.secrets[0], 28)} to a container whose ${printing ? `command \`${clip(printing[0])}\`` : "stdin script"} can print it.`, suggestion: R1_SUGGESTION };
+        if (other) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog, 10)}\` passes $${clipName(c.secrets[0])} to a container running \`${clip(other[0])}\`; may print it.`, suggestion: R1_SUGGESTION };
       }
     }
     const operands = outputOperands(prog, args, stdinFed);
@@ -1751,13 +1766,13 @@ function ruleSecret(ctx) {
     // `.env` and `.netrc` among them. The guard cannot know what the directory holds, so it asks (the literal spellings still block).
     if (!store && operands) {
       const dot = grepPatternExempt(prog, args, operands).find((a) => DOT_GLOB_RE.test(a));
-      if (dot) store = { hit: dot, severity: "soft", kind: "dot", short: "every hidden file (`.env` too)", why: "expands to every hidden file, `.env` and credential dotfiles included" };
+      if (dot) store = { hit: dot, severity: "soft", kind: "dot", short: "every hidden file (`.env` too)" };
     }
     // A credentials DIRECTORY is the only reason for the block, and the program is not a content reader (`git log -- credentials/`,
     // `git diff --stat -- src/credentials/`, `find credentials/ -name x`, `tree`): main allowed these. They ask: `git diff credentials/id`
     // does print the file, but only a reader is certain to. `cat credentials/id`, `git add credentials/`, `scp credentials/..` still block.
     if (store?.severity === "block" && !READERS.has(prog) && !secretShapeIn(grepPatternExempt(prog, args, operands), home, true)) {
-      store = { hit: store.hit, severity: "soft", kind: "creddir", short: "a credentials directory", why: "names a credentials directory and may print what is in it" };
+      store = { hit: store.hit, severity: "soft", kind: "creddir", short: "a credentials directory" };
     }
     if (store?.severity === "block") return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` on secret store \`${clip(store.hit)}\` would print it.`, suggestion: R1_SUGGESTION };
     // Q6: unresolved credentials* globs on read-only tools (git diff, sort, …) allow — over-ask vs #130.
@@ -1794,18 +1809,18 @@ function ruleSecret(ctx) {
         const named = values?.find((v) => SECRET_VAR_NAME_RE.test(v));
         const opaque = values?.some((v) => v.includes("$") || v.includes("`"));
         if (values && !opaque) {
-          if (named !== undefined) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clip(named)} via indirect expansion; its name says secret.`, suggestion: R1_SUGGESTION };
+          if (named !== undefined) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clipName(named)} via indirect expansion; its name says secret.`, suggestion: R1_SUGGESTION };
         } else soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(prog)}\` prints a variable chosen by indirection; it could be a secret.`, suggestion: R1_SUGGESTION };
       }
       for (const m of seg.matchAll(SECRET_VAR_RE)) {
-        if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clip(m[1])}; its name says secret.`, suggestion: R1_SUGGESTION };
+        if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clipName(m[1])}; its name says secret.`, suggestion: R1_SUGGESTION };
       }
     }
     // `cat <<< $DB_PASS` (#57): a here-string hands the expansion to the program's stdin, and a program that prints its stdin prints the secret.
     if (PRINTS_STDIN_PROGS.has(prog) && seg.includes("<<<")) {
       for (const hs of seg.matchAll(HERE_STRING_RE)) {
         for (const m of hs[1].matchAll(SECRET_VAR_RE)) {
-          if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clip(m[1])} (here-string); its name says secret.`, suggestion: R1_SUGGESTION };
+          if (SECRET_VAR_NAME_RE.test(m[1])) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` would print $${clipName(m[1])} (here-string); its name says secret.`, suggestion: R1_SUGGESTION };
         }
       }
     }
@@ -1819,7 +1834,7 @@ function ruleSecret(ctx) {
     if (prog === "printenv") {
       const names = argsNR.filter((a) => !a.startsWith("-"));
       if (!names.length) return { rule: "R1-secret-exposure", severity: "block", reason: "bare `printenv` dumps every variable, secrets included", suggestion: R1_SUGGESTION };
-      for (const a of names) if (SECRET_VAR_NAME_RE.test(a)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`printenv ${clip(a)}\` would print a secret value`, suggestion: R1_SUGGESTION };
+      for (const a of names) if (SECRET_VAR_NAME_RE.test(a)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`printenv ${clipName(a)}\` would print a secret value`, suggestion: R1_SUGGESTION };
     }
     if ((prog === "env" && envPrintsEnvironment(argsNR)) || (prog === "set" && !argsNR.length)) return { rule: "R1-secret-exposure", severity: "block", reason: `bare \`${clip(prog)}\` dumps every variable, secrets included`, suggestion: R1_SUGGESTION };
     if (prog === "export" && argsNR.every((a) => a.startsWith("-")) && (!argsNR.length || argsNR.includes("-p"))) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${argsNR.length ? "export -p" : "export"}\` dumps every exported variable, secrets included`, suggestion: R1_SUGGESTION };
@@ -1827,7 +1842,7 @@ function ruleSecret(ctx) {
       const flags = argsNR.filter((a) => /^[-+][A-Za-z]+$/.test(a)).join("");
       const names = argsNR.filter((a) => !/^[-+]/.test(a)).map((a) => a.split("=")[0]);
       if (!names.length && /[px]/.test(flags)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)} ${clip(argsNR.join(" "))}\` dumps every variable, secrets included`, suggestion: R1_SUGGESTION };
-      if (flags.includes("p")) for (const n of names) if (SECRET_VAR_NAME_RE.test(n)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)} -p ${clip(n)}\` would print a secret value`, suggestion: R1_SUGGESTION };
+      if (flags.includes("p")) for (const n of names) if (SECRET_VAR_NAME_RE.test(n)) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)} -p ${clipName(n)}\` would print a secret value`, suggestion: R1_SUGGESTION };
     }
     if (["curl", "http", "wget"].includes(prog)) {
       const verbose = args.some((a) => ["-v", "--verbose", "--trace", "--trace-ascii", "-i", "--include"].includes(a));
@@ -1837,8 +1852,8 @@ function ruleSecret(ctx) {
     }
   }
   if (sourced && !soft) {
-    const why = sourceLeaks(secretSegs, ctx.command, sourced.src);
-    if (why) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${why}.`, suggestion: R1_SUGGESTION };
+    const leak = sourceLeaks(secretSegs, ctx.command, sourced.src);
+    if (leak) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
   }
   return soft ?? ambiguous;
 }
@@ -2019,14 +2034,14 @@ function ruleSecretExfil(ctx) {
       const positionals = (prog === "rsync" ? dropOptionValues(args, RSYNC_TEXT_OPTS) : args).filter((a) => !a.startsWith("-"));
       const dest = positionals.at(-1);
       if (dest && isRemoteTarget(dest)) {
-        const m = check(positionals.slice(0, -1), (what) => `\`${clip(prog)}\` would copy ${what} to \`${clip(dest)}\`.`);
+        const m = check(positionals.slice(0, -1), (what) => `\`${clip(prog, 8)}\` would copy ${what} to \`${clipDest(dest)}\`.`);
         if (m) return m;
         // `scp -r . host:`, `rsync -a ./ host:` (#100): a recursive copy of the working tree, home, or a parent of either ships every file under it, `.env` and
         // `~/.ssh` among them. The tree's contents are unknown to the guard, so it asks (a person confirms what is being sent).
         const recursive = args.some((a) => a === "--recursive" || a === "--archive" || /^-[A-Za-z]*[rRa]/.test(a) && !a.startsWith("--"));
         const cwds = ctx.expandedCwds[si] ?? ctx.allCwds;
         const bulk = recursive && positionals.slice(0, -1).find((src) => !isRemoteTarget(src) && cwds.some((c) => isBroadRoot(src.replace(/\/\*$/, "") || "/", c, ctx.home)));
-        if (bulk) soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `\`${clip(prog)}\` copies all of \`${clip(bulk)}\` to \`${clip(dest)}\`, secret files included.`, suggestion: R1_EXFIL_SUGGESTION };
+        if (bulk) soft ??= { rule: "R1-secret-exfiltration", severity: "soft", reason: `\`${clip(prog, 8)}\` copies \`${clip(bulk)}\` to \`${clipDest(dest)}\`, secret files included.`, suggestion: R1_EXFIL_SUGGESTION };
       }
     }
     if (CLOUD_CP_PROGS.has(prog)) {
@@ -3353,13 +3368,13 @@ function ruleGeneralRisk(ctx) {
     if (prog === "dd") for (const a of args) if (a.startsWith("of=") && r10OutsideCwd(a.slice(3), cwd, home)) return hit(`\`dd of=${clip(a.slice(3))}\` writes outside this working tree`, "write_outside_cwd", seg);
     if (["scp", "rsync", "sftp"].includes(prog)) {
       const candidates = prog === "sftp" ? positional : positional.slice(-1);
-      for (const a of candidates) if (r10IsRemoteTarget(a)) return hit(`\`${clip(prog)}\` copies to the remote host \`${clip(a.split(":", 1)[0])}\``, "network_upload", seg);
+      for (const a of candidates) if (r10IsRemoteTarget(a)) return hit(`\`${clip(prog, 8)}\` copies to remote host \`${clipDest(a)}\``, "network_upload", seg);
     }
     if (prog === "curl") {
       const uploading = args.some((a) => ["-T", "--upload-file", "-F", "--form", "--data-binary", "--data-raw", "-d"].includes(a) ||
         ["--upload-file=", "--form=", "--data-binary=", "--data-raw="].some((p) => a.startsWith(p))) ||
         args.some((a) => a === "-X" || a === "--request");
-      if (uploading) for (const a of positional) if (r10UrlIsRemote(a)) return hit(`\`curl\` sends a body to \`${clip(a)}\``, "network_upload", seg);
+      if (uploading) for (const a of positional) if (r10UrlIsRemote(a)) return hit(`\`curl\` sends a body to \`${clipDest(a)}\``, "network_upload", seg);
     }
     if (R10_PUBLISH.has(`${prog} ${sub}`) || (prog === "gh" && args[0] === "release" && args[1] === "create")) {
       return hit(`\`${clip(prog)} ${clip(sub)}\` publishes; deleting it won't undo that.`, "publish", seg);

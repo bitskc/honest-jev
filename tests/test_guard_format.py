@@ -36,9 +36,11 @@ class GuardFormat(unittest.TestCase):
                 self.assertEqual("\n".join(m["body"]), c["message"])
                 self.assertEqual(h.render_msg(m, "declined", True), c["declined"])
                 self.assertEqual(h.render_msg(m, "needs approval", True), c["needs_approval"])
-                self.assertEqual(h.render_msg(m, "block", True), c["block"])
+                self.assertEqual(h.render_msg(m, "block", True, True), c["block"])
                 both = h.join_msgs([m, h.policy_msg(POLICY)])
                 self.assertEqual("\n".join(both["body"]), c["both_message"])
+                if "both_block" in c:
+                    self.assertEqual(h.render_msg(both, "block", True, True), c["both_block"])
 
     def test_hook_messages(self):
         h = self.hook
@@ -58,13 +60,29 @@ class GuardFormat(unittest.TestCase):
         self.assertEqual(h.render_msg(m, "declined", True), p["declined"])
         self.assertEqual(h.render_msg(m, "needs approval", True), p["needs_approval"])
 
-    def test_a_prompt_is_at_most_three_lines_before_next_and_the_title_has_no_backticks(self):
+    def test_a_blocks_line_1_carries_the_why_and_the_dialog_title_has_no_backticks(self):
         h = self.hook
         for c in FX["cases"]:
-            lines = h.render_msg(h.guard_msg(c["reply"]), "block", True).split("\n")
-            self.assertLessEqual(len(lines), 4)
-            self.assertNotIn("`", lines[0])
+            m = h.guard_msg(c["reply"])
+            lines = h.render_msg(m, "block", True, True).split("\n")
+            self.assertLessEqual(len(lines), 3)
+            self.assertTrue(lines[0].startswith("%s · block: " % m["head"]), lines[0])
+            self.assertNotIn("`", h.render_msg(m, "ask").split("\n")[0])
             self.assertEqual(len([l for l in lines if l.startswith("Next:")]), 1)
+
+    def test_an_over_long_text_is_cut_before_its_next_line_never_through_it(self):
+        h = self.hook
+        m = h.guard_msg({"label": "secret", "reason": "r" * 900, "suggestion": "s" * 120})
+        block = h.render_msg(m, "block", True, True)
+        self.assertLessEqual(len(block), h.MESSAGE_CAP)
+        self.assertTrue(block.endswith("…\n" + h.NEXT_SAFER))
+        ask = h.render_msg(h.join_msgs([m, h.policy_msg("p" * 300)]), "ask")
+        self.assertLessEqual(len(ask), h.MESSAGE_CAP)
+        policy = "Jev policy [pr-merge-gate/R1-unreviewed-merge]: " + "p" * 300
+        typical = h.render_msg(h.join_msgs([h.guard_msg({"label": "secret", "reason": "r" * 120, "suggestion": "s" * 120}), h.policy_msg(policy)]), "needs approval", True)
+        self.assertLessEqual(len(typical), h.MESSAGE_CAP)
+        self.assertNotIn("…", typical)
+        self.assertTrue(typical.endswith(h.NEXT_SAFER))
 
     def test_notices_are_one_short_line(self):
         h = self.hook

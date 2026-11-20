@@ -8,6 +8,7 @@ import {
   R1_BARE_WORD_SUGGESTION,
   R10_OPAQUE_SUGGESTION,
   R1_SECRET_SEARCH_SUGGESTION,
+  R1_SOURCE_SUGGESTION,
 } from "../src/kit/guard.mjs";
 
 const noJev = { ask: null, jevAvailable: false };
@@ -21,6 +22,18 @@ test("stdin-fed interpreter soft-ask uses the stdin-script suggestion, not the s
     assert.equal(r.suggestion, R1_STDIN_SCRIPT_SUGGESTION, c);
     assert.notEqual(r.suggestion, R1_SUGGESTION, c);
   }
+});
+
+test("an env-file load that asks for what else is on the line does not advise the same load again", async () => {
+  for (const c of [`. ./.env; ./deploy.sh "$TARGET"`, "set -a; . ./.env; set +a; echo $HOME"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "ask", c);
+    assert.equal(r.suggestion, R1_SOURCE_SUGGESTION, c);
+    assert.notEqual(r.suggestion, R1_SUGGESTION, c);
+  }
+  assert.ok(!/set -a/.test(R1_SOURCE_SUGGESTION), "the load is what the command already did");
+  // its alternative is a real one: the program takes the env file itself, and that is an allow
+  assert.equal((await g("node --env-file=.env app.js")).decision, "allow");
 });
 
 test("bare credential word on a content printer asks with the bare-word suggestion", async () => {

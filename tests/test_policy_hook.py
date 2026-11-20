@@ -207,7 +207,7 @@ class HookUnits(unittest.TestCase):
             "reason": "`cat` would print `.env`.", "suggestion": "Don't print it.", "decided_by": "prefilter",
         })
         self.assertEqual(block.effect, "deny")
-        self.assertEqual(block.reason, "Jev guard · secret · block\nWhy: `cat` would print `.env`.\nSafer: Don't print it.\n" + self.hook.NEXT_SAFER)
+        self.assertEqual(block.reason, "Jev guard · secret · block: `cat` would print `.env`.\nSafer: Don't print it.\n" + self.hook.NEXT_SAFER)
 
 
 class PolicyHook(unittest.TestCase):
@@ -590,7 +590,7 @@ class ConcludeAdditionalContext(unittest.TestCase):
         out, _ = self.conclude_stdout(hook, g, hook.Outcome("allow"))
         hso = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(hso["permissionDecision"], "deny")
-        self.assertEqual(hso["permissionDecisionReason"], "Jev guard · secret · block\nWhy: `cat` would print `.env`.\nSafer: Don't print it.\n" + hook.NEXT_SAFER)
+        self.assertEqual(hso["permissionDecisionReason"], "Jev guard · secret · block: `cat` would print `.env`.\nSafer: Don't print it.\n" + hook.NEXT_SAFER)
         self.assertNotIn("additionalContext", hso, "the agent reads the deny reason; a second copy would repeat it")
 
     def test_a_policy_only_deny_is_its_reason_as_written(self):

@@ -202,7 +202,7 @@ test("guard block + policy proceed: block (the stricter of the two)", async () =
   decideReply = async () => rpc(PROCEED_REPLY);
   const v = await run(bash(MERGE), ctx(true));
   expect(v.block).toBe(true);
-  expect(v.reason).toBe("Jev guard · R1-secret-exposure · block\nWhy: guard says no\nNext: don't retry as-is; ask the user.");
+  expect(v.reason).toBe("Jev guard · R1-secret-exposure · block: guard says no\nNext: don't retry as-is; ask the user.");
   expect(confirms.length).toBe(0);
 });
 
@@ -366,7 +366,7 @@ test("helper missing: the policy path fails open, a ledger row records it, the g
   guardReply = { decision: "block", rule: "R1", reason: "guard says no", decided_by: "prefilter" };
   const v = await run(bash(MERGE), ctx(true));
   expect(v.block).toBe(true);
-  expect(v.reason).toBe("Jev guard · R1 · block\nWhy: guard says no\n" + "Next: don't retry as-is; ask the user.");
+  expect(v.reason).toBe("Jev guard · R1 · block: guard says no\nNext: don't retry as-is; ask the user.");
   expect(decides().length).toBe(0);
   expect(policyRows()[0]).toMatchObject({ tool: "kit_decide", decision: "allow", decided_by: "fail_open", fail_reason: "client_config" });
   guardReply = ALLOW;

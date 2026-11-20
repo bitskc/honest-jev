@@ -21,8 +21,10 @@ for (const c of fx.cases) {
     expect(m.body.join("\n")).toBe(c.message);
     expect(hook.renderMsg(m, "declined", true)).toBe(c.declined);
     expect(hook.renderMsg(m, "needs approval", true)).toBe(c.needs_approval);
-    expect(hook.renderMsg(m, "block", true)).toBe(c.block);
-    expect(hook.joinMsg(m, hook.policyMsg("Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.")).body.join("\n")).toBe(c.both_message);
+    expect(hook.renderMsg(m, "block", true, true)).toBe(c.block);
+    const policy = hook.policyMsg("Jev policy [pr-merge-gate/R1-unreviewed-merge]: ask the user first.");
+    expect(hook.joinMsg(m, policy).body.join("\n")).toBe(c.both_message);
+    if (c.both_block) expect(hook.renderMsg(hook.joinMsg(m, policy), "block", true, true)).toBe(c.both_block);
   });
 }
 
@@ -44,13 +46,28 @@ test("a policy gate's own reason is shown untouched", () => {
   expect(hook.renderMsg(m, "needs approval", true)).toBe(p.needs_approval);
 });
 
-test("a prompt is at most three lines before Next, each line one line, and the title has no backticks (the dialog title is inline markdown)", () => {
+test("a block's line 1 carries the Why (a Claude Code deny row shows only line 1); the dialog title has no backticks (it is inline markdown)", () => {
   for (const c of fx.cases) {
-    const lines = hook.renderMsg(hook.guardMsg(c.reply), "block", true).split("\n");
-    expect(lines.length).toBeLessThanOrEqual(4);
-    expect(lines[0]).not.toContain("`");
+    const m = hook.guardMsg(c.reply);
+    const lines = hook.renderMsg(m, "block", true, true).split("\n");
+    expect(lines.length).toBeLessThanOrEqual(3);
+    expect(lines[0].startsWith(`${hook.msgTitle(m, "block")}: `)).toBe(true);
+    expect(hook.msgTitle(m, "ask")).not.toContain("`");
     expect(lines.filter((l: string) => l.startsWith("Next:")).length).toBe(1);
   }
+});
+
+test("an over-long text is cut before its Next line, never through it", () => {
+  const m = hook.guardMsg({ label: "secret", reason: "r".repeat(900), suggestion: "s".repeat(120) });
+  const block = hook.renderMsg(m, "block", true, true);
+  expect(block.length).toBeLessThanOrEqual(hook.MESSAGE_CAP);
+  expect(block.endsWith(`…\n${hook.NEXT_SAFER}`)).toBe(true);
+  const ask = hook.renderMsg(hook.joinMsg(m, hook.policyMsg("p".repeat(300))), "ask");
+  expect(ask.length).toBeLessThanOrEqual(hook.MESSAGE_CAP);
+  const typical = hook.renderMsg(hook.joinMsg(hook.guardMsg({ label: "secret", reason: "r".repeat(120), suggestion: "s".repeat(120) }), hook.policyMsg(`Jev policy [pr-merge-gate/R1-unreviewed-merge]: ${"p".repeat(300)}`)), "needs approval", true);
+  expect(typical.length).toBeLessThanOrEqual(hook.MESSAGE_CAP);
+  expect(typical).not.toContain("…");
+  expect(typical.endsWith(hook.NEXT_SAFER)).toBe(true);
 });
 
 test("the notices are one line and short", () => {
