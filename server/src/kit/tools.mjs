@@ -31,7 +31,7 @@ export function registerKitTools(server, getEnv, opts = {}) {
       "the working tree: outside writes, uploads, publishes, DB writes, service control, wildcard file ops) go to one Jev question. " +
       "For those, a Jev risk score P(moderate-or-worse) >= ask_at (default 0.65) returns ask. `user_request` (the user's own words) " +
       "can only soften an ask to allow, never tighten. If Jev is unavailable the guard fails open (allow) and says so in `notes`/`jev`. " +
-      "Output: decision allow|ask|block, score 0..1, reason, rule, suggestion.",
+      "Output: decision allow|ask|block, score 0..1, reason, rule, label (plain rule name), suggestion.",
     inputSchema: ledgerStrict({
       tool: z.enum(["Bash", "PowerShell", "Read", "NotebookRead"]).optional().describe("Which tool call is being guarded. Default Bash."),
       command: z.string().max(20000).optional().describe("The shell command (Bash/PowerShell)."),
@@ -68,7 +68,7 @@ export function registerKitTools(server, getEnv, opts = {}) {
       "file change means verified (it can never block); no file changes means not applicable. Otherwise one Jev call asks four questions " +
       "(claims done? claims checks passed? would checks apply? outcome) and returns verdict unverified/block when the agent presents changed work as " +
       "finished with no fresh passing check. Give it `transcript_tail` (Claude Code JSONL of the last turn) or `file_changes` + `checks`, plus `final_message`. " +
-      "Output: verified true|false|null, verdict, action allow|block, reason. Fails open if Jev is unavailable.",
+      "Output: verified true|false|null, verdict, action allow|block, reason (one sentence), next (the one step, on a block). Fails open if Jev is unavailable.",
     inputSchema: ledgerStrict({
       final_message: z.string().max(60000).optional().describe("The agent's final message."),
       task: z.string().max(20000).optional().describe("What the user asked for."),
