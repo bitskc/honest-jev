@@ -1229,6 +1229,81 @@ const INTERP_ENV_RULES = {
 };
 const INTERP_ENV_BASE = { node: "node", nodejs: "node", bun: "node", deno: "node", python: "python", ruby: "ruby",
   perl: "perl", php: "php", pwsh: "pwsh", powershell: "pwsh" };
+
+// ── P1-1: does the payload PRINT the value it read? ──────────────────────────────────────────────
+// A named read whose value reaches a print sink keeps the block (class (a): printing a secret); a read
+// that never reaches one is read-and-use and converts to allow + would_have:"ask" (owner decision
+// "shrink" 2026-11-20). The sink vocabulary composes the shell printers (ENV_PRINTERS' echo/printf)
+// with each language's own print calls — the same notion containerCommandPrints applies at the
+// invocation level (its `-c`/`-e`/`-r` printer test).
+const PRINT_SINK_RE = /(?:^|[^\w.])(?:console\.(?:log|error|warn|info|debug|dir|table|trace)|process\.(?:stdout|stderr)\.write|Deno\.(?:stdout|stderr)\.write|sys\.(?:stdout|stderr)\.write|\b(?:printf|print|puts|pp)\b\s*\(?|\becho\s+)/g;
+/** Any access to the environment (any var): the print may name the read indirectly (`console.log(process.env.X)`). */
+const ANY_ENV_ACCESS_RE = /process\.env(?:\.[A-Za-z_]\w*|\[['"][^'"]+['"]\]|\[\w+\])|process\[['"]env['"]\]|Bun\.env|Deno\.env|import\.meta\.env|os\.environ(?:\s*\[|\s*\.|\s*\))|os\.getenv\s*\(|(?<![\w$@])getenv\s*\(|(?<![\w$@])environ\s*\[|(?<![\w$@])environ\.(?:get|values|items)\s*\(|(?<![\w$@])ENV\s*\[|ENV\.fetch\s*\(|\$env:|\$ENV\{|\$_ENV\[|\$_SERVER\[|%ENV\b|\bos\.environ\b|\bprocess\.env\b|\bBun\.env\b|\bDeno\.env\b|\bimport\.meta\.env\b/;
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Idents whose assignment carries the reason var's VALUE: a direct read of that var (or of the whole
+ *  environment) into the ident, or a string-ish copy of an already-marked ident — concat, quoted text,
+ *  f-strings, and a bare `a = b` chain. Object passing (`resp = urlopen(req)`) is NOT string-ish, so a
+ *  response print never becomes a print of the value. Fixpoint, capped. */
+function secretCarryIdents(payload, name) {
+  const n = escRe(name);
+  const reasonAccess = new RegExp(
+    String.raw`process\.env\.?(?:${n})\b|process\[['"\`](?:${n})['"\`]\]|` +
+    String.raw`os\.environ\s*\[\s*['"\`](?:${n})['"\`]|os\.(?:environ\.get|getenv)\s*\(\s*['"\`](?:${n})|` +
+    String.raw`environ\s*\[\s*['"\`](?:${n})['"\`]|environ\.(?:get)\s*\(\s*['"\`](?:${n})|` +
+    String.raw`getenv\s*\(\s*['"\`](?:${n})|\.(?:get|fetch)\s*\(\s*['"\`](?:${n})|` +
+    String.raw`Bun\.env\.?(?:${n})\b|Deno\.env\.get\s*\(\s*['"\`](?:${n})|` +
+    String.raw`\$env:(?:${n})\b|ENV\s*\[\s*['"\`](?:${n})['"\`]`);
+  const wholeEnv = /\b(?:os\.environ|process\.env|Bun\.env|Deno\.env|import\.meta\.env)\b(?!\s*[.[])/;
+  const ids = new Set();
+  let changed = true;
+  let guard = 0;
+  const assignRe = /([A-Za-z_]\w*)\s*=\s*([^;\n]+)/g;
+  while (changed && guard++ < 5) {
+    changed = false;
+    assignRe.lastIndex = 0;
+    let m;
+    while ((m = assignRe.exec(payload))) {
+      const [, id, expr] = m;
+      if (ids.has(id)) continue;
+      const direct = reasonAccess.test(expr) || wholeEnv.test(expr);
+      const stringy = /["'`]/.test(expr) || /\+/.test(expr) || /^\s*[A-Za-z_]\w*\s*$/.test(expr); // a bare copy of an ident carries the same string
+      const fromMarked = stringy && [...ids].some((s) => new RegExp(`\\b${s}\\b`).test(expr));
+      if (direct || fromMarked) { ids.add(id); changed = true; }
+    }
+  }
+  return ids;
+}
+/** True when the payload PRINTS the read value: a print sink whose argument region (balanced parens, or
+ *  the rest of the line for echo/printf-style) references an env access, a string-carrying alias ident,
+ *  or the var name quoted/dotted (covers `e.get('API_TOKEN')`-style alias accesses). */
+export function payloadPrintsValue(payload, name) {
+  const ids = secretCarryIdents(payload, name);
+  const quotedName = new RegExp(`['"\`]${escRe(name)}['"\`]`);
+  const dottedName = new RegExp(`\\.${escRe(name)}\\b`);
+  const hasRef = (t) => ANY_ENV_ACCESS_RE.test(t)
+    || [...ids].some((s) => new RegExp(`\\b${s}\\b`).test(t))
+    || quotedName.test(t) || dottedName.test(t);
+  PRINT_SINK_RE.lastIndex = 0;
+  let m;
+  while ((m = PRINT_SINK_RE.exec(payload))) {
+    const after = payload.slice(m.index + m[0].length);
+    let arg;
+    if (m[0].trimEnd().endsWith("(")) {
+      const start = m.index + m[0].length - 1; // at the open paren
+      let depth = 1;
+      let j = start + 1;
+      for (; j < payload.length && j < start + 1200 && depth > 0; j++) {
+        if (payload[j] === "(") depth++;
+        else if (payload[j] === ")") depth--;
+      }
+      arg = payload.slice(start + 1, Math.min(j, start + 1200));
+    } else {
+      arg = after.split(/\n|;/)[0].slice(0, 300); // echo/printf style: rest of line
+    }
+    if (hasRef(arg)) return true;
+  }
+  return false;
+}
 /** The env-read reason for an interpreter invocation's payload, or null. Named reads are checked first so a
  *  secret-named read reports its variable; any whole-environment reference is the dump case. */
 // Python names the environment through an alias: `import os as o; o.environ['X']`, `from os import environ [as e]; environ['X']`,
@@ -1265,7 +1340,10 @@ function interpEnvLeak(prog, args) {
   const payload = interpScriptText(prog, args);
   return payload === null ? null : interpBodyLeak(prog, payload);
 }
-/** What an interpreter body (the text of -e/-c, or a script read from stdin) does to the environment: null, or a reason. */
+/** What an interpreter body (the text of -e/-c, or a script read from stdin) does to the environment:
+ *  null, or `{ why, convert }`. `convert` marks the P1-1 read-and-use split: a named read of a secret
+ *  var whose value the payload never prints (no print sink reaches it) — the caller records
+ *  would_have:"ask" and keeps looking; print/store-read/dump shapes have convert:false and block. */
 function interpBodyLeak(prog, payload) {
   // a version suffix (python3.11, node22); (?<!\d) starts the scan at the first digit of a run only
   const base = INTERP_ENV_BASE[prog.replace(/(?<!\d)\d+(?:\.\d+)*$/, "")];
@@ -1275,10 +1353,11 @@ function interpBodyLeak(prog, payload) {
   for (const re of rules.named) {
     for (const m of payload.matchAll(re)) {
       const name = m[m.length - 1];
-      if (SECRET_VAR_NAME_RE.test(name)) return `reads $${clipName(name)}`;
+      if (SECRET_VAR_NAME_RE.test(name)) return { why: `reads $${clipName(name)}`, convert: !payloadPrintsValue(payload, name) };
     }
   }
-  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? "dumps every env var, secrets included" : null;
+  // A whole-environment reference dumps everything it touches: it prints by definition, so it never converts.
+  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? { why: "dumps every env var, secrets included", convert: false } : null;
 }
 // `env` with no command operand prints the environment; `VAR=value` operands only set variables.
 function envPrintsEnvironment(args) {
@@ -1462,8 +1541,14 @@ function stdinScriptFindings(ctx) {
           if (lit !== null) bodies.push(lit);
         }
         for (const b of bodies) {
-          const why = interpBodyLeak(prog, b) ?? (interpBodySecretRead(b, ctx.home) ? `reads secret store \`${clip(interpBodySecretRead(b, ctx.home))}\`` : null);
-          if (why) res.leak ??= { prog, why };
+          const leak = interpBodyLeak(prog, b);
+          const hit = leak ? null : interpBodySecretRead(b, ctx.home);
+          const why = leak ? leak.why : hit ? `reads secret store \`${clip(hit)}\`` : null;
+          if (why) {
+            const cand = { prog, why, convert: Boolean(leak && leak.convert) };
+            if (!res.leak) res.leak = cand;
+            else if (res.leak.convert && !cand.convert) res.leak = cand; // a store-read/print block beats a read-and-use finding
+          }
         }
         const fed = i > 0 || args.some((a) => INPUT_REDIRECT_RE.test(a) || STDIN_PATH_RE.test(a)) || stage.includes("<(");
         if (fed && (many || !bodies.length)) res.unseen ??= prog;
@@ -1667,6 +1752,7 @@ function ruleSecret(ctx) {
   if (!SHELL_TOOLS.has(tool) || !ctx.command) return null;
   let ambiguous = null;
   let soft = null;
+  let converted = null; // P1-1 read-and-use: a reads-$VAR finding whose payload never prints it (would_have:"ask")
   let fed = null;
   let envFilters = null;
   let assigned = null;
@@ -1676,7 +1762,12 @@ function ruleSecret(ctx) {
   let feedIndex = null;
   if (/\b(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl|php|pwsh|powershell)\b/.test(ctx.command) && /[<|]/.test(ctx.command)) {
     stdinFindings = stdinScriptFindings(ctx);
-    if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(stdinFindings.leak.prog)}\` reads a stdin script that ${stdinFindings.leak.why}.`, suggestion: R1_SUGGESTION };
+    if (stdinFindings.leak) {
+      const lk = stdinFindings.leak;
+      const finding = { rule: "R1-secret-exposure", severity: lk.convert ? "convert" : "block", reason: `\`${clip(lk.prog)}\` reads a stdin script that ${lk.why}.`, suggestion: R1_SUGGESTION };
+      if (lk.convert) converted ??= finding;
+      else return finding;
+    }
     if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(stdinFindings.unseen)}\` runs a stdin script; the guard can't see what it does with env vars.`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
   let sourced = null;
@@ -1792,13 +1883,21 @@ function ruleSecret(ctx) {
     const interpHit = interpScriptSecretRead(prog, args, home);
     if (interpHit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that reads secret store \`${clip(interpHit)}\`.`, suggestion: R1_SUGGESTION };
     const interpEnv = interpEnvLeak(prog, args);
-    if (interpEnv) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv}.`, suggestion: R1_SUGGESTION };
+    if (interpEnv) {
+      const finding = { rule: "R1-secret-exposure", severity: interpEnv.convert ? "convert" : "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv.why}.`, suggestion: R1_SUGGESTION };
+      if (interpEnv.convert) converted ??= finding;
+      else return finding;
+    }
     // The same body check for a script the interpreter reads from STDIN (#185), run here so every segment walk reaches it: substitutions, subshells,
     // function bodies and both quote styles of `bash -c`. The here-string is in the segment; a heredoc body is found by the line it is attached to.
     if (interpFamily(prog) && /<</.test(seg) && interpReadsStdinScript(prog, args)) {
       for (const body of stdinBodiesOf(seg, (feedIndex ??= buildFeedIndex(ctx)))) {
         const why = interpBodyLeak(prog, body);
-        if (why) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why}.`, suggestion: R1_SUGGESTION };
+        if (why) {
+          const finding = { rule: "R1-secret-exposure", severity: why.convert ? "convert" : "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why.why}.`, suggestion: R1_SUGGESTION };
+          if (why.convert) converted ??= finding;
+          else return finding;
+        }
         const hit = interpBodySecretRead(body, home);
         if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that reads secret store \`${clip(hit)}\`.`, suggestion: R1_SUGGESTION };
       }
@@ -1858,7 +1957,9 @@ function ruleSecret(ctx) {
     const leak = sourceLeaks(secretSegs, ctx.command, sourced.src);
     if (leak) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
   }
-  return soft ?? ambiguous;
+  // Priority: a real ask (soft) or an ambiguous flag outranks a read-and-use conversion; both are decided
+  // downstream, a converted finding only records would_have:"ask".
+  return soft ?? ambiguous ?? converted;
 }
 
 // ── R1-secret-exfiltration (block, deterministic): a secret file's contents reaching a network sink ──
@@ -2722,6 +2823,188 @@ function gitBranchForceDelete(args) {
   }
   return del && force;
 }
+
+// ── keep-ask predicate and rule A (owner decision "shrink" 2026-11-20) ─────────────────────────────
+// Which would-be asks STAY asks: force-push/history-rewrite of protected or unprovable refs (D1-strict),
+// class-(c) destructive reasons, real filter-branch/filter-repo rewrites (D2), and rule A (a token-level
+// `curl`/`wget` DELETE against a non-local http(s) URL). Every other ask becomes allow + would_have:"ask",
+// recorded by guardOnceCore. Statement-scoped: a `git fetch main` or a later localhost curl elsewhere in
+// the command cannot decide another statement's fate.
+function splitStmts(cmd) {
+  return String(cmd).replace(/\\\r?\n/g, " ").split(/\n|&&|\|\||;|\|/);
+}
+function tokenize(s) {
+  const out = [];
+  let cur = "";
+  let q = null;
+  let braces = 0; // a `#` inside ${...} is parameter-expansion content, not a comment
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === q) q = null;
+      else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
+      else cur += c;
+    } else if (c === "#" && braces === 0 && (i === 0 || /\s/.test(s[i - 1]))) break; // a shell comment ends the statement's tokens
+    else if (c === "{") { braces++; cur += c; }
+    else if (c === "}") { if (braces > 0) braces--; cur += c; }
+    else if (c === "'" || c === '"' || c === "`") q = c;
+    else if (c === "\\" && i + 1 < s.length) cur += s[++i];
+    else if (/\s/.test(c)) { if (cur) { out.push(cur); cur = ""; } }
+    else cur += c;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+/** The statements keep-ask judges: split, with command-substitution openers normalized to `(` (so
+ *  `$(git push …)`/`<(git push …)`/backticks tokenize like `(git push …)`), plus one quoted script body
+ *  extracted per `bash|sh|… -c '…'` / `eval '…'` — the body is the command those wrappers run, and the
+ *  wrapper closure (diff-guard) demands the same decision inside and outside the wrapper. */
+function keepStatements(cmd) {
+  const stmts = splitStmts(cmd).map((s) => s.replace(/\$\(|<\(|>\(/g, "(").replace(/`/g, "("));
+  const out = [...stmts];
+  for (let round = 0; round < 3; round++) {
+    const fresh = [];
+    for (const s of out) {
+      const toks = tokenize(s);
+      for (let i = 0; i + 1 < toks.length; i++) {
+        const isC = /^(?:bash|sh|dash|zsh|ksh|busybox)$/.test(toks[i]) && toks[i + 1] === "-c" && Boolean(toks[i + 2]);
+        const isEval = toks[i] === "eval" && Boolean(toks[i + 1]);
+        const body = isC ? toks[i + 2] : isEval ? toks[i + 1] : null;
+        if (body && !out.includes(body) && !fresh.includes(body)) fresh.push(body);
+      }
+    }
+    if (!fresh.length) break;
+    out.push(...fresh);
+  }
+  return out;
+}
+const KEEP_GLOBAL_VAL = new Set(["-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "-c", "--attr-source", "--super-prefix"]);
+const KEEP_PUSH_VALUE_OPTS = new Set(["--receive-pack", "--exec", "--push-option", "--repo", "-o", "--set-upstream"]);
+const KNOWN_PUSH_SHORT = "dfnprquv"; // f force, d delete, n dry-run, p prune, q quiet, u set-upstream, v verbose
+/** The `git [global-opts] push …` argv of one statement, or null when the statement has no push. */
+function pushInfo(stmt) {
+  const toks = tokenize(stmt);
+  const gi = toks.findIndex((t) => t.replace(/^[<({!~]+/, "") === "git");
+  if (gi < 0) return null;
+  let i = gi + 1;
+  while (i < toks.length) {
+    const t = toks[i];
+    if (t === "push") return pushArgs(toks.slice(i + 1));
+    if (t.startsWith("-")) { if (KEEP_GLOBAL_VAL.has(t)) i++; i++; continue; }
+    return null; // another subcommand (fetch, filter-*, …)
+  }
+  return null;
+}
+function pushArgs(args) {
+  let force = false;
+  let mirror = false;
+  let leaseProtected = false;
+  const positionals = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") { positionals.push(...args.slice(i + 1)); break; }
+    if (a.startsWith("--")) {
+      if (a === "--force" || a === "--force-if-includes") force = true;
+      else if (a.startsWith("--force-with-lease")) {
+        force = true;
+        const eq = a.indexOf("=");
+        if (eq > 0 && isProtectedRef(a.slice(eq + 1))) leaseProtected = true;
+      } else if (a === "--mirror") mirror = true;
+      else if (KEEP_PUSH_VALUE_OPTS.has(a)) i++;
+      continue;
+    }
+    if (a.length > 1 && a.startsWith("-")) {
+      const letters = a.slice(1);
+      // a short cluster of KNOWN push letters containing f forces (`-f`, `-qf`); `-filter` holds unknown
+      // letters → not force, and never a positional
+      if ([...letters].every((c) => KNOWN_PUSH_SHORT.includes(c)) && letters.includes("f")) force = true;
+      continue;
+    }
+    positionals.push(a);
+  }
+  return { force, mirror, positionals, leaseProtected };
+}
+function refSide(ref, side) {
+  let t = String(ref).replace(/^[<({!~]+|[)};]+$/g, "");
+  if (t.startsWith("+")) t = t.slice(1);
+  if (t.includes(":")) {
+    const [src, dst] = [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)];
+    return side === "src" ? src : dst;
+  }
+  return t;
+}
+function isProtectedRef(ref) {
+  const dst = refSide(ref, "dst");
+  if (dst === "") return false; // `main:` deletes remote main → push --delete class (owner: allow)
+  const name = dst.replace(/^refs\/heads\//, "");
+  return name === "main" || name === "master";
+}
+function isUnprovableRef(ref) {
+  const dst = refSide(ref, "dst");
+  if (dst === "") return false;
+  return dst === "HEAD" || /^[$@`]/.test(dst) || /[({]/.test(dst); // HEAD, $var, @{…}, $(…) — cannot prove non-protected (D1-strict arm)
+}
+function filterIsReal(stmt) {
+  const toks = tokenize(stmt).map((t) => t.replace(/^[<({!~]+/, ""));
+  const gi = toks.findIndex((t) => t === "git");
+  const rest = toks.slice(gi + 1)
+    .filter((t) => !["filter-branch", "filter-repo", "--version", "--help", "-h"].includes(t))
+    .filter((t) => !/^\d*>>?\S*$|^&>\S*$/.test(t)); // redirects: `2>/dev/null`, `2>&1`, `>>file`, `&>file`
+  return rest.length > 0;
+}
+const KEEP_CLASS_C_RE = /under home \(personal or credential files\)|the filesystem root, home or a system tree|deletes data irreversibly|deletes volume data|deletes the stack's volumes|deletes all unused images, containers and volumes|destroys cloud resources|tears down real infrastructure|removes a deployed release/;
+const KEEP_REWRITE_RE = /overwrites published history|overwrites and deletes remote refs|rewrites history|deleting or lease-forcing published refs/;
+/** True when a would-be ask STAYS an ask (see the block comment). `finding` is {rule, reason}; the rule
+ *  gate mirrors the profile: only R7-destructive's asks and rule A keep, everything else converts. */
+export function keepAsk(finding, command) {
+  if (apiDeleteAsk(command)) return true; // rule A: any would-be ask on a rule-A command stays
+  if (!finding || finding.rule !== "R7-destructive") return false;
+  const reason = String(finding.reason || "");
+  if (KEEP_CLASS_C_RE.test(reason)) return true;
+  if (!KEEP_REWRITE_RE.test(reason)) return false;
+  for (const stmt of keepStatements(command)) {
+    const p = pushInfo(stmt);
+    if (p) {
+      if (p.mirror) return true; // mirror pushes every ref incl. main; refspecs cannot exclude
+      if (p.leaseProtected) return true; // --force-with-lease=main
+      const isForceish = p.force || p.positionals.some((r) => r.startsWith("+"));
+      if (!isForceish) continue; // plain push / push --delete → not a rewrite (owner: allow)
+      const specs = p.positionals.slice(1); // positionals[0] = remote when present
+      if (specs.length === 0) return true; // D1-strict: no refspec at all → current branch unknown
+      if (specs.some(isProtectedRef)) return true; // main / master / refs/heads/main / +main / HEAD:main
+      if (specs.some(isUnprovableRef)) return true; // HEAD / $var (D1-strict arm)
+      continue; // an explicitly non-protected branch → allow
+    }
+    if (/\bgit\s+(?:[^\n;&|]*\s)?(?:filter-branch|filter-repo)\b/.test(stmt) && filterIsReal(stmt)) return true; // D2: real rewrites ask; --version/--help-only allows
+  }
+  return false;
+}
+const LOCAL_HOST_RE = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+)$/i;
+/** Rule A (§1.7): token-level, statement-scoped — a `curl`/`wget` DELETE (any spelling `-X DELETE`,
+ *  `-XDELETE`, `--request[=]DELETE`, `--method[=]DELETE`; lowercase `-x` is the proxy option and never
+ *  matches) whose statement carries a non-local literal http(s) URL. No literal URL → no ask. */
+export function apiDeleteAsk(cmd) {
+  for (const stmt of keepStatements(cmd)) {
+    const toks = tokenize(stmt);
+    if (!toks.some((t) => { const w = t.replace(/^[<({!~]+/, ""); return w === "curl" || w === "wget" || /\/(?:curl|wget)$/.test(w); })) continue;
+    let del = false;
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      const nxt = toks[i + 1];
+      if (t === "-X" && nxt && /^delete$/i.test(nxt)) del = true; // -X DELETE / -X 'DELETE' / -X "DELETE"
+      else if (t.startsWith("-X") && /^-Xdelete$/i.test(t)) del = true; // -XDELETE / -X'DELETE' glued; -x (proxy) never matches (case-sensitive prefix)
+      else if (t === "--request" && nxt && /^delete$/i.test(nxt)) del = true;
+      else if (/^--request=delete$/i.test(t)) del = true;
+      else if (t === "--method" && nxt && /^delete$/i.test(nxt)) del = true; // wget --method DELETE
+      else if (/^--method=delete$/i.test(t)) del = true;
+    }
+    if (!del) continue;
+    const urls = [...stmt.matchAll(/https?:\/\/[^\s'"\\)]+/g)].map((m) => m[0]);
+    if (urls.length === 0) continue; // no literal URL in this statement → the cheap rule does not ask
+    if (urls.some((u) => { try { return !LOCAL_HOST_RE.test(new URL(u).hostname); } catch { return false; } })) return true;
+  }
+  return false;
+}
 function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
   const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
@@ -2908,7 +3191,9 @@ function* destructiveMatches(ctx) {
   if (sqlDrop) yield m(`\`DROP ${clip(sqlDrop.kind)}\` piped to \`${clip(sqlDrop.client)}\` deletes data irreversibly.`);
   const shellPipe = detectShellPipe(ctx);
   if (shellPipe) yield m(`\`${clip(shellPipe.first)} ... | ${clip(shellPipe.target)}\` runs a downloaded script unread.`);
-
+  // Rule A, yielded last so every block above (and every earlier ask, which ruleDestructive keeps as
+  // `first`) still wins: a token-level `curl`/`wget` DELETE against a non-local API is hard to reverse.
+  if (apiDeleteAsk(ctx.command)) yield m("`curl -X DELETE` deletes data through an API and is hard to reverse");
 }
 
 const sqlClientIn = (text) => {
@@ -3548,6 +3833,7 @@ function markRuleFailures(out, failures, askAt) {
   if (out.decision === "allow") {
     out.decision = "ask"; out.score = 0.7; out.rule = "internal-error"; out.reason = internalReason(first.id, first.e); out.suggestion = null;
     out.decided_by = "fail_closed"; out.jev = { used: false, status: "not_needed" }; out.ask_at = askAt;
+    delete out.would_have; // the reply is an ask now; would_have only describes allows
   }
   return out;
 }
@@ -3747,6 +4033,7 @@ async function guardOnceCore(input, deps, failures) {
   const rules = [...guardRules].filter(([id]) => id !== "R10-general-risk");
   let ambiguousSecret = null;
   let softAsk = null;
+  let wouldHave = null; // a converted finding (read-and-use reads-$VAR, or a non-keep ask): allow + would_have:"ask" if nothing stricter lands
   for (const [id, fn] of rules) {
     // R7-destructive's function reports R7-irreversible too and filters its own disabled ids (ctx.disabled), so
     // disabling one of the two never hides the other's matches; every other function reports only its own id.
@@ -3759,8 +4046,13 @@ async function guardOnceCore(input, deps, failures) {
     // disable_rules names the id a caller actually SAW in a response, so honor the match's own id too.
     if (disabled.has(m.rule)) continue;
     if (m.severity === "ambiguous") { ambiguousSecret ??= m; continue; }
+    // P1-1 read-and-use: a reads-$VAR finding whose payload never prints the value records would_have and keeps looking.
+    if (m.severity === "convert") { wouldHave ??= m; continue; }
     // "soft": a deterministic ask (bare credential word, consumer-fed secret glob). A block from any later rule still wins.
     if (m.severity === "soft") { softAsk ??= m; continue; }
+    // Shrink (owner decision "shrink" 2026-11-20): only the keep-ask set stays an ask; every other ask
+    // converts to allow + would_have:"ask" and later rules still run (a later block still wins).
+    if (m.severity !== "block" && !keepAsk(m, command)) { wouldHave ??= m; continue; }
     out.decision = m.severity === "block" ? "block" : "ask";
     out.score = m.severity === "block" ? 1 : 0.7;
     out.rule = m.rule; out.reason = m.reason; out.suggestion = m.suggestion;
@@ -3783,11 +4075,14 @@ async function guardOnceCore(input, deps, failures) {
     else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION };
   }
   if (softAsk) {
-    out.decision = "ask"; out.score = 0.7;
-    out.rule = softAsk.rule; out.reason = softAsk.reason; out.suggestion = softAsk.suggestion;
-    out.decided_by = "prefilter";
-    out.jev = { used: false, status: "not_needed" };
-    return out;
+    if (keepAsk(softAsk, command)) {
+      out.decision = "ask"; out.score = 0.7;
+      out.rule = softAsk.rule; out.reason = softAsk.reason; out.suggestion = softAsk.suggestion;
+      out.decided_by = "prefilter";
+      out.jev = { used: false, status: "not_needed" };
+      return out;
+    }
+    wouldHave ??= softAsk; // shrink: a non-keep soft ask converts to allow + would_have:"ask"
   }
 
   // R10 is the fallback tier: consulted only when no other rule matched.
@@ -3795,8 +4090,15 @@ async function guardOnceCore(input, deps, failures) {
   if (!ambiguousSecret && !disabled.has("R10-general-risk")) {
     try { risk = guardRules.get("R10-general-risk")(ctx); } catch (e) { failures.push({ id: "R10-general-risk", e }); }
   }
+  /** Record the reply as allow + would_have:"ask": a local finding that would have asked (its rule/reason
+   *  wins over the fallback candidate's), or — with `force` — a fail-open R10/ambiguous flag itself. */
+  const attachWould = (force = false) => {
+    if (!wouldHave && !force) return;
+    out.would_have = "ask";
+    if (wouldHave) { out.rule = wouldHave.rule; out.reason = wouldHave.reason; out.suggestion = wouldHave.suggestion; }
+  };
   const candidate = ambiguousSecret || risk;
-  if (!candidate) return out;
+  if (!candidate) { attachWould(); return out; }
 
   out.rule = candidate.rule;
   out.suggestion = candidate.suggestion;
@@ -3808,6 +4110,7 @@ async function guardOnceCore(input, deps, failures) {
     out.decided_by = "fail_open";
     out.jev = { used: false, status: "unavailable", detail: why };
     out.notes.push(`Flagged (${candidate.rule}: ${candidate.reason}); Jev could not judge (${why}); fails open, allowed unreviewed.`);
+    attachWould(true); // flagged with no Jev to judge it: this is exactly a would_have:"ask" row
     return out;
   };
   if (!deps.ask || deps.jevAvailable === false) return failOpen("no Jev credentials configured on this server (set AI_GATEWAY_API_KEY, or TYPESAFE_API_KEY)");
@@ -3834,6 +4137,7 @@ async function guardOnceCore(input, deps, failures) {
     } else {
       out.decision = "allow";
       out.reason = `Possible secret path; Jev said "${c.choice}" (${c.confidence.toFixed(2)}), under the block bar.`;
+      attachWould();
     }
     return out;
   }
@@ -3856,5 +4160,6 @@ async function guardOnceCore(input, deps, failures) {
     out.decision = "allow";
     out.reason = `${candidate.reason.replace(/\.+$/, "")}; Jev: below the ask bar (${out.score}).`;
   }
+  if (out.decision === "allow") attachWould();
   return out;
 }

@@ -67,7 +67,9 @@ test("assignment prefixes with ${...} never weaken a corpus decision below what 
       if (RANK[got] < RANK[plain]) weaker.push(`${rows[i].id}: plain prefix ${plain}, ${p.trim()} ${got}  ${JSON.stringify(p + rows[i].input.command).slice(0, 110)}`);
     }
   }
-  assert.ok(n > 900, `only ${n} cases ran`);
+  // The floor tracks how many corpus rows are still ask/block after the shrink (owner decision "shrink"
+  // 2026-11-20 converted the non-keep asks): 240 rows x 3 prefixes = 720 cases on this corpus.
+  assert.ok(n > 700, `only ${n} cases ran`);
   assert.deepEqual(weaker, [], `\n${weaker.slice(0, 15).join("\n")}`);
 });
 

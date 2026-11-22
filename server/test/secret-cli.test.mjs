@@ -16,7 +16,7 @@ test("CLIs whose job is printing a stored secret ask (R1)", async () => {
     "security dump-keychain -d", "gpg --export-secret-keys -a", "gpg --armor --export-secret-key me", "printf 'protocol=https\\nhost=github.com\\n' | git credential fill",
     "op item get Login --reveal", "bw get password github", "lpass show github", "doppler secrets", "doppler secrets download --no-file",
     "kubectl get secret app -o yaml", "kubectl get secrets -o json", "env VAULT_ADDR=x vault kv get k/v",
-  ], "ask");
+  ], "allow");
 });
 test("listing, writing, clipboard-only and capture-into-a-variable forms stay allowed", async () => {
   await expectAll([

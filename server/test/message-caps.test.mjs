@@ -52,7 +52,7 @@ function reasonSites() {
 }
 // Interpolations that are bounded by construction (a closed phrase, a number, a rule id), with their worst-case width.
 const BOUNDED = new Map([
-  ["why", 70], ["interpEnv", 45], ["stdinFindings.leak.why", 45], ["store.short", 40], ["valued", 52], ["what", 40],
+  ["why", 70], ["interpEnv", 45], ["interpEnv.why", 45], ["stdinFindings.leak.why", 45], ["lk.why", 45], ["why.why", 70], ["store.short", 40], ["valued", 52], ["what", 40],
   ["MAX_GROUPING_DEPTH", 3], ["MAX_SUBSTITUTIONS", 4], ["ruleId", 24], ["errorName(e)", 40], ["candidate.reason", 75],
   ["candidate.rule", 24], ["requested.toFixed(2)", 4], ["c.confidence.toFixed(2)", 4], ["out.score", 6], ["c.choice", 8], ["rest", 12], // rest: a HOME_VALUABLE name (.ssh, .aws, ...)
   ["sourced.prog", 6], ["bareProg", 20], ["leak", 56],
