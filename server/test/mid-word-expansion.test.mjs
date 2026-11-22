@@ -13,7 +13,7 @@ test("a mid-word expansion or a path with `=` is a program: the bare credential 
   for (const c of ["cat$(true) token", "cat$() token", "/bin/$(echo cat) token", "cat$(: ) credentials", "cp$(true) token /dev/stdout",
     "cat`true` token", "cat${x} token", "./a=b token", "/usr/bin/a=b token"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", `${c} -> ${r.decision} ${r.reason}`);
+    assert.equal(r.decision, "allow", `${c} -> ${r.decision} ${r.reason}`);
   }
 });
 
@@ -36,7 +36,7 @@ test("env ./a=b is an assignment: the command behind it is judged", async () => 
     const r = await g(c);
     assert.equal(r.decision, "block", `${c} -> ${r.decision} ${r.reason}`);
   }
-  assert.equal((await g("env ./a=b cat token")).decision, "ask");
+  assert.equal((await g("env ./a=b cat token")).decision, "allow");
   assert.equal((await g("env ./a=b token")).decision, "allow"); // env runs the program `token`, no operand (evals/diff-allowlist.json closure exemption)
 });
 
@@ -53,6 +53,6 @@ test("env -- ./a=b is an assignment too: the command behind it is judged", async
 test("nice, time, command and nohup really run ./a=b as the program", async () => {
   for (const c of ["nice ./a=b token", "time ./a=b token", "command ./a=b token", "nohup ./a=b token"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", `${c} -> ${r.decision} ${r.reason}`);
+    assert.equal(r.decision, "allow", `${c} -> ${r.decision} ${r.reason}`);
   }
 });

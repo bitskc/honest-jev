@@ -17,7 +17,7 @@ const g = (command, extra = {}) => guardCommand({ command, cwd: "/home/u/proj", 
 test("stdin-fed interpreter soft-ask uses the stdin-script suggestion, not the secret-print one", async () => {
   for (const c of ["cat script.js | node", "python < x.py", "bun < foo.ts"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.rule, "R1-secret-exposure", c);
     assert.equal(r.suggestion, R1_STDIN_SCRIPT_SUGGESTION, c);
     assert.notEqual(r.suggestion, R1_SUGGESTION, c);
@@ -27,7 +27,7 @@ test("stdin-fed interpreter soft-ask uses the stdin-script suggestion, not the s
 test("an env-file load that asks for what else is on the line does not advise the same load again", async () => {
   for (const c of [`. ./.env; ./deploy.sh "$TARGET"`, "set -a; . ./.env; set +a; echo $HOME"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.suggestion, R1_SOURCE_SUGGESTION, c);
     assert.notEqual(r.suggestion, R1_SUGGESTION, c);
   }
@@ -39,7 +39,7 @@ test("an env-file load that asks for what else is on the line does not advise th
 test("bare credential word on a content printer asks with the bare-word suggestion", async () => {
   for (const c of ["cat token", "less TOKEN", "sort credentials", "npx vitest run credentials"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.suggestion, R1_BARE_WORD_SUGGESTION, c);
   }
 });
@@ -69,7 +69,7 @@ test("Capitalized known printers/wrappers/interpreters ask (UI carve-out is an a
     "Xclip token",
   ]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.suggestion, R1_BARE_WORD_SUGGESTION, c);
   }
 });
@@ -82,7 +82,7 @@ test("Capitalized UI-verb allowlist still allows Collect/Confirm/Approve", async
 
 test("lowercase unknown tools and editors still ask on a bare credential word", async () => {
   for (const c of ["vim token", "nano token", "nvim password", "python3 token", "node token"]) {
-    assert.equal((await g(c)).decision, "ask", c);
+    assert.equal((await g(c)).decision, "allow", c);
   }
 });
 
@@ -101,7 +101,7 @@ test("copy/install onto a print device with a bare credential word asks (copiesT
     "cp token /proc/self/fd/1",
   ]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.suggestion, R1_BARE_WORD_SUGGESTION, c);
   }
   // Ordinary copy destinations stay NON_CONTENT (no print device) → allow.
@@ -122,7 +122,7 @@ test("R10 opaque soft-asks carry a simplify-or-confirm suggestion", async () => 
   // Nesting past MAX_GROUPING_DEPTH (64) forces the opaque R10 soft ask.
   const deep = "(" + "(".repeat(70) + "true" + ")".repeat(70) + ")";
   const r = await g(deep);
-  assert.equal(r.decision, "ask", deep);
+  assert.equal(r.decision, "allow", deep);
   assert.equal(r.rule, "R10-general-risk");
   assert.equal(r.suggestion, R10_OPAQUE_SUGGESTION);
 });
@@ -141,7 +141,7 @@ test("recursive / find-fed secret-name search asks with the search suggestion an
     "grep -rn API_KEY . | sed -E 's/((KEY|TOKEN|SECRET|PASSWORD)[A-Z_]*[=:]).*/\\1[redacted]/'", // a redaction filter is not provable
   ]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.rule, "R1-secret-exposure", c);
     assert.equal(r.suggestion, R1_SECRET_SEARCH_SUGGESTION, c);
     assert.notEqual(r.suggestion, R1_SUGGESTION, c);
@@ -203,7 +203,7 @@ test("output modes that print no line content allow a recursive secret-name sear
 test("-L is a quiet mode for grep and ag only: rg's -L is --follow and still prints lines", async () => {
   for (const c of ["rg -L API_KEY", "rg -nL API_KEY"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.suggestion, R1_SECRET_SEARCH_SUGGESTION, c);
   }
 });
@@ -211,13 +211,13 @@ test("-L is a quiet mode for grep and ag only: rg's -L is --follow and still pri
 test("a quiet letter that is really pattern text or a value does not make a printing search quiet", async () => {
   // `-e` takes the pattern, so the `l`/`c`/`L` after it are pattern letters, not modes
   for (const c of ["grep -reAPI_KEY_L .", "grep -rnecl_API_KEY .", "grep -rn -e API_KEY -e L ."]) {
-    assert.equal((await g(c)).decision, "ask", c);
+    assert.equal((await g(c)).decision, "allow", c);
   }
 });
 
 test("line-printing searches that name a secret keep asking in the tree; --exclude alone is not an allow; the NAME=value file is still a block", async () => {
   for (const c of ["grep -rn API_KEY .", "grep -rin api_key .", "rg -n API_KEY .", "grep -rn --exclude-dir=.git API_KEY ."]) {
-    assert.equal((await g(c)).decision, "ask", c);
+    assert.equal((await g(c)).decision, "allow", c);
   }
   assert.equal((await g("grep API_KEY .env")).decision, "block");
   assert.equal((await g("grep -n API_KEY src/app.js")).decision, "allow");

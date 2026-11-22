@@ -40,7 +40,7 @@ test("#67 (review 3): a stdin source, a stdin script path or an interactive fed 
     "echo env | podman run --env-file=.env --interactive alpine", "bash <<'EOF'\necho env | docker run --env-file .env -i alpine\nEOF", "echo 'console.log(process.env)' | node --env-file=.env", "cat s.js | node --env-file=.env", "node --env-file=.env -"], "block");
   await expectAll(["node --env-file=.env server.js | tee log", "echo env | docker run --env-file .env alpine", "node --env-file=.env server.js"], "allow");
 });
-test("#185: an interpreter that reads its script from stdin is judged on the script when it is visible, and asks when it is not", async () => {
+test("#185: an interpreter that reads its script from stdin is judged on the script when it is visible; the unseen case converts (owner shrink)", async () => {
   await expectAll(["node <<< 'console.log(process.env)'", "node <<EOF\nconsole.log(process.env)\nEOF", "echo 'console.log(process.env)' | node", "printf 'console.log(process.env)' | node", "node - <<< 'console.log(process.env)'", "node /dev/stdin <<< 'console.log(process.env)'",
     "python3 <<< 'import os;print(os.environ)'", "python3 - <<< 'import os;print(os.environ[\"DB_PASS\"])'", "bun <<< 'console.log(Bun.env)'", "deno run - <<< 'console.log(Deno.env.toObject())'", "ruby <<< 'puts ENV.to_h'", "perl <<< 'print %ENV'",
     "bash <<'EOF'\npython3 <<< 'import os;print(os.environ)'\nEOF", "bash -c \"node <<< 'console.log(process.env)'\"",

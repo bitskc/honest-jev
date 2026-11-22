@@ -32,7 +32,7 @@ test("a quote or a backslash in a comment inside a quoted body cannot hide the l
   await expectAll(["echo $'a\\'b'; rm -rf \\\n/", "echo 'a'\\''b'; rm -rf \\\n/", "echo \"it's\"; rm -rf \\\n/"], "block");
   await expectAll(["bash -c 'echo \"# not a comment\"; ls'", "bash -c 'echo a # it'\\''s fine\nls'"], "allow");
 });
-test("grouping nested past 64 inside a quoted body asks, as it does bare", async () => {
+test("grouping nested past 64 inside a quoted body converts like it does bare (owner shrink; opaque ask)", async () => {
   const deep = "(".repeat(70) + "ls" + ")".repeat(70);
   await expectAll([deep, `bash -c '${deep}'`, `sh -c '${deep}'`, `bash <<'EOF'\n${deep}\nEOF`, `echo $(bash -c '${deep}')`], "allow");
   await expectAll(["bash -c '((((ls))))'"], "allow");

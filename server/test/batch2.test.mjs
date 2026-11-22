@@ -9,7 +9,7 @@ const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
 const expectAll = async (cmds, want) => { for (const c of cmds) assert.equal((await g(c)).decision, want, c); };
 
-test("#59: recursive deletes of a repository's history, home dotfiles and document folders, find -delete, and database/volume resets ask", async () => {
+test("#59: recursive deletes — home dotfiles, document folders, find -delete and database/volume resets keep the ask; repository-history rm converts (owner shrink)", async () => {
   await expectAll(["rm -rf ./.git", "rm -rf .git", "rm -rf /home/u/proj/.git/", "rm -r .git/*", "find . -delete", "find build -delete"], "allow"); await expectAll(["rm -rf ~/.ssh", "rm -rf ~/.bashrc", "rm -rf ~/Documents/*", "rm -rf $HOME/.config", "rm -rf ${HOME}/.gnupg/", 'find .. -name ".*" -delete', "find / -name core -delete", "find ~ -name '*.tmp' -delete", "supabase db reset", "docker system prune -af", "docker system prune --volumes", "docker volume prune", "docker volume rm v1", "docker compose down -v", "docker-compose down --volumes", "docker compose -f x.yml down -v", "docker compose -p proj down --volumes", "docker-compose -f x.yml down -v"], "ask");
   await expectAll(["rm -rf ~/.config/foo", "rm -rf ~/.cache", "rm -rf node_modules", "rm -rf .github", "rm -rf ~/proj", "rm -rf docs/.gitkeep", "rm .git", "find . -name '*.log' -delete", "find src -type f -delete", "find /tmp/x -delete",
     "supabase db push", "docker compose down", "docker compose -f a.yml up -v", "docker volume ls", "docker system prune"], "allow");

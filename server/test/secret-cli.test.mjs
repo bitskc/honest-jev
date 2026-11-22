@@ -7,7 +7,7 @@ const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
 const expectAll = async (cmds, want) => { for (const c of cmds) { const r = await g(c); assert.equal(r.decision, want, `${c} -> ${r.decision} ${r.rule ?? ""}`); } };
 
-test("CLIs whose job is printing a stored secret ask (R1)", async () => {
+test("CLIs whose job is printing a stored secret no longer ask (owner shrink; store reads still block)", async () => {
   await expectAll([
     "pass show github", "pass github/token", "gopass show -o db/prod", "vault kv get secret/app", "vault kv get -field=token kv/app", "vault read secret/x",
     "aws secretsmanager get-secret-value --secret-id prod/db", "aws --profile p secretsmanager get-secret-value --secret-id x",

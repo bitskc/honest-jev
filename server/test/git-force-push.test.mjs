@@ -8,7 +8,7 @@ const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
 const expectAll = async (cmds, want) => { for (const c of cmds) assert.equal((await g(c)).decision, want, c); };
 
-test("bundled -f, + refspecs, --force-if-includes, --mirror and --prune all ask like `git push --force`", async () => {
+test("bundled -f, + refspecs, --force-if-includes and --mirror ask like `git push --force`; non-protected refspecs, deletes and --prune convert (owner shrink)", async () => {
   await expectAll(["git push -vf origin x", "git push -u origin +feature", "git push origin '+refs/heads/*:refs/heads/*'", "git push --prune origin", "git push -ud origin old"], "allow"); await expectAll(["git push -fu origin main", "git push -uf origin main", "git push -qf", "git push origin +main", "git push origin +HEAD:main", "git push origin main +dev", "git push origin -- +main", "git push --force-if-includes origin main", "git push --mirror origin", "git -C repo push -uf origin main"], "ask");
 });
 test("ordinary pushes and push options that only look like a flag stay allowed", async () => {
@@ -17,7 +17,7 @@ test("ordinary pushes and push options that only look like a flag stay allowed",
     "git push -oforce origin main", "git push --push-option +x origin main", "git push origin HEAD:refs/for/main", "git push -n -u origin main",
   ], "allow");
 });
-test("git branch force-delete spellings ask; a plain delete does not", async () => {
+test("git branch force-delete spellings convert to allow (owner shrink); a plain delete does not", async () => {
   await expectAll(["git branch -D x", "git branch -Df x", "git branch -df x", "git branch -fd x", "git branch -d -f x", "git branch --delete --force x", "git branch -d --force x"], "allow");
   await expectAll(["git branch -d x", "git branch --delete x", "git branch -f x HEAD~1", "git branch -v"], "allow");
 });

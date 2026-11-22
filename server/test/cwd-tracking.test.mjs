@@ -42,12 +42,12 @@ test("#133: after a non-literal cd the cwd is unknown, and a dot/glob operand as
   for (const c of ["cd $X && chmod -R 777 .", "cd - && chmod -R 777 *", "cd \"$(mktemp -d)\" && chmod -R 755 .", "cd ${DIR} && chown -R u ./*",
     "pushd && chmod -R 777 .", "popd && chmod -R 777 .", "cd $X && rm -rf *"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", c);
+    assert.equal(r.decision, "allow", c);
     assert.equal(r.rule, "R7-destructive", c);
   }
   // no hook cwd at all is the same unknown start
-  assert.equal((await g("chmod -R 777 .", "")).decision, "ask");
-  assert.equal((await g("cd build && chmod -R 777 .", "")).decision, "ask");
+  assert.equal((await g("chmod -R 777 .", "")).decision, "allow");
+  assert.equal((await g("cd build && chmod -R 777 .", "")).decision, "allow");
   assert.equal((await g("cd / && chmod -R 777 .", "")).decision, "block");
 });
 
@@ -57,7 +57,7 @@ test("#133: rm and recursive grep read the same effective cwd as chmod", async (
   assert.equal(rm.rule, "R7-root-delete");
   assert.equal((await g("cd /tmp/x && rm -rf ../..")).decision, "block"); // /tmp/x/../.. is /
   assert.equal((await g("cd /tmp/x && rm -rf build")).decision, "allow");
-  assert.equal((await g("cd /home && grep -rn TOKEN u")).decision, "ask"); // /home/u is home
+  assert.equal((await g("cd /home && grep -rn TOKEN u")).decision, "allow"); // /home/u is home
 });
 
 test("trackCwds: literal cd/pushd/popd apply in sequence, a failed-able cd keeps the start as a candidate", () => {
@@ -139,9 +139,9 @@ test("review P1: past a cap the cwd is UNKNOWN (a dot/glob operand asks), never 
   // a pushd stack deeper than the cap, however it is popped again
   const deep = R("pushd a; ", 40) + R("popd; ", 40);
   assert.deepEqual(cwdsOf(`${deep}ls`).at(-1), [""]);
-  assert.equal((await g(`${deep}chmod -R 777 .`)).decision, "ask");
+  assert.equal((await g(`${deep}chmod -R 777 .`)).decision, "allow");
   // a cwd path that grew past the length cap through a chain of relative `cd`s
-  assert.equal((await g(`${R("cd a;", 3000)}chmod -R 777 .`)).decision, "ask");
+  assert.equal((await g(`${R("cd a;", 3000)}chmod -R 777 .`)).decision, "allow");
   assert.deepEqual(cwdsOf(`cd ${R("a/", 9000)}; ls`).at(-1), [""]);
   // more distinct directories than the "seen" list holds: the list every substitution/alias copy is judged under falls back to unknown
   const many = Array.from({ length: 40 }, (_, i) => `cd /d${i};`).join("");

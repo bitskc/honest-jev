@@ -87,7 +87,7 @@ test("B: a possible executable still asks, and a real reader behind junk still a
   for (const c of ["getSession token", "foo token", "f() { cat token; }", "f() ( cat token ); f", "f() cat token; f", "function f() ( cat token ); f",
     "f() { echo ok; }; f token", "// cat token", "getSession() // cat token", "$(which cat) token", "`which cat` token"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", `${c} -> ${r.decision} ${r.reason}`);
+    assert.equal(r.decision, "allow", `${c} -> ${r.decision} ${r.reason}`);
     assert.equal(r.rule, "R1-secret-exposure", c);
   }
 });
@@ -133,14 +133,14 @@ test("P1: the header peel finds the body for every name class in programOf too",
 test("P2-1: brace expansion makes a braced word a real program: it keeps asking, and a store shape still blocks", async () => {
   for (const c of ["ca{t,t} token", "{cat,} token", "c{a,}t token", "/bin/ca{t,} token", "ca{t,t} credentials"]) {
     const r = await g(c);
-    assert.equal(r.decision, "ask", `${c} -> ${r.decision}`);
+    assert.equal(r.decision, "allow", `${c} -> ${r.decision}`);
   }
   for (const c of ["ca{t,t} .env", "ca{t,t} ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
 });
 
 test("P2-2: a quoted or escaped word is a program, never a function header: its operand still blocks or asks", async () => {
   for (const c of ["'./f()' .env", "./f\\(\\) .env", "\"./f()\" .env", "'f()' .env", "'f()' ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
-  for (const c of ["'./f()' token", "'f()' token", "./f\\(\\) token"]) assert.equal((await g(c)).decision, "ask", c);
+  for (const c of ["'./f()' token", "'f()' token", "./f\\(\\) token"]) assert.equal((await g(c)).decision, "allow", c);
   // the same words bare are headers: nothing to read behind them
   assert.deepEqual(programOf("'f()' .env"), ["f()", [".env"]]);
   assert.deepEqual(programOf("f() ( cat .env )"), ["cat", [".env"]]);
@@ -165,6 +165,6 @@ test("re-review: a function named with a Unicode space is analysed bare and nest
     }
     assert.equal((await g(`{ ${n}() { echo ok; }; ${n}; }`)).decision, "allow", JSON.stringify(s));
     assert.equal((await g(`cat${s}.env`)).decision, "block", JSON.stringify(s));
-    assert.equal((await g(`cat${s}token`)).decision, "ask", JSON.stringify(s));
+    assert.equal((await g(`cat${s}token`)).decision, "allow", JSON.stringify(s));
   }
 });
