@@ -3874,15 +3874,7 @@ async function guardCommandMasked(input, deps) {
   // only; if it did not (nothing to score as written, e.g. an apostrophe in a comment hid the command), the second may.
   const spent = Boolean(first.jev && first.jev.used);
   const second = await guardOnceSafe({ ...input, command: masked }, spent ? { ...deps, ask: null, jevAvailable: false } : deps);
-  if (DECISION_RANK[second.decision] <= DECISION_RANK[first.decision]) {
-    // Equal decisions: the reading as written stands, but a would_have (and the rule behind it) that only
-    // the masked reading could see still belongs to this reply - the mask changes what the guard sees,
-    // never what would have run.
-    if (second.decision === first.decision && second.would_have && !first.would_have && !first.rule) {
-      return { ...first, would_have: second.would_have, rule: second.rule, reason: second.reason, suggestion: second.suggestion };
-    }
-    return first;
-  }
+  if (DECISION_RANK[second.decision] <= DECISION_RANK[first.decision]) return first;
   return { ...second, jev: spent ? first.jev : second.jev, notes: [...(second.notes || []), "Decided on the command with the quote characters inside its comments masked: an apostrophe in a comment is not a quote."] };
 }
 const DECISION_RANK = { allow: 0, ask: 1, block: 2 };
@@ -3898,12 +3890,7 @@ async function guardCommandChecked(input, deps) {
   if (blanks === raw) return best;
   const spent = Boolean(best.jev && best.jev.used);
   const alt = await guardCommandMasked({ ...input, command: blanks }, spent ? { ...deps, ask: null, jevAvailable: false } : deps);
-  if (DECISION_RANK[alt.decision] <= DECISION_RANK[best.decision]) {
-    if (alt.decision === best.decision && alt.would_have && !best.would_have && !best.rule) {
-      return { ...best, would_have: alt.would_have, rule: alt.rule, reason: alt.reason, suggestion: alt.suggestion };
-    }
-    return best;
-  }
+  if (DECISION_RANK[alt.decision] <= DECISION_RANK[best.decision]) return best;
   return { ...alt, jev: spent ? best.jev : alt.jev, notes: [...(alt.notes || []), "Decided on the command with its Unicode spaces read as blanks: bash keeps one inside a word, but the stricter reading stands."] };
 }
 // guardOnce never lets a rule's exception look like "no match": the core records each one and the result is marked (see markRuleFailures).
