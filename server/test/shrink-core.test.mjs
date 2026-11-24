@@ -139,3 +139,29 @@ test("the redacted fixture carries no live-looking material", () => {
   const scrubbed = text.replace(/https?:\/\/[^\s"\\]+/g, " <url> ").replace(/(?:~|\.{1,2})?\/[A-Za-z0-9._\-/]+/g, " <path> ");
   assert.ok(!/[A-Za-z0-9_\-+/=.]{25,}/.test(scrubbed), `long token-like run: ${/[A-Za-z0-9_\-+/=.]{25,}/.exec(scrubbed)?.[0]}`);
 });
+
+test("review P1-1: a force push to main keeps the ask inside terraform sequences, ssh and su -c payloads", async () => {
+  await ask("terraform apply -auto-approve; git push -f origin main");
+  await ask("ssh host 'git push -f origin main'");
+  await ask("su -c 'git push -f origin main'");
+});
+test("review P1-1: a commit message that quotes a force push stays allow", async () => {
+  await allowPlain("git commit -m 'git push -f origin main'");
+});
+test("review P1-2: per-element and subscript-alias flows from env into print sinks stay block", async () => {
+  await block("node -e \"for (const c of process.env.API_TOKEN) console.log(c)\"");
+  await block("python3 -c \"[print(c) for c in os.environ['DB_PASS']]\"");
+  await block("python3 -c \"d={}; d['k']=os.environ['DB_PASS']; print(d)\"");
+});
+test("review P2-1: curl short-option clusters that set DELETE are rule A asks", async () => {
+  await ask("curl -sXDELETE https://api.example.com/x");
+  await ask("curl -fsSLX DELETE https://api.example.com/x");
+  await ask("curl -sSX DELETE https://api.example.com/x");
+  await allowPlain("curl -sSL https://api.example.com/x");
+});
+test("review P2-2: link-local 169.254 is not a local host; DELETE to it asks", async () => {
+  await ask("curl -X DELETE http://169.254.169.254/x");
+  await allowWould("curl -X DELETE http://10.0.0.5/x");
+  await allowWould("curl -X DELETE http://172.20.0.5/x");
+  await allowPlain("curl -X DELETE http://127.0.0.1:3000/x");
+});

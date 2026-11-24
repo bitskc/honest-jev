@@ -25,4 +25,5 @@ export const REVIEWED_NESTED = new Map([
   ["(\\s*\\|\\s*tail(?:\\s+-\\S+)*\\s*)$", "whitespace-delimited options then `\\s*$`; one parse"],
   ["^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?$", "each repeat starts with a literal `|`; one parse"],
   ["^(?:>\\s*)+", "each repeat starts with a literal `>`; one parse"],
+  ["(?<![\\w.])([A-Za-z_]\\w*)(?:\\s*\\[[^\\]=\\n]*\\]|\\.\\w+)*\\s*=\\s*([^;\\n]+)", "the lookbehind starts a match only at an identifier's first character; each repeat begins with a distinct character (`[` or `.`) and ends at its own closer, so the split is unique"],
 ]);

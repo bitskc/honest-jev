@@ -1257,18 +1257,22 @@ function secretCarryIdents(payload, name) {
   const ids = new Set();
   let changed = true;
   let guard = 0;
-  const assignRe = /([A-Za-z_]\w*)\s*=\s*([^;\n]+)/g;
+  // `x = …`, `d['k'] = …` and `o.k = …` (the base ident holds the value), and loop variables `for (const c of …)` / `[… for c in …]`.
+  const assignRe = /(?<![\w.])([A-Za-z_]\w*)(?:\s*\[[^\]=\n]*\]|\.\w+)*\s*=\s*([^;\n]+)/g;
+  const loopRe = /\bfor\s*\(?\s*(?:(?:const|let|var|my|local)\s+)?([A-Za-z_]\w*)\s+(?:of|in)\s+([^;\n]+)/g;
   while (changed && guard++ < 5) {
     changed = false;
-    assignRe.lastIndex = 0;
-    let m;
-    while ((m = assignRe.exec(payload))) {
-      const [, id, expr] = m;
-      if (ids.has(id)) continue;
-      const direct = reasonAccess.test(expr) || wholeEnv.test(expr);
-      const stringy = /["'`]/.test(expr) || /\+/.test(expr) || /^\s*[A-Za-z_]\w*\s*$/.test(expr); // a bare copy of an ident carries the same string
-      const fromMarked = stringy && [...ids].some((s) => new RegExp(`\\b${s}\\b`).test(expr));
-      if (direct || fromMarked) { ids.add(id); changed = true; }
+    for (const re of [assignRe, loopRe]) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(payload))) {
+        const [, id, expr] = m;
+        if (ids.has(id)) continue;
+        const direct = reasonAccess.test(expr) || wholeEnv.test(expr);
+        const stringy = /["'`]/.test(expr) || /\+/.test(expr) || /^\s*[A-Za-z_]\w*\s*$/.test(expr); // a bare copy of an ident carries the same string
+        const fromMarked = stringy && [...ids].some((s) => new RegExp(`\\b${s}\\b`).test(expr));
+        if (direct || fromMarked) { ids.add(id); changed = true; }
+      }
     }
   }
   return ids;
@@ -2866,12 +2870,19 @@ function keepStatements(cmd) {
     const fresh = [];
     for (const s of out) {
       const toks = tokenize(s);
+      const bodies = [];
       for (let i = 0; i + 1 < toks.length; i++) {
-        const isC = /^(?:bash|sh|dash|zsh|ksh|busybox)$/.test(toks[i]) && toks[i + 1] === "-c" && Boolean(toks[i + 2]);
-        const isEval = toks[i] === "eval" && Boolean(toks[i + 1]);
-        const body = isC ? toks[i + 2] : isEval ? toks[i + 1] : null;
-        if (body && !out.includes(body) && !fresh.includes(body)) fresh.push(body);
+        const prog = toks[i];
+        if (/^(?:bash|sh|dash|zsh|ksh|busybox)$/.test(prog) && toks[i + 1] === "-c" && toks[i + 2]) bodies.push(toks[i + 2]);
+        else if (prog === "eval") bodies.push(toks[i + 1]);
+        else if (/^(?:su|runuser)$/.test(prog)) { // `su [- user] -c 'cmd'`: the -c operand is the command su runs as the target user
+          const j = toks.findIndex((t, k) => k > i && (t === "-c" || t === "--command"));
+          if (j > 0 && toks[j + 1]) bodies.push(toks[j + 1]);
+        } else if (prog === "ssh" || /\/ssh$/.test(prog)) { // `ssh [opts] host 'cmd'`: every spaced operand after ssh is the remote command text
+          for (const t of toks.slice(i + 1)) if (/\s/.test(t)) bodies.push(t);
+        }
       }
+      for (const body of bodies) if (body && !out.includes(body) && !fresh.includes(body)) fresh.push(body);
     }
     if (!fresh.length) break;
     out.push(...fresh);
@@ -2954,10 +2965,13 @@ function filterIsReal(stmt) {
 }
 const KEEP_CLASS_C_RE = /under home \(personal or credential files\)|the filesystem root, home or a system tree|deletes data irreversibly|deletes volume data|deletes the stack's volumes|deletes all unused images, containers and volumes|destroys cloud resources|tears down real infrastructure|removes a deployed release/;
 const KEEP_REWRITE_RE = /overwrites published history|overwrites and deletes remote refs|rewrites history|deleting or lease-forcing published refs/;
+// keepAsk runs once per destructive hit, and rule A depends only on the command: memoise the last command's answer.
+let ruleAMemo = { command: null, value: false };
 /** True when a would-be ask STAYS an ask (see the block comment). `finding` is {rule, reason}; the rule
  *  gate mirrors the profile: only R7-destructive's asks and rule A keep, everything else converts. */
 export function keepAsk(finding, command) {
-  if (apiDeleteAsk(command)) return true; // rule A: any would-be ask on a rule-A command stays
+  if (ruleAMemo.command !== command) ruleAMemo = { command, value: apiDeleteAsk(command) };
+  if (ruleAMemo.value) return true; // rule A: any would-be ask on a rule-A command stays
   if (!finding || finding.rule !== "R7-destructive") return false;
   const reason = String(finding.reason || "");
   if (KEEP_CLASS_C_RE.test(reason)) return true;
@@ -2979,7 +2993,19 @@ export function keepAsk(finding, command) {
   }
   return false;
 }
-const LOCAL_HOST_RE = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+)$/i;
+// curl short-option letters that take an operand: the first one in a cluster ends it (its operand is the rest of the token or the next token).
+const CURL_ARG_LETTERS = new Set("ABbCcDdEFHKmoPQrtTuUwxXYz");
+/** A curl short-option cluster that sets DELETE: `-XDELETE`, `-sXDELETE`, `-fsSLX DELETE`, `-sSX DELETE`. X's operand is the rest of the token, else the next token. */
+function curlShortMethodIsDelete(tok, next) {
+  for (let j = 1; j < tok.length; j++) {
+    const c = tok[j];
+    if (c === "X") return /^delete$/i.test(tok.slice(j + 1) || next || "");
+    if (CURL_ARG_LETTERS.has(c)) return false;
+  }
+  return false;
+}
+// Link-local 169.254.0.0/16 is NOT local: it carries cloud metadata endpoints (169.254.169.254), so it must ask.
+const LOCAL_HOST_RE = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)$/i;
 /** Rule A (§1.7): token-level, statement-scoped — a `curl`/`wget` DELETE (any spelling `-X DELETE`,
  *  `-XDELETE`, `--request[=]DELETE`, `--method[=]DELETE`; lowercase `-x` is the proxy option and never
  *  matches) whose statement carries a non-local literal http(s) URL. No literal URL → no ask. */
@@ -2991,8 +3017,7 @@ export function apiDeleteAsk(cmd) {
     for (let i = 0; i < toks.length; i++) {
       const t = toks[i];
       const nxt = toks[i + 1];
-      if (t === "-X" && nxt && /^delete$/i.test(nxt)) del = true; // -X DELETE / -X 'DELETE' / -X "DELETE"
-      else if (t.startsWith("-X") && /^-Xdelete$/i.test(t)) del = true; // -XDELETE / -X'DELETE' glued; -x (proxy) never matches (case-sensitive prefix)
+      if (/^-[A-Za-z]+$/.test(t) && curlShortMethodIsDelete(t, nxt)) del = true; // -X DELETE, -XDELETE, -sXDELETE, -fsSLX DELETE, -sSX DELETE; lowercase -x (proxy) ends the cluster
       else if (t === "--request" && nxt && /^delete$/i.test(nxt)) del = true;
       else if (/^--request=delete$/i.test(t)) del = true;
       else if (t === "--method" && nxt && /^delete$/i.test(nxt)) del = true; // wget --method DELETE
@@ -3227,11 +3252,12 @@ function sqlDropViaStdin(command) {
 }
 function ruleDestructive(ctx) {
   // The strictest match wins: an ask raised by an earlier segment (`rm -rf .git`) must not hide a block raised by a later one (`dd of=/dev/sda`).
+  // A keep-ask (force-push to main, infrastructure apply/destroy) outranks a non-keep ask that comes first: `terraform apply; git push -f main`.
   let first = null;
   for (const hit of destructiveMatches(ctx)) {
     if (ctx.disabled.has(hit.rule)) continue;
     if (hit.severity === "block") return hit;
-    first ??= hit;
+    if (!first || (!keepAsk(first, ctx.command) && keepAsk(hit, ctx.command))) first = hit;
   }
   return first;
 }

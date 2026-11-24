@@ -1138,17 +1138,22 @@ test("round 4 P0: xargs -I{} with a literal body composes the command, so the di
   }
 });
 test("round 4 P0: prefix wrappers (timeout/env/nice/sudo/...) inside xargs' invoked argv are peeled", async () => {
+  // a literal rm -rf / still blocks through every wrapper: never allow, never ask
   for (const c of [
     "echo 5 | xargs -I{} timeout {} bash -c 'rm -rf /'",
+    "echo / | xargs -I{} env FOO=bar timeout 5 bash -c 'rm -rf /'",
+  ]) {
+    assert.equal((await g(c)).decision, "block", c);
+  }
+  // opaque rm -rf {} forms: owner shrink converts these asks to allow; never an ask
+  for (const c of [
     "echo 5 | xargs -I{} timeout {} rm -rf {}",
     "echo / | xargs -I{} env bash -c 'rm -rf {}'",
     "echo / | xargs -I{} nice bash -c 'rm -rf {}'",
     "echo / | xargs -I{} sudo bash -c 'rm -rf {}'",
     "echo / | xargs -I{} timeout 5 sudo bash -c 'rm -rf {}'",
-    "echo / | xargs -I{} env FOO=bar timeout 5 bash -c 'rm -rf /'",
   ]) {
     const r = await g(c);
-    // owner shrink: opaque xargs-rm asks convert to allow; a literal rm -rf / still blocks — never an ask
     assert.ok(r.decision === "allow" || r.decision === "block", `${c} => ${r.decision} (expected allow-or-block)`);
     assert.notEqual(r.decision, "ask", c);
   }
