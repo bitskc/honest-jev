@@ -336,8 +336,8 @@ class UnclearCommands(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         for r in rows:
             self.assertEqual((r["decision"], r["decided_by"], r["fail_reason"], r["source"], r["host"]), ("allow", "fail_open", "client_config", "client", "claude-code"))
-        # the row still says which rule flagged it; the masked-reading case has no rule to name (guardCommand's plain reply is the first reading's)
-        self.assertEqual([r["rule"] for r in rows], ["R10-general-risk", "R10-general-risk", None, "R10-general-risk"])
+        # the row still says which rule flagged it, including the masked-reading row: the round-4 keepWould merge keeps the flag with would_have
+        self.assertEqual([r["rule"] for r in rows], ["R10-general-risk", "R10-general-risk", "R10-general-risk", "R10-general-risk"])
         self.assertEqual(e.markers(), ["notice-s-A", "notice-s-B"])
         self.assertNotIn("curl", open(e.ledger).read())
 
