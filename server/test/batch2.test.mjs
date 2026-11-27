@@ -9,8 +9,8 @@ const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
 const expectAll = async (cmds, want) => { for (const c of cmds) assert.equal((await g(c)).decision, want, c); };
 
-test("#59: recursive deletes — home dotfiles, document folders, find -delete and database/volume resets keep the ask; repository-history rm converts (owner shrink)", async () => {
-  await expectAll(["rm -rf ./.git", "rm -rf .git", "rm -rf /home/u/proj/.git/", "rm -r .git/*", "find . -delete", "find build -delete"], "allow"); await expectAll(["rm -rf ~/.ssh", "rm -rf ~/.bashrc", "rm -rf ~/Documents/*", "rm -rf $HOME/.config", "rm -rf ${HOME}/.gnupg/", 'find .. -name ".*" -delete', "find / -name core -delete", "find ~ -name '*.tmp' -delete", "supabase db reset", "docker system prune -af", "docker system prune --volumes", "docker volume prune", "docker volume rm v1", "docker compose down -v", "docker-compose down --volumes", "docker compose -f x.yml down -v", "docker compose -p proj down --volumes", "docker-compose -f x.yml down -v"], "ask");
+test("#59: recursive deletes — home dotfiles, document folders, find -delete and database/volume resets keep the ask; repository-history rm asks (owner shrink)", async () => {
+  await expectAll(["rm -rf ./.git", "rm -rf .git", "rm -rf /home/u/proj/.git/", "rm -r .git/*", "find . -delete", "find build -delete", "rm -rf ~/.ssh", "rm -rf ~/.bashrc", "rm -rf ~/Documents/*", "rm -rf $HOME/.config", "rm -rf ${HOME}/.gnupg/", 'find .. -name ".*" -delete', "find / -name core -delete", "find ~ -name '*.tmp' -delete", "supabase db reset", "docker system prune -af", "docker system prune --volumes", "docker volume prune", "docker volume rm v1", "docker compose down -v", "docker-compose down --volumes", "docker compose -f x.yml down -v", "docker compose -p proj down --volumes", "docker-compose -f x.yml down -v"], "ask");
   await expectAll(["rm -rf ~/.config/foo", "rm -rf ~/.cache", "rm -rf node_modules", "rm -rf .github", "rm -rf ~/proj", "rm -rf docs/.gitkeep", "rm .git", "find . -name '*.log' -delete", "find src -type f -delete", "find /tmp/x -delete",
     "supabase db push", "docker compose down", "docker compose -f a.yml up -v", "docker volume ls", "docker system prune"], "allow");
 });
@@ -50,8 +50,8 @@ test("#79: a find nothing reads prints names; an -exec body or a consumer that r
     "{ find ~/.ssh -type f; } |xargs cat", "find ~/.ssh -type f |& xargs cat", "bash -c 'find ~/.ssh -type f' |xargs cat", "{ find . -name .env; } |xargs cat", "sh -c 'find . -name .env' |xargs cat",
     "eval 'find ~/.ssh -type f' |xargs cat", "if true; then find ~/.ssh -type f; fi |xargs cat", "coproc find ~/.ssh -type f", "find ~/.ssh -type f | wc -l", "cat <(find ~/.ssh -type f)",
     "find -files0-from .env", "find . -files0-from=.env", "find -files0-from ~/.ssh/id_rsa"], "block");
-  // review of #168: a filtered find -delete of a key directory empties it like `rm -rf ~/.ssh` does, so it asks
-  await expectAll(["find .git -delete"], "allow"); await expectAll(["find ~/.ssh -type f -delete", "find ~/.ssh -name 'id_*' -delete", "find ~/.gnupg -type f -delete"], "ask");
+  // review of #168: a find -delete that reaches .git or a key directory empties it like `rm -rf` does, so it asks
+  await expectAll(["find .git -delete", "find ~/.ssh -type f -delete", "find ~/.ssh -name 'id_*' -delete", "find ~/.gnupg -type f -delete"], "ask");
 });
 test("#83: env filtered to a plain name asks; anything that could select credentials, or unfiltered output, blocks", async () => {
   await expectAll(["env | grep -i path", "env | grep -i path | head", "env | grep -E 'PATH|HOME'", "env | grep ^HOME=", "printenv | grep -i lang", "env | grep -i path > out.txt", "bash -c 'env | grep -i path'", "bash <<'EOF'\nenv | grep -i path\nEOF"], "allow");
@@ -72,7 +72,7 @@ test("#130 / Q6: credentials* glob asks on content readers; read-only git/sort a
 test("#59: the strictest destructive match wins: an ask-tier rm/find/docker never hides a later raw-device write", async () => {
   await expectAll(["rm -rf .git && dd if=/dev/zero of=/dev/sda", "rm -rf ~/.ssh; dd if=/dev/zero of=/dev/sda", "docker compose down -v && wipefs -a /dev/sda", "find . -delete; mkfs.ext4 /dev/sda1", "supabase db reset; dd if=/dev/zero of=/dev/sda",
     "docker volume rm x; dd if=/dev/zero of=/dev/sda", "rm -rf ~/.config; mkfs /dev/sdb", "git push --force; dd if=/dev/zero of=/dev/sda"], "block");
-  await expectAll(["rm -rf .git"], "allow"); await expectAll(["git push --force"], "ask");
+  await expectAll(["rm -rf .git", "git push --force"], "ask");
 });
 test("#101: --binary is a flag, not an abbreviation of --binary-files", async () => {
   await expectAll(["rg --binary SECRET_X", "grep -r --binary SECRET_X .", "rg --binary-files=text SECRET_X", "grep --binary-f text -r SECRET_X ."], "allow");

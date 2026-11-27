@@ -2965,7 +2965,6 @@ function filterIsReal(stmt) {
     .filter((t) => !/^\d*>>?\S*$|^&>\S*$/.test(t)); // redirects: `2>/dev/null`, `2>&1`, `>>file`, `&>file`
   return rest.length > 0;
 }
-const KEEP_CLASS_C_RE = /under home \(personal or credential files\)|the filesystem root, home or a system tree|deletes data irreversibly|deletes volume data|deletes the stack's volumes|deletes all unused images, containers and volumes|destroys cloud resources|tears down real infrastructure|removes a deployed release|apply -auto-approve` changes infrastructure with no confirmation/;
 const KEEP_REWRITE_RE = /overwrites published history|overwrites and deletes remote refs|rewrites history|deleting or lease-forcing published refs/;
 // keepAsk runs once per destructive hit, and rule A depends only on the command: memoise the last command's answer.
 let ruleAMemo = { command: null, value: false };
@@ -2976,7 +2975,7 @@ export function keepAsk(finding, command) {
   if (ruleAMemo.value) return true; // rule A: any would-be ask on a rule-A command stays
   if (!finding || finding.rule !== "R7-destructive") return false;
   const reason = String(finding.reason || "");
-  if (KEEP_CLASS_C_RE.test(reason)) return true;
+  if (finding.keep) return true; // mKeep marks class-(c) destroys and unsanctioned converts; see mKeep above
   if (!KEEP_REWRITE_RE.test(reason)) return false;
   for (const stmt of keepStatements(command)) {
     const p = pushInfo(stmt);
@@ -3035,6 +3034,7 @@ export function apiDeleteAsk(cmd) {
 function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
   const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
+  const mKeep = (reason) => ({ ...m(reason), keep: true }); // stays an ask under the allow-with-log profile: a class-(c) destroy, or a convert the plan does not sanction
   const block = (reason) => ({ rule: "R7-irreversible", severity: "block", reason, suggestion: R7_IRREVERSIBLE_SUGGESTION });
   const tokenFile = (reason) => ({ rule: "R1-secret-exfiltration", severity: "block", reason, suggestion: R1_EXFIL_SUGGESTION });
   for (const [si, seg] of ctx.expandedSegments.entries()) {
@@ -3075,23 +3075,23 @@ function* destructiveMatches(ctx) {
         if (a.startsWith("-")) continue;
         if (cwds.some((c) => wholeTreeTarget(a, ctx.home, c))) yield m(`\`rm -rf ${clip(a)}\` would delete a whole tree`);
         const valued = cwds.map((c) => rmValuableTarget(a, ctx.home, c)).find(Boolean);
-        if (valued) yield m(`\`rm -r ${clip(a)}\` deletes ${valued}`);
+        if (valued) yield mKeep(`\`rm -r ${clip(a)}\` deletes ${valued}`);
       }
       const subst = cwds.map((c) => substWholeTreeGlob(args, ctx.home, c)).find(Boolean);
-      if (subst) yield m(`\`rm -rf\` on a substitution expanding to \`${clip(subst)}\` deletes a whole tree.`);
+      if (subst) yield mKeep(`\`rm -rf\` on a substitution expanding to \`${clip(subst)}\` deletes a whole tree.`);
     }
     if (prog === "find" && args.includes("-delete")) {
       const why = findDeleteReach(args, ctx.home, cwds);
-      if (why) yield m(`\`find -delete\` ${why}`);
+      if (why) yield mKeep(`\`find -delete\` ${why}`);
     }
     if (prog === "docker" || prog === "docker-compose") {
       const pos = cleanPositionals(args, CLOUD_VALUE_OPTS.docker || new Set());
       const flags = args.filter((a) => a.startsWith("-")).join(" ");
-      if (pos[0] === "system" && pos[1] === "prune" && /(^|\s)(-[a-z]*a[a-z]*|--all|--volumes)(\s|$)/.test(flags)) yield m("`docker system prune -a/--volumes` deletes all unused images, containers and volumes.");
-      if (pos[0] === "volume" && (pos[1] === "prune" || pos[1] === "rm")) yield m("`docker volume rm/prune` deletes volume data");
+      if (pos[0] === "system" && pos[1] === "prune" && /(^|\s)(-[a-z]*a[a-z]*|--all|--volumes)(\s|$)/.test(flags)) yield mKeep("`docker system prune -a/--volumes` deletes all unused images, containers and volumes.");
+      if (pos[0] === "volume" && (pos[1] === "prune" || pos[1] === "rm")) yield mKeep("`docker volume rm/prune` deletes volume data");
       // compose's own options (`-f x.yml`, `-p name`) sit before the subcommand and take values, so the subcommand is found by its own table
       const composeSub = prog === "docker-compose" ? firstSubcommand(args, COMPOSE_VALUE_OPTS) : pos[0] === "compose" || args.includes("compose") ? firstSubcommand(args.slice(args.indexOf("compose") + 1), COMPOSE_VALUE_OPTS) : null;
-      if (composeSub === "down" && /(^|\s)(-[a-z]*v[a-z]*|--volumes)(\s|$)/.test(flags)) yield m("`docker compose down -v` deletes the stack's volumes");
+      if (composeSub === "down" && /(^|\s)(-[a-z]*v[a-z]*|--volumes)(\s|$)/.test(flags)) yield mKeep("`docker compose down -v` deletes the stack's volumes");
     }
     // Item-feeding indirections (xargs/parallel) and find -exec/-execdir/-ok/-okdir: the invoked argv is
     // what resolveCommand() returned above (already the effective [prog,args] for every OTHER check in
@@ -3117,11 +3117,11 @@ function* destructiveMatches(ctx) {
     }
     if (SQL_CLIENTS.has(prog)) {
       const mm = SQL_DROP_RE.exec(seg);
-      if (mm) yield m(`\`DROP ${clip(mm[1].toUpperCase())}\` deletes data irreversibly`);
+      if (mm) yield mKeep(`\`DROP ${clip(mm[1].toUpperCase())}\` deletes data irreversibly`);
     }
     if (prog === "redis-cli") {
       const i = firstPositional(args, REDIS_VALUE_OPTS);
-      if (i !== null && ["FLUSHALL", "FLUSHDB"].includes(args[i].toUpperCase())) yield m("`redis-cli FLUSHALL`/`FLUSHDB` wipes the database");
+      if (i !== null && ["FLUSHALL", "FLUSHDB"].includes(args[i].toUpperCase())) yield mKeep("`redis-cli FLUSHALL`/`FLUSHDB` wipes the database");
     }
     if (prog === "terraform" || prog === "tofu") {
       const i = firstPositional(args, new Set());
@@ -3129,17 +3129,17 @@ function* destructiveMatches(ctx) {
       // `-auto-approve=true`/`--auto-approve=true` is valid Go-flag boolean syntax (common in scripted/CI
       // invocations) and applies exactly like the bare flag; only an explicit `=false` turns it off.
       const isAutoApprove = (a) => a === "-auto-approve" || a === "--auto-approve" || /^--?auto-approve=(?!false$)/.test(a);
-      if (sub === "destroy" || (sub === "apply" && args.slice(i + 1).includes("-destroy"))) yield m(`\`${clip(prog)} destroy\` tears down real infrastructure`);
-      if (sub === "apply" && args.slice(i + 1).some(isAutoApprove)) yield m(`\`${clip(prog)} apply -auto-approve\` changes infrastructure with no confirmation.`);
+      if (sub === "destroy" || (sub === "apply" && args.slice(i + 1).includes("-destroy"))) yield mKeep(`\`${clip(prog)} destroy\` tears down real infrastructure`);
+      if (sub === "apply" && args.slice(i + 1).some(isAutoApprove)) yield mKeep(`\`${clip(prog)} apply -auto-approve\` changes infrastructure with no confirmation.`);
     }
     if (prog === "pulumi") {
       const i = firstPositional(args, new Set());
-      if (i !== null && args[i] === "destroy") yield m("`pulumi destroy` tears down real infrastructure");
+      if (i !== null && args[i] === "destroy") yield mKeep("`pulumi destroy` tears down real infrastructure");
     }
     if (prog === "helm") {
       const i = firstPositional(args, new Set());
       // delete/del/un are Helm 3's own documented aliases for uninstall, not a separate, lesser command.
-      if (i !== null && HELM_UNINSTALL_SUBS.has(args[i])) yield m(`\`helm ${clip(args[i])}\` removes a deployed release`);
+      if (i !== null && HELM_UNINSTALL_SUBS.has(args[i])) yield mKeep(`\`helm ${clip(args[i])}\` removes a deployed release`);
     }
     // Any write landing on a raw block device is the dd case, regardless of which program produces
     // the bytes: dd's own of=, a `>`/`>>` redirect onto the device, or tee/cp/mv/install's last
@@ -3168,7 +3168,7 @@ function* destructiveMatches(ctx) {
       const target = args.find((a) => !a.startsWith("-") && isBlockDeviceTok(a, ctx.home));
       if (target) yield block(`\`shred ${clip(target)}\` destroys a block device's contents`);
       const store = secretStoreIn(args, ctx.home);
-      if (store) yield m(`\`shred ${clip(store.hit)}\` destroys a secret file beyond recovery`);
+      if (store) yield mKeep(`\`shred ${clip(store.hit)}\` destroys a secret file beyond recovery`);
     }
     if (DEVICE_DEST_PREFIX.test(prog) ||
         (DEVICE_TOOLS[prog] && DEVICE_TOOLS[prog].destructive(args))) {
@@ -3182,14 +3182,14 @@ function* destructiveMatches(ctx) {
     // Cloud-CLI destructive verbs: ask tier (kubectl delete/terraform apply precedent), resolved
     // through cleanPositionals so global flag-shift can't hide the subcommand.
     if (cloudDestructiveVerb(prog, args)) {
-      yield m(`\`${clip(prog)}\` delete/terminate/purge-class operation destroys cloud resources`);
+      yield mKeep(`\`${clip(prog)}\` delete/terminate/purge-class operation destroys cloud resources`);
     }
-    if (prog === "pulumi" && args.includes("--yes") && args.some((a) => a === "up" || a === "destroy")) {
-      yield m("`pulumi --yes` changes infrastructure with no confirmation.");
+    if (prog === "pulumi" && args.some((a) => a === "--yes" || a === "-y") && args.some((a) => a === "up" || a === "destroy")) {
+      yield mKeep("`pulumi --yes` changes infrastructure with no confirmation.");
     }
     if (["pip", "pip3"].includes(prog) && args.some((a) => a === "install") &&
         args.some((a) => /^file:\/\/|^--index-url(?:=|\s)/.test(a) || (a === "--index-url" && args[args.indexOf("--index-url") + 1]))) {
-      yield m("`pip install` from a path or custom index runs setup code at install time.");
+      yield mKeep("`pip install` from a path or custom index runs setup code at install time.");
     }
     if ((prog === "chmod" || prog === "chown") && args.some((a) => a === "--recursive" || (a.startsWith("-") && !a.startsWith("--") && a.includes("R")))) {
       // Only a target that RESOLVES to /, home or a system root is a hard block. `.`, `./`, `*`, `./*` name the segment's
@@ -3199,7 +3199,7 @@ function* destructiveMatches(ctx) {
       for (const a of args.slice(1)) {
         if (a.startsWith("-")) continue;
         if (cwds.some((c) => resolvesToRootOrHome(a, ctx.home, c))) yield block(`\`${clip(prog)} -R\` on \`${clip(a)}\` rewrites permissions on a whole tree`);
-        else if (cwds.some((c) => !c.startsWith("/")) && wholeTreeTarget(a, ctx.home)) yield m(`\`${clip(prog)} -R ${clip(a)}\` rewrites permissions here, and the working directory is unknown.`);
+        else if (cwds.some((c) => !c.startsWith("/")) && wholeTreeTarget(a, ctx.home)) yield mKeep(`\`${clip(prog)} -R ${clip(a)}\` rewrites permissions here, and the working directory is unknown.`);
       }
     }
   }
@@ -3215,7 +3215,7 @@ function* destructiveMatches(ctx) {
     }
   }
   const sqlDrop = sqlDropViaStdin(ctx.command);
-  if (sqlDrop) yield m(`\`DROP ${clip(sqlDrop.kind)}\` piped to \`${clip(sqlDrop.client)}\` deletes data irreversibly.`);
+  if (sqlDrop) yield mKeep(`\`DROP ${clip(sqlDrop.kind)}\` piped to \`${clip(sqlDrop.client)}\` deletes data irreversibly.`);
   const shellPipe = detectShellPipe(ctx);
   if (shellPipe) yield m(`\`${clip(shellPipe.first)} ... | ${clip(shellPipe.target)}\` runs a downloaded script unread.`);
   // Rule A, yielded last so every block above (and every earlier ask, which ruleDestructive keeps as

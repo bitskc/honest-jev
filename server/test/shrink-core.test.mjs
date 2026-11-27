@@ -51,7 +51,9 @@ test("keep-ask: class (c) destructive reasons stay asks; owner-listed operations
     "rm -rf ~/.ssh", "rm -rf ~/Documents/*", "find ~ -name '*.tmp' -delete", "find / -name core -delete",
     "terraform destroy", "pulumi destroy", "helm uninstall myrelease",
   ]) await ask(c);
-  for (const c of ["rm -rf ./.git", "git clean -f", "git reset --hard HEAD~3", "git update-ref -d refs/heads/main", "git tag -d v1.0"]) await allowWould(c);
+  await ask("rm -rf ./.git");
+  await ask("pulumi up --yes"); await ask("pulumi up -y");
+  for (const c of ["git clean -f", "git reset --hard HEAD~3", "git update-ref -d refs/heads/main", "git tag -d v1.0"]) await allowWould(c);
 });
 
 test("P1-1 print split: a print sink keeps the block; read-and-use converts with would_have", async () => {

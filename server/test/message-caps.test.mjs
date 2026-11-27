@@ -38,8 +38,8 @@ function literalAt(src, i) {
   throw new Error("unterminated literal");
 }
 
-// Every place guard.mjs builds a reason: `reason: <literal>`, and the first argument of the helpers m() block() tokenFile() hit() why().
-const SITE_RE = /(?:\breason: |(?<![\w.])(?:m|block|tokenFile|hit)\()(?=[`"])/g;
+// Every place guard.mjs builds a reason: `reason: <literal>`, and the first argument of the helpers m() mKeep() block() tokenFile() hit() why().
+const SITE_RE = /(?:\breason: |(?<![\w.])(?:m|mKeep|block|tokenFile|hit)\()(?=[`"])/g;
 function reasonSites() {
   const out = [];
   for (const m of SRC.matchAll(SITE_RE)) {

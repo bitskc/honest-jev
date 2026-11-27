@@ -1182,9 +1182,7 @@ test("round 24 F3/F4: relative operands and $PWD anchors resolve against the cwd
   }
   // no cwd: a dot or glob target cannot be told apart from a catastrophic one, so it asks instead of blocking
   for (const cmd of ["chmod -R 755 .", "chmod -R 755 *", "chmod -R 755 ./*", "chown -R u:u ."]) {
-    const r = await at("", cmd);
-    assert.equal(r.decision, "allow", cmd);
-    assert.equal(r.rule, "R7-destructive", cmd);
+    assert.equal((await at("", cmd)).decision, "ask", cmd);
   }
   assert.equal((await at("", "chmod -R 755 ./dist")).decision, "allow");
 });

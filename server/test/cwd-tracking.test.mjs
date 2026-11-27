@@ -38,16 +38,17 @@ test("#133: the cwd the operand resolves against is the moved one, so a target t
   }
 });
 
-test("#133: after a non-literal cd the cwd is unknown, and a dot/glob operand asks again (no block -> allow)", async () => {
+test("#133: after a non-literal cd the cwd is unknown, and a dot/glob operand asks again (never blocks)", async () => {
   for (const c of ["cd $X && chmod -R 777 .", "cd - && chmod -R 777 *", "cd \"$(mktemp -d)\" && chmod -R 755 .", "cd ${DIR} && chown -R u ./*",
-    "pushd && chmod -R 777 .", "popd && chmod -R 777 .", "cd $X && rm -rf *"]) {
-    const r = await g(c);
-    assert.equal(r.decision, "allow", c);
-    assert.equal(r.rule, "R7-destructive", c);
+    "pushd && chmod -R 777 .", "popd && chmod -R 777 ."]) {
+    assert.equal((await g(c)).decision, "ask", c);
   }
+  const whole = await g("cd $X && rm -rf *");
+  assert.equal(whole.decision, "allow");
+  assert.equal(whole.rule, "R7-destructive");
   // no hook cwd at all is the same unknown start
-  assert.equal((await g("chmod -R 777 .", "")).decision, "allow");
-  assert.equal((await g("cd build && chmod -R 777 .", "")).decision, "allow");
+  assert.equal((await g("chmod -R 777 .", "")).decision, "ask");
+  assert.equal((await g("cd build && chmod -R 777 .", "")).decision, "ask");
   assert.equal((await g("cd / && chmod -R 777 .", "")).decision, "block");
 });
 
@@ -139,9 +140,9 @@ test("review P1: past a cap the cwd is UNKNOWN (a dot/glob operand asks), never 
   // a pushd stack deeper than the cap, however it is popped again
   const deep = R("pushd a; ", 40) + R("popd; ", 40);
   assert.deepEqual(cwdsOf(`${deep}ls`).at(-1), [""]);
-  assert.equal((await g(`${deep}chmod -R 777 .`)).decision, "allow");
+  assert.equal((await g(`${deep}chmod -R 777 .`)).decision, "ask");
   // a cwd path that grew past the length cap through a chain of relative `cd`s
-  assert.equal((await g(`${R("cd a;", 3000)}chmod -R 777 .`)).decision, "allow");
+  assert.equal((await g(`${R("cd a;", 3000)}chmod -R 777 .`)).decision, "ask");
   assert.deepEqual(cwdsOf(`cd ${R("a/", 9000)}; ls`).at(-1), [""]);
   // more distinct directories than the "seen" list holds: the list every substitution/alias copy is judged under falls back to unknown
   const many = Array.from({ length: 40 }, (_, i) => `cd /d${i};`).join("");
