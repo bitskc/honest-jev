@@ -34,7 +34,7 @@ test("a quote or a backslash in a comment inside a quoted body cannot hide the l
 });
 test("grouping nested past 64 inside a quoted body converts like it does bare (owner shrink; opaque ask)", async () => {
   const deep = "(".repeat(70) + "ls" + ")".repeat(70);
-  await expectAll([deep, `bash -c '${deep}'`, `sh -c '${deep}'`, `bash <<'EOF'\n${deep}\nEOF`, `echo $(bash -c '${deep}')`], "allow");
+  await expectAll([deep, `bash -c '${deep}'`, `sh -c '${deep}'`, `bash <<'EOF'\n${deep}\nEOF`, `echo $(bash -c '${deep}')`], "ask");
   await expectAll(["bash -c '((((ls))))'"], "allow");
 });
 test("a literal producer behind env, nohup, a keyword or a group still folds into its xargs", async () => {

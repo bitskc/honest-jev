@@ -133,6 +133,6 @@ test("an apostrophe in a comment, a $'...' string or a heredoc body never hides 
     "echo \"it's\"; cat .env", "echo 'it'\\''s'; cat .env", "# it's\nrm -rf ~", "# it's\nchmod -R 777 /", "echo $'a\\'b'; rm -rf /"]) {
     assert.equal((await g(c)).decision, "block", JSON.stringify(c));
   }
-  assert.equal((await g(`echo $'a\\'b'; ${"(".repeat(65)}ls${")".repeat(65)}`)).decision, "allow", "grouping depth is counted with $'...' in mind");
-  assert.equal((await g(`cat <<EOF\nit's\nEOF\n${"(".repeat(65)}ls${")".repeat(65)}`)).decision, "allow", "and with a heredoc body that holds an apostrophe");
+  assert.equal((await g(`echo $'a\\'b'; ${"(".repeat(65)}ls${")".repeat(65)}`)).decision, "ask", "grouping depth is counted with $'...' in mind");
+  assert.equal((await g(`cat <<EOF\nit's\nEOF\n${"(".repeat(65)}ls${")".repeat(65)}`)).decision, "ask", "and with a heredoc body that holds an apostrophe");
 });

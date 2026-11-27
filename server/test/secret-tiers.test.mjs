@@ -826,7 +826,7 @@ test("round 21b: deeply nested grouping is decided in well under a second and a 
   // a harmless body is not blocked, and never allowed once the nesting passes the cap
   for (const cmd of [P(9000, "ls"), "( ".repeat(2000) + "ls" + " )".repeat(2000), "{ ".repeat(3000) + "ls" + " }".repeat(3000)]) {
     const r = await timed(cmd);
-    assert.equal(r.decision, "allow", cmd.slice(0, 12));
+    assert.equal(r.decision, "ask", cmd.slice(0, 12));
     assert.equal(r.rule, "R10-general-risk", cmd.slice(0, 12));
     assert.match(r.reason, /^Nests \( \) or \{ \} more than/);
   }
@@ -836,7 +836,7 @@ test("round 21b: nesting up to the cap is analyzed normally; past it only a harm
   const P = (n, body) => "(".repeat(n) + body + ")".repeat(n);
   assert.equal((await guard(P(60, "ls"), PROJ, HOME)).decision, "allow");
   assert.equal((await guard(P(64, "ls"), PROJ, HOME)).decision, "allow");
-  assert.equal((await guard(P(65, "ls"), PROJ, HOME)).decision, "allow");
+  assert.equal((await guard(P(65, "ls"), PROJ, HOME)).decision, "ask");
   assert.equal((await guard(P(65, "cat .env"), PROJ, HOME)).decision, "block");
   // quoted parens do not count, and closers lower the count
   assert.equal((await guard(`echo "${"(".repeat(200)}"`, PROJ, HOME)).decision, "allow");
@@ -930,8 +930,8 @@ test("round 21c: nested process substitution is decided quickly and a later bloc
     assert.equal(r.rule, "R7-root-delete");
   }
   assert.equal((await timedGuard(`cat ${rep("<(", 4000)}ls${rep(")", 4000)}; cat .env`)).decision, "block");
-  assert.equal((await timedGuard(`cat ${rep("<(", 5000)}ls${rep(")", 5000)}`)).decision, "allow");
-  assert.equal((await timedGuard(`cat ${rep(">(", 2000)}ls${rep(")", 2000)}`)).decision, "allow");
+  assert.equal((await timedGuard(`cat ${rep("<(", 5000)}ls${rep(")", 5000)}`)).decision, "ask");
+  assert.equal((await timedGuard(`cat ${rep(">(", 2000)}ls${rep(")", 2000)}`)).decision, "ask");
   // the outer bodies are still analyzed: a secret read inside the outermost bodies blocks
   assert.equal((await timedGuard(`cat ${rep("<(", 5000)}cat .env${rep(")", 5000)}`)).decision, "block");
 });
@@ -1243,10 +1243,10 @@ test("round 21c: the ask starts past 256 substitutions or past the process-subst
   assert.equal((await guard(`cat ${rep("<(ls) ", 20)}<(rm -rf /)`, PROJ, HOME)).rule, "R7-root-delete");
   assert.equal((await guard(`cat ${rep("<(ls) ", 20)}`, PROJ, HOME)).decision, "allow");
   const deep = await guard(`cat ${rep("<(", 5000)}ls${rep(")", 5000)}`, PROJ, HOME);
-  assert.equal(deep.decision, "allow");
+  assert.equal(deep.decision, "ask");
   // few substitutions but bodies that nest over long text: past the body budget the process-substitution ask applies
   const padded = await guard(`cat ${rep("<(", 60)}${rep("x", 1200)}${rep(")", 60)}`, PROJ, HOME);
-  assert.equal(padded.decision, "allow");
+  assert.equal(padded.decision, "ask");
   assert.match(padded.reason, /^Nests `<\(`\/`>\(` too deep/);
   assert.equal((await guard(`cat ${rep("<(", 60)}${rep("x", 1200)}${rep(")", 60)}; cat .env`, PROJ, HOME)).decision, "block");
   assert.equal((await guard(`cat ${rep("<(", 60)}${rep("x", 600)}${rep(")", 60)}`, PROJ, HOME)).decision, "allow");

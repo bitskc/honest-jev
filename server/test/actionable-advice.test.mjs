@@ -122,7 +122,7 @@ test("R10 opaque soft-asks carry a simplify-or-confirm suggestion", async () => 
   // Nesting past MAX_GROUPING_DEPTH (64) forces the opaque R10 soft ask.
   const deep = "(" + "(".repeat(70) + "true" + ")".repeat(70) + ")";
   const r = await g(deep);
-  assert.equal(r.decision, "allow", deep);
+  assert.equal(r.decision, "ask", deep);
   assert.equal(r.rule, "R10-general-risk");
   assert.equal(r.suggestion, R10_OPAQUE_SUGGESTION);
 });

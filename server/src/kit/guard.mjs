@@ -3999,18 +3999,18 @@ async function guardOnceCore(input, deps, failures) {
     out.jev = { used: false, status: "not_needed" };
     return out;
   }
-  // Past the substitution cap the guard stops reading inner bodies (see substitutedSegments), so a command that no rule blocked asks, as main does, instead of passing.
-  // A block above still wins; a cap ask is never converted to allow.
-  // Deeply nested grouping is not something a person types and not something the segment walk reasons about.
-  // (a body read out of quotes counts too: `bash -c '(((...)))'` nests as deep as the same text typed bare; the scan is linear and its input budgeted)
+  // Past the substitution cap, the nesting cap or the process-substitution cap the guard stops reading inner bodies, so a command that no rule
+  // blocked asks instead of passing. A block above still wins; a limit ask is never converted to allow.
+  // Deeply nested grouping is not something a person types and not something the segment walk reasons about. The scan is linear and its input
+  // budgeted; a spent budget asks, as the other work budgets do (a body read out of quotes counts too: `bash -c '(((...)))'` nests as deep).
   let depthBudget = 400000;
-  const tooDeep = (text) => { if (depthBudget <= 0) return false; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
+  const tooDeep = (text) => { if (depthBudget <= 0) return true; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
   if (!softAsk && SHELL_TOOLS.has(tool) && (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body)))) {
-    softAsk = { rule: "R10-general-risk", reason: `Nests ( ) or { } more than ${MAX_GROUPING_DEPTH} deep; the guard doesn't analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
+    softAsk = { rule: "R10-general-risk", reason: `Nests ( ) or { } more than ${MAX_GROUPING_DEPTH} deep; the guard doesn't analyze that.`, suggestion: R10_OPAQUE_SUGGESTION, limit: true };
   }
   if (!softAsk && SHELL_TOOLS.has(tool)) {
     if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION, limit: true };
-    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION };
+    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION, limit: true };
   }
   if (softAsk) {
     if (softAsk.limit || keepAsk(softAsk, command)) {
