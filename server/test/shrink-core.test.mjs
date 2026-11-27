@@ -164,12 +164,20 @@ test("review P2-2: link-local 169.254 is not a local host; DELETE to it asks", a
   await allowPlain("curl -X DELETE http://127.0.0.1:3000/x");
 });
 
-test("round 4 P1-1: past the 256-substitution cap the top level is still analysed; keep asks survive", async () => {
+test("round 5 P1-1: past the 256-substitution cap the guard asks as main does; split tokens cannot pass", async () => {
   const pre = "$(true)".repeat(300);
-  await block(`${pre} rm -rf ~`);
+  await ask(`${pre} rm -rf ~`); // past the cap the command is not re-read, so this gets the cap ask rather than a block
   await ask(`${pre} pulumi destroy --yes`);
   await ask(`${pre} git push --force origin main`);
-  await allowWould(`${pre} echo hello`);
+  await ask(`${pre} echo hello`);
+  await ask(`${pre} r$(echo m) -rf ~`);
+});
+
+test("round 5 P1-2: an opaque word in a push statement (substitution, backtick, parameter expansion) keeps the ask", async () => {
+  await ask("git push --fo$(echo rce) origin main");
+  await ask("git push -`echo f` origin main");
+  await ask("git push origin ${F:-}--force");
+  await ask("git push --force origin ma$(echo in)");
 });
 
 test("round 4 P1-2: a Python one-liner that prints a named secret variable blocks (no read-and-use allow)", async () => {

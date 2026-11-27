@@ -2694,7 +2694,7 @@ const GIT_PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive
  *  Git accepts bundled short flags (`-fu`, `-uf`, `-qf`), a `+` refspec (`+main`, `+HEAD:main`, `'+refs/heads/*:...'`) forces
  *  that one ref, and `--mirror` / `--prune` force-update or delete remote refs. A bundled `-d` (`-ud`) deletes. */
 function gitPushFlags(args) {
-  const out = { force: null, mirror: null, delete: false };
+  const out = { force: null, mirror: null, delete: false, opaque: args.some((a) => /[$`]/.test(a)) }; // a `$`/backtick word may be a flag or a ref
   for (let i = 0; i < args.length; i++) {
     const a = rdUnquote(args[i]);
     if (a === "--") { for (const r of args.slice(i + 1)) if (rdUnquote(r).startsWith("+")) out.force ??= rdUnquote(r); break; }
@@ -2838,7 +2838,9 @@ function pushArgs(args) {
     }
     positionals.push(a);
   }
-  return { force, mirror, positionals, leaseProtected };
+  // A word with `$`, a backtick or a substitution may be a flag or a refspec the guard cannot read (`--fo$(echo rce)`, `${F:-}--force`).
+  const opaque = args.some((a) => /[$`]/.test(a));
+  return { force, mirror, positionals, leaseProtected, opaque };
 }
 function refSide(ref, side) {
   let t = String(ref).replace(/^[<({!~]+|[)};]+$/g, "");
@@ -2880,9 +2882,12 @@ export function keepAsk(finding, command) {
   const reason = String(finding.reason || "");
   if (finding.keep) return true; // mKeep marks class-(c) destroys and unsanctioned converts; see mKeep above
   if (!KEEP_REWRITE_RE.test(reason)) return false;
+  // D1 strict on the raw text: keepStatements rewrites `$(` to `(` and would erase the unreadable word a push carries.
+  if (splitStmts(command).some((s) => /\bgit\b/.test(s) && /\bpush\b/.test(s) && /[$`]/.test(s))) return true;
   for (const stmt of keepStatements(command)) {
     const p = pushInfo(stmt);
     if (p) {
+      if (p.opaque) return true; // D1 strict: an unprovable force flag or refspec keeps the ask
       if (p.mirror) return true; // mirror pushes every ref incl. main; refspecs cannot exclude
       if (p.leaseProtected) return true; // --force-with-lease=main
       const isForceish = p.force || p.positionals.some((r) => r.startsWith("+"));
@@ -2953,6 +2958,7 @@ function* destructiveMatches(ctx) {
       const sub = args[0];
       const joined = " " + args.join(" ");
       const push = sub === "push" ? gitPushFlags(args.slice(1)) : null;
+      if (push && push.opaque) yield mKeep("`git push` has a word the guard cannot read (a substitution, backtick or $ expansion): it may force or name a ref.");
       if (push && push.force) yield m(`\`git push ${clip(push.force)}\` overwrites published history`);
       if (push && push.mirror) yield m(`\`git push ${clip(push.mirror)}\` overwrites and deletes remote refs to match local.`);
       if (sub === "reset" && args.includes("--hard")) yield m("`git reset --hard` discards uncommitted work irreversibly");
@@ -3719,13 +3725,7 @@ export function readChoice(a, keys) {
 const MAX_SUBSTITUTIONS = 256;
 /** Count of command-substitution openers (`$(`, `<(`, `>(`, and each backtick). Linear. */
 const substitutionCount = (command) => (command.match(/\$\(|[<>]\(|`/g) || []).length;
-// The command with every top-level substitution removed, as the shell expands it: an empty `$(true)` makes the next word the command name.
-const stripSubstitutions = (command) => {
-  let out = "";
-  let at = 0;
-  for (const sp of substitutionSpans(command)) { out += command.slice(at, sp.start); at = sp.end; }
-  return out + command.slice(at);
-};
+
 // ── nesting cap ──────────────────────────────────────────────────────────────
 const MAX_GROUPING_DEPTH = 64;
 /** Deepest run of unquoted open `(` / `{` in a command (one linear scan; closers lower the count, never below 0). */
@@ -3999,31 +3999,21 @@ async function guardOnceCore(input, deps, failures) {
     out.jev = { used: false, status: "not_needed" };
     return out;
   }
-  // Deeply nested grouping is not something a person types and not something the segment walk reasons about: whatever no
-  // rule blocked asks instead of passing (a block above still wins).
+  // Past the substitution cap the guard stops reading inner bodies (see substitutedSegments), so a command that no rule blocked asks, as main does, instead of passing.
+  // A block above still wins; a cap ask is never converted to allow.
+  // Deeply nested grouping is not something a person types and not something the segment walk reasons about.
   // (a body read out of quotes counts too: `bash -c '(((...)))'` nests as deep as the same text typed bare; the scan is linear and its input budgeted)
   let depthBudget = 400000;
   const tooDeep = (text) => { if (depthBudget <= 0) return false; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
   if (!softAsk && SHELL_TOOLS.has(tool) && (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body)))) {
     softAsk = { rule: "R10-general-risk", reason: `Nests ( ) or { } more than ${MAX_GROUPING_DEPTH} deep; the guard doesn't analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
   }
-  // Past these limits the guard stops analyzing inner bodies (see substitutedSegments and processSubBodies), so a command
-  // that no rule blocked asks instead of passing.
   if (!softAsk && SHELL_TOOLS.has(tool)) {
-    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) {
-      // Past the cap the inner bodies are not analysed, but the top level still is. An empty `$(true)` leaves the next word as the
-      // command name (`$(true) rm -rf ~`), so the top level is re-read with every top-level substitution removed. Its block or its own
-      // (non-fallback) ask stands; otherwise the cap's soft ask stands.
-      if (!input._capStripped) {
-        const top = await guardOnceCore({ ...input, command: stripSubstitutions(command), _capStripped: true }, { ...deps, ask: null, jevAvailable: false }, []);
-        if (top.decision === "block" || (top.decision === "ask" && top.rule !== "R10-general-risk")) return top;
-      }
-      softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
-    }
+    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION, limit: true };
     else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION };
   }
   if (softAsk) {
-    if (keepAsk(softAsk, command)) {
+    if (softAsk.limit || keepAsk(softAsk, command)) {
       out.decision = "ask"; out.score = 0.7;
       out.rule = softAsk.rule; out.reason = softAsk.reason; out.suggestion = softAsk.suggestion;
       out.decided_by = "prefilter";

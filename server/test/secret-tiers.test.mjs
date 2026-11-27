@@ -917,10 +917,10 @@ test("round 21c: repeated command substitution is decided quickly and a later bl
   assert.equal((await timedGuard(`${rep("<(ls) ", 2500)}; cat .env`)).decision, "block");
   assert.equal((await timedGuard(`echo ${rep("$(ls)", 2000)}; rm -rf /`)).rule, "R7-root-delete");
   const benign = await timedGuard(`echo ${rep("$(ls)", 2000)}`);
-  assert.equal(benign.decision, "allow");
+  assert.equal(benign.decision, "ask");
   assert.match(benign.reason, /command substitutions/);
-  assert.equal((await timedGuard(rep("\`ls\`", 3000))).decision, "allow");
-  assert.equal((await timedGuard(`echo ${rep("\`", 9000)}`)).decision, "allow");
+  assert.equal((await timedGuard(rep("\`ls\`", 3000))).decision, "ask");
+  assert.equal((await timedGuard(`echo ${rep("\`", 9000)}`)).decision, "ask");
 });
 
 test("round 21c: nested process substitution is decided quickly and a later block still blocks", async () => {
@@ -947,9 +947,9 @@ test("round 22b: a long run of leading assignments folds in linear time and a la
   }
   for (const unit of ["a=1 ", "a='1' ", "a=$(x) "]) {
     const run = rep(unit, Math.floor(19900 / unit.length));
-    // `a=$(x)` x663 crosses the substitution cap: that opaque ask converts to allow+would_have (owner shrink);
+    // `a=$(x)` x663 crosses the substitution cap: that opaque ask stays an ask (owner decision: no re-read past the cap);
     // the block below must still win over it.
-    assert.equal((await timedGuard(`${run}ls`)).decision, "allow", unit);
+    assert.equal((await timedGuard(`${run}ls`)).decision, unit.includes("$(") ? "ask" : "allow", unit);
     const hit = await timedGuard(`${run}cat .env`);
     assert.equal(hit.decision, "block", unit);
     assert.equal(hit.rule, "R1-secret-exposure", unit);
@@ -1238,7 +1238,7 @@ test("round 21c: small substitutions decide as before", async () => {
 
 test("round 21c: the ask starts past 256 substitutions or past the process-substitution budget; nothing below it changes", async () => {
   assert.equal((await guard(`echo ${rep("$(ls)", 256)}`, PROJ, HOME)).decision, "allow");
-  assert.equal((await guard(`echo ${rep("$(ls)", 257)}`, PROJ, HOME)).decision, "allow");
+  assert.equal((await guard(`echo ${rep("$(ls)", 257)}`, PROJ, HOME)).decision, "ask");
   // many flat process substitutions are all analyzed: a block in the last one still blocks, and none asks
   assert.equal((await guard(`cat ${rep("<(ls) ", 20)}<(rm -rf /)`, PROJ, HOME)).rule, "R7-root-delete");
   assert.equal((await guard(`cat ${rep("<(ls) ", 20)}`, PROJ, HOME)).decision, "allow");
