@@ -8,8 +8,9 @@ const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
 const expectAll = async (cmds, want) => { for (const c of cmds) assert.equal((await g(c)).decision, want, c); };
 
-test("bundled -f, + refspecs, --force-if-includes and --mirror ask like `git push --force`; non-protected refspecs, deletes and --prune convert (owner shrink)", async () => {
-  await expectAll(["git push -vf origin x", "git push -u origin +feature", "git push origin '+refs/heads/*:refs/heads/*'", "git push --prune origin", "git push -ud origin old"], "allow"); await expectAll(["git push -fu origin main", "git push -uf origin main", "git push -qf", "git push origin +main", "git push origin +HEAD:main", "git push origin main +dev", "git push origin -- +main", "git push --force-if-includes origin main", "git push --mirror origin", "git -C repo push -uf origin main"], "ask");
+test("bundled -f, + refspecs, --force-if-includes and --mirror ask like `git push --force`; non-protected refspecs and deletes convert (owner shrink)", async () => {
+  await expectAll(["git push -vf origin x", "git push -u origin +feature", "git push --prune origin feature", "git push -ud origin old"], "allow");
+  await expectAll(["git push -fu origin main", "git push -uf origin main", "git push -qf", "git push origin +main", "git push origin +HEAD:main", "git push origin main +dev", "git push origin -- +main", "git push --force-if-includes origin main", "git push --mirror origin", "git -C repo push -uf origin main", "git push origin '+refs/heads/*:refs/heads/*'", "git push --prune origin"], "ask");
 });
 test("ordinary pushes and push options that only look like a flag stay allowed", async () => {
   await expectAll([

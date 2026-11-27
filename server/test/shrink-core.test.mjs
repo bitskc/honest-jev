@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { guardCommand, keepAsk, apiDeleteAsk } from "../src/kit/guard.mjs";
+import { guardCommand } from "../src/kit/guard.mjs";
 
 const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
@@ -26,9 +26,9 @@ test("keep-ask: protected, unprovable and refspec-less force pushes keep the ask
 
 test("keep-ask: non-protected refspecs, deletes and statement scoping convert (owner shrink)", async () => {
   for (const c of [
-    "git push -f origin feature", "git push -u origin +feature", "git push origin '+refs/heads/*:refs/heads/*'",
+    "git push -f origin feature", "git push -u origin +feature",
     "git push -vf origin x", "git push --delete origin b", "git push -d origin b", "git push origin :refs/heads/b",
-    "git push -f origin feature && git fetch origin main", "git push -f origin feature; echo main", "git push --prune origin",
+    "git push -f origin feature && git fetch origin main", "git push -f origin feature; echo main",
     "git push -filter origin main",
   ]) await allowWould(c);
   // kubectl delete's "removes a live resource" is an R10 flag: with the model path off (PR-2 default) it
@@ -96,15 +96,6 @@ test("rule A exclusions: proxy -x, local URLs, no URL, gh api all convert (decid
   await allowPlain("curl -X DELETE http://192.168.1.9/x");
   await allowPlain("curl -X DELETE");
   await allowPlain("gh api -X DELETE /repos/o/r/issues/1/comments/2");
-});
-
-test("keepAsk/apiDeleteAsk are exported and agree with guardCommand", () => {
-  assert.equal(typeof keepAsk, "function");
-  assert.equal(typeof apiDeleteAsk, "function");
-  assert.equal(keepAsk({ rule: "R7-destructive", reason: "`git push` deleting or lease-forcing published refs rewrites shared history" }, "git push -f origin main"), true);
-  assert.equal(keepAsk({ rule: "R7-destructive", reason: "`git reset --hard` discards uncommitted work irreversibly" }, "git reset --hard"), false);
-  assert.equal(apiDeleteAsk("curl -X DELETE https://example.com/a"), true);
-  assert.equal(apiDeleteAsk("gh api -X DELETE /repos/o/r/issues/1"), false);
 });
 
 // ── the 10 owner-STOP rows (redacted fixture; §1.8 of the shrink plan) ──────────────────────────────
@@ -185,5 +176,114 @@ test("round 4 P1-2: a Python one-liner that prints a named secret variable block
 });
 
 test("round 4 P2-1: a masked-reading allow keeps the ask-would of the other reading", async () => {
+  await allowWould("echo ok # don't\nsort ~/.*");
+});
+
+// ── final review (PR #120 at ffefd88): the keep is decided per segment finding, so every wrapper spelling keeps it ──
+const q = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+const PUSH_MAIN = "git push -f origin main";
+const DELETE_API = "curl -X DELETE https://api.example.com/x";
+const subs = (n) => "$(:) ".repeat(n);
+
+test("P1-1: a protected force push and rule A keep the ask through every wrapper spelling the segment walk expands", async () => {
+  for (const body of [PUSH_MAIN, DELETE_API]) {
+    for (const c of [
+      body, `bash -lc ${q(body)}`, `bash -ec ${q(body)}`, `bash --login -c ${q(body)}`, `bash -o pipefail -c ${q(body)}`, `bash -x -c ${q(body)}`,
+      `/bin/bash -c ${q(body)}`, `/bin/sh -c ${q(body)}`, `sh -ec ${q(body)}`, `echo ${q(body)} | sh`, `echo ${q(body)} | bash`, `sh <<< ${q(body)}`,
+      `python3 -c ${q(`import os; os.system(${JSON.stringify(body)})`)}`,
+      `node -e ${q(`require("child_process").execSync(${JSON.stringify(body)})`)}`,
+      `ruby -e ${q(`system(${JSON.stringify(body)})`)}`, `perl -e ${q(`system(${JSON.stringify(body)})`)}`,
+      `eval ${q(body)}`, `ssh host ${q(body)}`, `su -c ${q(body)} root`, `timeout 5 ${body}`, `{ ${body}; }`, `echo $(${body})`,
+    ]) await ask(c);
+  }
+  for (const c of [
+    "/usr/bin/git push -f origin main", "git push -f origin main>/dev/null", "git push -f origin main&", "git push -f origin main 2>&1",
+    "git push -f origin main # why", "git push --force # note", "/usr/bin/curl -X DELETE https://api.example.com/x",
+  ]) await ask(c);
+  // the same wrappers around a non-protected push or a local DELETE still convert or allow
+  await allowWould(`bash -lc ${q("git push -f origin feature")}`);
+  await allowWould("/usr/bin/git push -f origin feature");
+  await allowPlain(`bash -lc ${q("curl -X DELETE http://localhost:8080/x")}`);
+});
+
+test("P1-1: g=git; $g push -f origin main is caught too (the literal fold resolves the variable)", async () => {
+  await ask("g=git; $g push -f origin main");
+});
+
+test("P2-1: a `;` `|` `&&` `||` inside a quoted -H or -d argument does not split rule A's statement", async () => {
+  for (const c of [
+    "curl -H 'X: a;b' -X DELETE https://api.example.com/x",
+    "curl -H \"A: b&&c\" -X DELETE https://api.example.com/x",
+    "curl -H \"A: b||c\" -X DELETE https://api.example.com/x",
+    "curl -H 'A: b|c' -X DELETE https://api.example.com/x",
+    "curl -d 'a;b' -X DELETE https://api.example.com/x",
+  ]) await ask(c);
+  await allowPlain("curl -H 'X: a;b' -X DELETE http://localhost:8080/x");
+});
+
+test("P1-2: a glob refspec can match main, so it keeps the ask like --mirror", async () => {
+  for (const c of [
+    "git push -f origin '*'", "git push -f origin refs/heads/*", "git push -f origin 'refs/heads/*:refs/heads/*'",
+    "git push origin '+refs/heads/*:refs/heads/*'", "git push -f origin 'feature*'", "git push -f origin 'feat?'", "git push -f origin 'f[a]'",
+  ]) await ask(c);
+  await allowWould("git push -f origin feature");
+});
+
+test("P2-2: an overflow ask beats a pending convertible soft ask; blocks still win over both", async () => {
+  const cap = await ask(`grep -r password .; echo ${subs(300)}`);
+  assert.match(cap.reason, /more than 256 command substitutions/);
+  const deep = await ask(`grep -r password .; ${"(".repeat(70)}echo hi${")".repeat(70)}`);
+  assert.match(deep.reason, /Nests \( \) or \{ \}/);
+  await ask(`grep -r password .; bash -c ${q(`${"(".repeat(70)}echo hi${")".repeat(70)}`)}`);
+  const env = await ask(`. .env; echo $API_KEY2; echo ${subs(300)}`);
+  assert.match(env.reason, /more than 256 command substitutions/);
+  await block(`cat ~/.aws/*; echo ${subs(300)}`);
+  // under the cap the same soft asks still convert
+  await allowWould("grep -r password .");
+  await allowWould(`grep -r password .; echo ${subs(10)}`);
+});
+
+test("P2-3: a proven root, home or system target of find -exec rm and xargs rm keeps the ask like find -delete; other targets convert", async () => {
+  for (const c of [
+    "find / -exec rm -rf {} +", "find ~ -exec rm -rf {} \\;", "echo / | xargs rm -rf", "echo ~ | xargs rm -rf", "find / -delete", "find ~/Documents -exec rm -rf {} \\;",
+    "printf '%s\\n' ~ | xargs -0 rm -rf", "echo / | parallel rm -rf", "find / -type f | xargs rm -rf",
+    `bash -c ${q("echo / | xargs rm -rf")}`, `bash -lc ${q("find / -exec rm -rf {} +")}`,
+  ]) await ask(c);
+  for (const c of [
+    "find . -name '*.tmp' -exec rm -rf {} +", "echo build | xargs rm -rf", "find /tmp/x -exec rm -rf {} +", "echo / | xargs -I{} bash -c 'rm -rf /tmp/x'",
+    "ls build | xargs rm -rf", "find dist -exec rm -rf {} \\;",
+  ]) await allowWould(c);
+});
+
+test("P3: git push options that take a value never become refspecs; --set-upstream takes none", async () => {
+  await ask("git push -f -o x origin");
+  await ask("git push -f --push-option=x origin");
+  await ask("git push -f --push-option x origin");
+  await allowWould("git push -f -o x origin feature");
+  await allowWould("git push -f --set-upstream origin feature");
+  await allowWould("git push -f -u origin feature");
+  await ask("git push -f --set-upstream origin main");
+});
+
+test("P3: git push --prune with no explicit refspec, or a wildcard one, can delete remote main and keeps the ask", async () => {
+  await ask("git push --prune origin");
+  await ask("git push --prune");
+  await ask("git push --prune origin 'refs/heads/*'");
+  await ask("git push --prune origin 'refs/heads/*:refs/heads/*'");
+  await allowWould("git push --prune origin feature");
+});
+
+test("P3: --force-with-lease=<ref>:<expect> is judged on the ref, not the expected sha", async () => {
+  await ask("git push --force-with-lease=main:abc123 origin feature");
+  await ask("git push --force-with-lease=refs/heads/main origin feature");
+  await allowWould("git push --force-with-lease=feature:abc123 origin feature");
+});
+
+test("P3: keepWould adopts the other reading's would_have only when that reading would have asked in base", async () => {
+  // first reading hides the command behind a comment apostrophe; the masked reading only R10-flags it (a fail-open flag, base allowed)
+  const flagOnly = await g("# it's here\ncp /tmp/a.js ~/.local/share/kwin/main.js");
+  assert.equal(flagOnly.decision, "allow");
+  assert.equal(flagOnly.would_have, undefined);
+  // the masked reading finds a converted ask (base asked): the would_have is adopted
   await allowWould("echo ok # don't\nsort ~/.*");
 });

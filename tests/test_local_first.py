@@ -336,8 +336,8 @@ class UnclearCommands(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         for r in rows:
             self.assertEqual((r["decision"], r["decided_by"], r["fail_reason"], r["source"], r["host"]), ("allow", "fail_open", "client_config", "client", "claude-code"))
-        # the row still says which rule flagged it, including the masked-reading row: the round-4 keepWould merge keeps the flag with would_have
-        self.assertEqual([r["rule"] for r in rows], ["R10-general-risk", "R10-general-risk", "R10-general-risk", "R10-general-risk"])
+        # the row still says which rule flagged it; the masked-reading case has no rule to name (guardCommand's plain reply is the first reading's)
+        self.assertEqual([r["rule"] for r in rows], ["R10-general-risk", "R10-general-risk", None, "R10-general-risk"])
         self.assertEqual(e.markers(), ["notice-s-A", "notice-s-B"])
         self.assertNotIn("curl", open(e.ledger).read())
 
@@ -517,14 +517,14 @@ class LocalRulesDidNotRun(unittest.TestCase):
                 self.assert_marked_row(r)
             self.assertEqual(e.markers(), ["notice-down-s-A", "notice-down-s-B"], name)
 
-    def test_the_row_differs_from_unclear_no_server_by_reason_and_names_the_flagged_rule(self):
-        # an unclear row (the masked reading; the round-4 keepWould merge keeps its R10 flag) and a "rules did not run" row differ by reason; the second has no rule
+    def test_the_row_differs_from_unclear_no_server_even_when_that_row_has_no_rule(self):
+        # an unclear row with no rule to name (the masked reading) and a "rules did not run" row look alike except for the reason
         e1 = Env()
         e1.run(event("Bash", {"command": COMMENT_QUOTE_UNCLEAR}))
         e2 = Env(JEV_GUARD_RULES="/nonexistent/guard.mjs")
         e2.run(event("Bash", {"command": COMMENT_QUOTE_UNCLEAR}))
         a, b = e1.rows()[0], e2.rows()[0]
-        self.assertEqual((a["decided_by"], a["fail_reason"], a["rule"]), ("fail_open", "client_config", "R10-general-risk"))
+        self.assertEqual((a["decided_by"], a["fail_reason"], a["rule"]), ("fail_open", "client_config", None))
         self.assertEqual((b["decided_by"], b["fail_reason"], b["rule"]), ("fail_open", "local_rules_unavailable", None))
 
     def test_with_a_server_configured_it_is_the_server_path_and_no_notice(self):

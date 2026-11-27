@@ -1229,7 +1229,6 @@ const INTERP_ENV_RULES = {
 };
 const INTERP_ENV_BASE = { node: "node", nodejs: "node", bun: "node", deno: "node", python: "python", ruby: "ruby",
   perl: "perl", php: "php", pwsh: "pwsh", powershell: "pwsh" };
-
 /** The env-read reason for an interpreter invocation's payload, or null. Named reads are checked first so a
  *  secret-named read reports its variable; any whole-environment reference is the dump case. */
 // Python names the environment through an alias: `import os as o; o.environ['X']`, `from os import environ [as e]; environ['X']`,
@@ -1266,8 +1265,7 @@ function interpEnvLeak(prog, args) {
   const payload = interpScriptText(prog, args);
   return payload === null ? null : interpBodyLeak(prog, payload);
 }
-/** What an interpreter body (the text of -e/-c, or a script read from stdin) does to the environment: null, or { why }.
- * Named reads of a secret var and whole-environment references both block; the guard does not split reads from prints. */
+/** What an interpreter body (the text of -e/-c, or a script read from stdin) does to the environment: null, or a reason. */
 function interpBodyLeak(prog, payload) {
   // a version suffix (python3.11, node22); (?<!\d) starts the scan at the first digit of a run only
   const base = INTERP_ENV_BASE[prog.replace(/(?<!\d)\d+(?:\.\d+)*$/, "")];
@@ -1277,10 +1275,10 @@ function interpBodyLeak(prog, payload) {
   for (const re of rules.named) {
     for (const m of payload.matchAll(re)) {
       const name = m[m.length - 1];
-      if (SECRET_VAR_NAME_RE.test(name)) return { why: `reads $${clipName(name)}` };
+      if (SECRET_VAR_NAME_RE.test(name)) return `reads $${clipName(name)}`;
     }
   }
-  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? { why: "dumps every env var, secrets included" } : null;
+  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? "dumps every env var, secrets included" : null;
 }
 // `env` with no command operand prints the environment; `VAR=value` operands only set variables.
 function envPrintsEnvironment(args) {
@@ -1464,12 +1462,8 @@ function stdinScriptFindings(ctx) {
           if (lit !== null) bodies.push(lit);
         }
         for (const b of bodies) {
-          const leak = interpBodyLeak(prog, b);
-          const hit = leak ? null : interpBodySecretRead(b, ctx.home);
-          const why = leak ? leak.why : hit ? `reads secret store \`${clip(hit)}\`` : null;
-          if (why) {
-            res.leak ??= { prog, why };
-          }
+          const why = interpBodyLeak(prog, b) ?? (interpBodySecretRead(b, ctx.home) ? `reads secret store \`${clip(interpBodySecretRead(b, ctx.home))}\`` : null);
+          if (why) res.leak ??= { prog, why };
         }
         const fed = i > 0 || args.some((a) => INPUT_REDIRECT_RE.test(a) || STDIN_PATH_RE.test(a)) || stage.includes("<(");
         if (fed && (many || !bodies.length)) res.unseen ??= prog;
@@ -1682,10 +1676,7 @@ function ruleSecret(ctx) {
   let feedIndex = null;
   if (/\b(?:node|nodejs|bun|deno|python[\d.]*|ruby|perl|php|pwsh|powershell)\b/.test(ctx.command) && /[<|]/.test(ctx.command)) {
     stdinFindings = stdinScriptFindings(ctx);
-    if (stdinFindings.leak) {
-      const lk = stdinFindings.leak;
-      return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(lk.prog)}\` reads a stdin script that ${lk.why}.`, suggestion: R1_SUGGESTION };
-    }
+    if (stdinFindings.leak) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(stdinFindings.leak.prog)}\` reads a stdin script that ${stdinFindings.leak.why}.`, suggestion: R1_SUGGESTION };
     if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(stdinFindings.unseen)}\` runs a stdin script; the guard can't see what it does with env vars.`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
   let sourced = null;
@@ -1801,13 +1792,13 @@ function ruleSecret(ctx) {
     const interpHit = interpScriptSecretRead(prog, args, home);
     if (interpHit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that reads secret store \`${clip(interpHit)}\`.`, suggestion: R1_SUGGESTION };
     const interpEnv = interpEnvLeak(prog, args);
-    if (interpEnv) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv.why}.`, suggestion: R1_SUGGESTION };
+    if (interpEnv) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv}.`, suggestion: R1_SUGGESTION };
     // The same body check for a script the interpreter reads from STDIN (#185), run here so every segment walk reaches it: substitutions, subshells,
     // function bodies and both quote styles of `bash -c`. The here-string is in the segment; a heredoc body is found by the line it is attached to.
     if (interpFamily(prog) && /<</.test(seg) && interpReadsStdinScript(prog, args)) {
       for (const body of stdinBodiesOf(seg, (feedIndex ??= buildFeedIndex(ctx)))) {
         const why = interpBodyLeak(prog, body);
-        if (why) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why.why}.`, suggestion: R1_SUGGESTION };
+        if (why) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why}.`, suggestion: R1_SUGGESTION };
         const hit = interpBodySecretRead(body, home);
         if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that reads secret store \`${clip(hit)}\`.`, suggestion: R1_SUGGESTION };
       }
@@ -1863,11 +1854,10 @@ function ruleSecret(ctx) {
       }
     }
   }
-  if (sourced) {
+  if (sourced && !soft) {
     const leak = sourceLeaks(secretSegs, ctx.command, sourced.src);
-    if (leak && !soft) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
+    if (leak) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
   }
-  // Priority: a real ask (soft) or an ambiguous flag outranks everything else; both are decided downstream.
   return soft ?? ambiguous;
 }
 
@@ -2666,52 +2656,83 @@ function rmValuableTarget(operand, home, cwd) {
 // `find ... -delete` (#59): unfiltered it removes everything under its roots; filtered it is routine inside the project, but a root that
 // is home, `/`, a system tree or an ancestor of the cwd (`find .. -name ".*" -delete`) reaches far beyond it.
 const FIND_FILTERS = new Set(["-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-wholename", "-type", "-newer", "-mtime", "-mmin", "-atime", "-ctime", "-empty", "-user", "-group", "-size", "-perm", "-lname", "-links", "-samefile"]);
-function findDeleteReach(args, home, cwds) {
+function findRoots(args) {
   const roots = [];
   let i = 0;
   while (i < args.length && !args[i].startsWith("-") && args[i] !== "(" && args[i] !== "!") roots.push(args[i++]);
-  if (!roots.length) roots.push(".");
-  const filtered = args.some((a) => FIND_FILTERS.has(a));
-  const ancestor = (c, r) => {
+  return roots.length ? roots : ["."];
+}
+/** Why one path root (a `find` root, an `echo` word fed to `xargs rm`) reaches beyond the project: home subfolders that hold personal files,
+ *  `/`, home or a system tree, or an ancestor of the cwd. Null when it stays inside. */
+function rootReach(r, home, cwds) {
+  const ancestor = (c) => {
     if (!c.startsWith("/")) return false;
     let p = r.replace(/^\$\{HOME\}|^\$HOME|^~(?=\/|$)/, home || "");
     p = normalizePath(p.startsWith("/") ? p : `${c}/${p}`).replace(/\/+$/, "") || "/";
     const cc = c.replace(/\/+$/, "") || "/";
     return p !== cc && (p === "/" || cc.startsWith(`${p}/`));
   };
-  for (const r of roots) {
-    const valued = cwds.map((c) => rmValuableTarget(r, home, c)).find(Boolean); // `find ~/.ssh -type f -delete` empties what `rm -rf ~/.ssh` asks about
-    if (valued) return `starts at ${clip(r)}, which is ${valued}`;
-    if (cwds.some((c) => resolvesToRootOrHome(r, home, c))) return `starts at ${clip(r)}: the filesystem root, home or a system tree`;
-    if (cwds.some((c) => ancestor(c, r))) return `starts at ${clip(r)}, above the working directory`;
+  const valued = cwds.map((c) => rmValuableTarget(r, home, c)).find(Boolean); // `find ~/.ssh -type f -delete` empties what `rm -rf ~/.ssh` asks about
+  if (valued) return `starts at ${clip(r)}, which is ${valued}`;
+  if (cwds.some((c) => resolvesToRootOrHome(r, home, c))) return `starts at ${clip(r)}: the filesystem root, home or a system tree`;
+  if (cwds.some(ancestor)) return `starts at ${clip(r)}, above the working directory`;
+  return null;
+}
+function findRootsReach(args, home, cwds) {
+  for (const r of findRoots(args)) {
+    const why = rootReach(r, home, cwds);
+    if (why) return why;
   }
-  if (!filtered && !roots.every((r) => r10IsTemp(r.startsWith("~") ? (home || "") + r.slice(1) : r))) return "with no name or type filter deletes everything under its roots";
+  return null;
+}
+function findDeleteReach(args, home, cwds) {
+  const why = findRootsReach(args, home, cwds);
+  if (why) return why;
+  if (!args.some((a) => FIND_FILTERS.has(a)) && !findRoots(args).every((r) => r10IsTemp(r.startsWith("~") ? (home || "") + r.slice(1) : r))) return "with no name or type filter deletes everything under its roots";
   return null;
 }
 // git push's options that take a separate value (`-o ci.skip`, `--repo origin`): the value is not a refspec or a flag.
 const GIT_PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
-/** What a `git push` argv (after `push`) does to remote refs. `force` / `mirror` hold the spelling that triggered it.
- *  Git accepts bundled short flags (`-fu`, `-uf`, `-qf`), a `+` refspec (`+main`, `+HEAD:main`, `'+refs/heads/*:...'`) forces
- *  that one ref, and `--mirror` / `--prune` force-update or delete remote refs. A bundled `-d` (`-ud`) deletes. */
+const KNOWN_PUSH_SHORT = "dfnpqruv46"; // f force, d delete, n dry-run, p prune, q quiet, u set-upstream, v verbose, 4/6 IP family; `o` ends a cluster (its value follows)
+/** What a `git push` argv (after `push`) does to remote refs: `force` / `mirror` / `prune` hold the spelling that triggered it, `lease` is
+ *  any --force-with-lease, `positionals` is [remote, ...refspecs] with redirects and option values removed. Git accepts bundled short
+ *  flags (`-fu`, `-uf`, `-qf`); a `+` refspec (`+main`, `+HEAD:main`, `'+refs/heads/*:...'`) forces that one ref; `--mirror` / `--prune`
+ *  force-update or delete remote refs; a bundled `-d` (`-ud`) deletes. `forces` is `force` minus a cluster holding a letter push does not
+ *  know (`-filter`): reported as a force, but too doubtful to keep the ask. */
 function gitPushFlags(args) {
-  const out = { force: null, mirror: null, delete: false, opaque: args.some((a) => /[$`]/.test(a)) }; // a `$`/backtick word may be a flag or a ref
-  for (let i = 0; i < args.length; i++) {
-    const a = rdUnquote(args[i]);
-    if (a === "--") { for (const r of args.slice(i + 1)) if (rdUnquote(r).startsWith("+")) out.force ??= rdUnquote(r); break; }
-    if (GIT_PUSH_VALUE_OPTS.has(a)) { i++; continue; }
-    if (a === "--force" || a === "--force-if-includes") { out.force ??= a; continue; }
-    if (a === "--mirror" || a === "--prune") { out.mirror ??= a; continue; }
-    if (a.startsWith("--")) continue;
-    if (a.startsWith("-") && a.length > 1) {
-      for (const ch of a.slice(1)) {
-        if (ch === "o") break; // -o takes the rest of the word (or the next word) as its value
-        if (ch === "f") out.force ??= a;
-        if (ch === "d") out.delete = true;
+  const argv = beforeComment(nonRedirPositionals(args));
+  const out = { force: null, forces: false, lease: false, leaseProtected: false, mirror: null, prune: null, delete: false, positionals: [], opaque: argv.some((a) => /[$`]/.test(a)) }; // a `$`/backtick word may be a flag or a ref
+  const force = (spelling, known = true) => { out.force ??= spelling; if (known) out.forces = true; };
+  for (let i = 0; i < argv.length; i++) {
+    const a = rdUnquote(argv[i]);
+    if (a === "--") {
+      for (const r of argv.slice(i + 1).map(rdUnquote)) {
+        out.positionals.push(r);
+        if (r.startsWith("+")) force(r);
       }
-      if (a === "-o") i++;
-      continue;
+      break;
     }
-    if (a.startsWith("+")) out.force ??= a;
+    if (GIT_PUSH_VALUE_OPTS.has(a)) { i++; continue; }
+    if (a === "--force" || a === "--force-if-includes") force(a);
+    else if (a.startsWith("--force-with-lease")) {
+      out.lease = true;
+      const eq = a.indexOf("=");
+      if (eq > 0 && isProtectedRef(a.slice(eq + 1).split(":")[0])) out.leaseProtected = true; // --force-with-lease=<ref>[:<expect>]
+    } else if (a === "--mirror") out.mirror ??= a;
+    else if (a === "--prune") out.prune ??= a;
+    else if (a === "--delete") out.delete = true;
+    else if (a.startsWith("--")) continue;
+    else if (a.startsWith("-") && a.length > 1) {
+      const letters = a.slice(1);
+      const o = letters.indexOf("o");
+      if (o === letters.length - 1) i++; // `-uo`: the push option is the next word
+      const cluster = o < 0 ? letters : letters.slice(0, o);
+      if (cluster.includes("f")) force(a, [...cluster].every((c) => KNOWN_PUSH_SHORT.includes(c)));
+      if (cluster.includes("d")) out.delete = true;
+    } else {
+      if (a.startsWith("+")) force(a);
+      out.positionals.push(a);
+    }
   }
   return out;
 }
@@ -2733,115 +2754,13 @@ function gitBranchForceDelete(args) {
   return del && force;
 }
 
-// ── keep-ask predicate and rule A (owner decision "shrink" 2026-11-20) ─────────────────────────────
-// Which would-be asks STAY asks: force-push/history-rewrite of protected or unprovable refs (D1-strict),
-// class-(c) destructive reasons, real filter-branch/filter-repo rewrites (D2), and rule A (a token-level
-// `curl`/`wget` DELETE against a non-local http(s) URL). Every other ask becomes allow + would_have:"ask",
-// recorded by guardOnceCore. Statement-scoped: a `git fetch main` or a later localhost curl elsewhere in
-// the command cannot decide another statement's fate.
-function splitStmts(cmd) {
-  return String(cmd).replace(/\\\r?\n/g, " ").split(/\n|&&|\|\||;|\|/);
-}
-function tokenize(s) {
-  const out = [];
-  let cur = "";
-  let q = null;
-  let braces = 0; // a `#` inside ${...} is parameter-expansion content, not a comment
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (q) {
-      if (c === q) q = null;
-      else if (c === "\\" && q === '"' && i + 1 < s.length) cur += s[++i];
-      else cur += c;
-    } else if (c === "#" && braces === 0 && (i === 0 || /\s/.test(s[i - 1]))) break; // a shell comment ends the statement's tokens
-    else if (c === "{") { braces++; cur += c; }
-    else if (c === "}") { if (braces > 0) braces--; cur += c; }
-    else if (c === "'" || c === '"' || c === "`") q = c;
-    else if (c === "\\" && i + 1 < s.length) cur += s[++i];
-    else if (/\s/.test(c)) { if (cur) { out.push(cur); cur = ""; } }
-    else cur += c;
-  }
-  if (cur) out.push(cur);
-  return out;
-}
-/** The statements keep-ask judges: split, with command-substitution openers normalized to `(` (so
- *  `$(git push …)`/`<(git push …)`/backticks tokenize like `(git push …)`), plus one quoted script body
- *  extracted per `bash|sh|… -c '…'` / `eval '…'` — the body is the command those wrappers run, and the
- *  wrapper closure (diff-guard) demands the same decision inside and outside the wrapper. */
-function keepStatements(cmd) {
-  const stmts = splitStmts(cmd).map((s) => s.replace(/\$\(|<\(|>\(/g, "(").replace(/`/g, "("));
-  const out = [...stmts];
-  for (let round = 0; round < 3; round++) {
-    const fresh = [];
-    for (const s of out) {
-      const toks = tokenize(s);
-      const bodies = [];
-      for (let i = 0; i + 1 < toks.length; i++) {
-        const prog = toks[i];
-        if (/^(?:bash|sh|dash|zsh|ksh|busybox)$/.test(prog) && toks[i + 1] === "-c" && toks[i + 2]) bodies.push(toks[i + 2]);
-        else if (prog === "eval") bodies.push(toks[i + 1]);
-        else if (/^(?:su|runuser)$/.test(prog)) { // `su [- user] -c 'cmd'`: the -c operand is the command su runs as the target user
-          const j = toks.findIndex((t, k) => k > i && (t === "-c" || t === "--command"));
-          if (j > 0 && toks[j + 1]) bodies.push(toks[j + 1]);
-        } else if (prog === "ssh" || /\/ssh$/.test(prog)) { // `ssh [opts] host 'cmd'`: every spaced operand after ssh is the remote command text
-          for (const t of toks.slice(i + 1)) if (/\s/.test(t)) bodies.push(t);
-        }
-      }
-      for (const body of bodies) if (body && !out.includes(body) && !fresh.includes(body)) fresh.push(body);
-    }
-    if (!fresh.length) break;
-    out.push(...fresh);
-  }
-  return out;
-}
-const KEEP_GLOBAL_VAL = new Set(["-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "-c", "--attr-source", "--super-prefix"]);
-const KEEP_PUSH_VALUE_OPTS = new Set(["--receive-pack", "--exec", "--push-option", "--repo", "-o", "--set-upstream"]);
-const KNOWN_PUSH_SHORT = "dfnprquv"; // f force, d delete, n dry-run, p prune, q quiet, u set-upstream, v verbose
-/** The `git [global-opts] push …` argv of one statement, or null when the statement has no push. */
-function pushInfo(stmt) {
-  const toks = tokenize(stmt);
-  const gi = toks.findIndex((t) => t.replace(/^[<({!~]+/, "") === "git");
-  if (gi < 0) return null;
-  let i = gi + 1;
-  while (i < toks.length) {
-    const t = toks[i];
-    if (t === "push") return pushArgs(toks.slice(i + 1));
-    if (t.startsWith("-")) { if (KEEP_GLOBAL_VAL.has(t)) i++; i++; continue; }
-    return null; // another subcommand (fetch, filter-*, …)
-  }
-  return null;
-}
-function pushArgs(args) {
-  let force = false;
-  let mirror = false;
-  let leaseProtected = false;
-  const positionals = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--") { positionals.push(...args.slice(i + 1)); break; }
-    if (a.startsWith("--")) {
-      if (a === "--force" || a === "--force-if-includes") force = true;
-      else if (a.startsWith("--force-with-lease")) {
-        force = true;
-        const eq = a.indexOf("=");
-        if (eq > 0 && isProtectedRef(a.slice(eq + 1))) leaseProtected = true;
-      } else if (a === "--mirror") mirror = true;
-      else if (KEEP_PUSH_VALUE_OPTS.has(a)) i++;
-      continue;
-    }
-    if (a.length > 1 && a.startsWith("-")) {
-      const letters = a.slice(1);
-      // a short cluster of KNOWN push letters containing f forces (`-f`, `-qf`); `-filter` holds unknown
-      // letters → not force, and never a positional
-      if ([...letters].every((c) => KNOWN_PUSH_SHORT.includes(c)) && letters.includes("f")) force = true;
-      continue;
-    }
-    positionals.push(a);
-  }
-  // A word with `$`, a backtick or a substitution may be a flag or a refspec the guard cannot read (`--fo$(echo rce)`, `${F:-}--force`).
-  const opaque = args.some((a) => /[$`]/.test(a));
-  return { force, mirror, positionals, leaseProtected, opaque };
-}
+// ── keep-ask predicates and rule A (owner decision "shrink" 2026-11-20) ────────────────────────────
+// Which would-be asks STAY asks is decided where destructiveMatches creates the finding, from that segment's own argv: the finding
+// carries `keep: true` and guardOnceCore converts every other ask to allow + would_have:"ask". destructiveMatches already walks every
+// wrapper spelling (bash -lc, `| sh`, python os.system, /usr/bin/git, a redirect glued to a ref), so the keep rides along with them.
+// Keeps: a push that may reach main (protected, unprovable or glob refspec, no refspec, an unreadable word, --mirror), real
+// filter-branch/filter-repo rewrites (D2), class-(c) destroys, root/home reach of find/xargs rm, and rule A (curl/wget DELETE).
+const GLOB_REF_RE = /[*?[]/;
 function refSide(ref, side) {
   let t = String(ref).replace(/^[<({!~]+|[)};]+$/g, "");
   if (t.startsWith("+")) t = t.slice(1);
@@ -2860,47 +2779,46 @@ function isProtectedRef(ref) {
 function isUnprovableRef(ref) {
   const dst = refSide(ref, "dst");
   if (dst === "") return false;
-  return dst === "HEAD" || /^[$@`]/.test(dst) || /[({]/.test(dst); // HEAD, $var, @{…}, $(…) — cannot prove non-protected (D1-strict arm)
+  return dst === "HEAD" || /^[$@`]/.test(dst) || /[({*?[]/.test(dst); // HEAD, $var, @{…}, $(…), a glob that can match main (D1-strict arm)
 }
-function filterIsReal(stmt) {
-  const toks = tokenize(stmt).map((t) => t.replace(/^[<({!~]+/, ""));
-  const gi = toks.findIndex((t) => t === "git");
-  const rest = toks.slice(gi + 1)
-    .filter((t) => !["filter-branch", "filter-repo", "--version", "--help", "-h"].includes(t))
-    .filter((t) => !/^\d*>>?\S*$|^&>\S*$/.test(t)); // redirects: `2>/dev/null`, `2>&1`, `>>file`, `&>file`
-  return rest.length > 0;
+/** Whether a parsed push (gitPushFlags) keeps the ask: it may rewrite or delete a protected ref (§1.3). */
+function pushKeeps(p) {
+  if (p.opaque || p.mirror || p.leaseProtected) return true; // an unreadable word may force or name a ref; --mirror pushes every ref
+  const specs = p.positionals.slice(1); // positionals[0] is the remote
+  if (p.prune && (!specs.length || specs.some((r) => GLOB_REF_RE.test(r)))) return true; // --prune deletes remote refs the refspecs no longer match
+  return (p.forces || p.lease) && (!specs.length || specs.some((r) => isProtectedRef(r) || isUnprovableRef(r)));
 }
-const KEEP_REWRITE_RE = /overwrites published history|overwrites and deletes remote refs|rewrites history|deleting or lease-forcing published refs/;
-// keepAsk runs once per destructive hit, and rule A depends only on the command: memoise the last command's answer.
-let ruleAMemo = { command: null, value: false };
-/** True when a would-be ask STAYS an ask (see the block comment). `finding` is {rule, reason}; the rule
- *  gate mirrors the profile: only R7-destructive's asks and rule A keep, everything else converts. */
-export function keepAsk(finding, command) {
-  if (ruleAMemo.command !== command) ruleAMemo = { command, value: apiDeleteAsk(command) };
-  if (ruleAMemo.value) return true; // rule A: any would-be ask on a rule-A command stays
-  if (!finding || finding.rule !== "R7-destructive") return false;
-  const reason = String(finding.reason || "");
-  if (finding.keep) return true; // mKeep marks class-(c) destroys and unsanctioned converts; see mKeep above
-  if (!KEEP_REWRITE_RE.test(reason)) return false;
-  // D1 strict on the raw text: keepStatements rewrites `$(` to `(` and would erase the unreadable word a push carries.
-  if (splitStmts(command).some((s) => /\bgit\b/.test(s) && /\bpush\b/.test(s) && /[$`]/.test(s))) return true;
-  for (const stmt of keepStatements(command)) {
-    const p = pushInfo(stmt);
-    if (p) {
-      if (p.opaque) return true; // D1 strict: an unprovable force flag or refspec keeps the ask
-      if (p.mirror) return true; // mirror pushes every ref incl. main; refspecs cannot exclude
-      if (p.leaseProtected) return true; // --force-with-lease=main
-      const isForceish = p.force || p.positionals.some((r) => r.startsWith("+"));
-      if (!isForceish) continue; // plain push / push --delete → not a rewrite (owner: allow)
-      const specs = p.positionals.slice(1); // positionals[0] = remote when present
-      if (specs.length === 0) return true; // D1-strict: no refspec at all → current branch unknown
-      if (specs.some(isProtectedRef)) return true; // main / master / refs/heads/main / +main / HEAD:main
-      if (specs.some(isUnprovableRef)) return true; // HEAD / $var (D1-strict arm)
-      continue; // an explicitly non-protected branch → allow
+// `--version`/`--help` probes of filter-branch/filter-repo are noise; anything else is a real rewrite (D2).
+const FILTER_PROBE_ARGS = new Set(["--version", "--help", "-h"]);
+const beforeComment = (words) => { const k = words.findIndex((w) => w.startsWith("#")); return k < 0 ? words : words.slice(0, k); }; // a `#` word starts a shell comment
+const filterIsReal = (rest) => beforeComment(nonRedirPositionals(rest)).some((t) => !FILTER_PROBE_ARGS.has(t));
+/** The recursive deletes an item-fed command runs (`xargs rm -rf`, `find -exec rm -rf {} +`, `xargs bash -c 'rm -rf {}'`): `script` says the
+ *  delete sits in a -c script, `fed` that its operand is the fed item (an argv rm always is; a script's rm only when it names `{}`, a `%`
+ *  replacement or a positional, so `echo / | xargs -I{} bash -c 'rm -rf /tmp/x'` deletes /tmp/x whatever is fed). */
+function* itemFedRm(prog, args) {
+  if (prog === "rm" && isRecursiveRm(args)) yield { script: false, fed: true };
+  const script = scriptOf(prog, args, { interp: false });
+  if (script === null) return;
+  for (const inner of [script, ...unwrapScripts(splitSegments(script), 2)]) {
+    for (const innerSeg of splitSegments(inner)) {
+      const [p2, a2] = resolveCommand(innerSeg);
+      if (p2 === "rm" && isRecursiveRm(a2)) yield { script: true, fed: a2.some((a) => !a.startsWith("-") && /\{\}|[%$@]/.test(a)) };
     }
-    if (/\bgit\s+(?:[^\n;&|]*\s)?(?:filter-branch|filter-repo)\b/.test(stmt) && filterIsReal(stmt)) return true; // D2: real rewrites ask; --version/--help-only allows
   }
-  return false;
+}
+/** The root/home/system reach a pipeline stage proves for the `xargs rm` it feeds: a literal `echo`/`printf` word or a `find` root. */
+function feederReach(stage, home, cwds) {
+  const [prog, args] = resolveCommand(stage);
+  if (prog === "find") return findRootsReach(args, home, cwds);
+  if (prog !== "echo" && prog !== "printf") return null;
+  for (const a of args) {
+    if (a.startsWith("-")) continue;
+    for (const word of a.split(/\s+/)) {
+      const why = word && rootReach(word, home, cwds);
+      if (why) return why;
+    }
+  }
+  return null;
 }
 // curl short-option letters that take an operand: the first one in a cluster ends it (its operand is the rest of the token or the next token).
 const CURL_ARG_LETTERS = new Set("ABbCcDdEFHKmoPQrtTuUwxXYz");
@@ -2915,39 +2833,36 @@ function curlShortMethodIsDelete(tok, next) {
 }
 // Link-local 169.254.0.0/16 is NOT local: it carries cloud metadata endpoints (169.254.169.254), so it must ask.
 const LOCAL_HOST_RE = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)$/i;
-/** Rule A (§1.7): token-level, statement-scoped — a `curl`/`wget` DELETE (any spelling `-X DELETE`,
- *  `-XDELETE`, `--request[=]DELETE`, `--method[=]DELETE`; lowercase `-x` is the proxy option and never
- *  matches) whose statement carries a non-local literal http(s) URL. No literal URL → no ask. */
-export function apiDeleteAsk(cmd) {
-  for (const stmt of keepStatements(cmd)) {
-    const toks = tokenize(stmt);
-    if (!toks.some((t) => { const w = t.replace(/^[<({!~]+/, ""); return w === "curl" || w === "wget" || /\/(?:curl|wget)$/.test(w); })) continue;
-    let del = false;
-    for (let i = 0; i < toks.length; i++) {
-      const t = toks[i];
-      const nxt = toks[i + 1];
-      if (/^-[A-Za-z]+$/.test(t) && curlShortMethodIsDelete(t, nxt)) del = true; // -X DELETE, -XDELETE, -sXDELETE, -fsSLX DELETE, -sSX DELETE; lowercase -x (proxy) ends the cluster
-      else if (t === "--request" && nxt && /^delete$/i.test(nxt)) del = true;
-      else if (/^--request=delete$/i.test(t)) del = true;
-      else if (t === "--method" && nxt && /^delete$/i.test(nxt)) del = true; // wget --method DELETE
-      else if (/^--method=delete$/i.test(t)) del = true;
+/** Rule A (§1.7) on one curl/wget argv: a DELETE (any spelling `-X DELETE`, `-XDELETE`, `--request[=]DELETE`, `--method[=]DELETE`; lowercase
+ *  `-x` is the proxy option and never matches) with a non-local literal http(s) URL among its words. No literal URL → no ask. */
+function apiDeleteArgv(args) {
+  let del = false;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    const nxt = args[i + 1];
+    if (/^-[A-Za-z]+$/.test(t) && curlShortMethodIsDelete(t, nxt)) del = true; // -X DELETE, -XDELETE, -sXDELETE, -fsSLX DELETE, -sSX DELETE; lowercase -x (proxy) ends the cluster
+    else if (t === "--request" && nxt && /^delete$/i.test(nxt)) del = true;
+    else if (/^--request=delete$/i.test(t)) del = true;
+    else if (t === "--method" && nxt && /^delete$/i.test(nxt)) del = true; // wget --method DELETE
+    else if (/^--method=delete$/i.test(t)) del = true;
+  }
+  if (!del) return false;
+  for (const t of args) {
+    for (const [url] of t.matchAll(/https?:\/\/[^\s'"\\)]+/g)) {
+      try { if (!LOCAL_HOST_RE.test(new URL(url).hostname)) return true; } catch { /* not a URL */ }
     }
-    if (!del) continue;
-    const urls = [...stmt.matchAll(/https?:\/\/[^\s'"\\)]+/g)].map((m) => m[0]);
-    if (urls.length === 0) continue; // no literal URL in this statement → the cheap rule does not ask
-    if (urls.some((u) => { try { return !LOCAL_HOST_RE.test(new URL(u).hostname); } catch { return false; } })) return true;
   }
   return false;
 }
 function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
-  const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
-  const mKeep = (reason) => ({ ...m(reason), keep: true }); // stays an ask under the allow-with-log profile: a class-(c) destroy
+  const m = (reason, keep) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION, keep }); // `keep`: stays an ask under the allow-with-log profile (a class-(c) destroy, a push that may reach main)
+  const mKeep = (reason) => m(reason, true);
   const block = (reason) => ({ rule: "R7-irreversible", severity: "block", reason, suggestion: R7_IRREVERSIBLE_SUGGESTION });
   const tokenFile = (reason) => ({ rule: "R1-secret-exfiltration", severity: "block", reason, suggestion: R1_EXFIL_SUGGESTION });
   for (const [si, seg] of ctx.expandedSegments.entries()) {
     const cwds = ctx.expandedCwds[si];
-    const [progRaw] = programOf(seg);
+    const [progRaw, progArgs] = programOf(seg);
     const [prog, args0] = resolveCommand(seg);
     let args = args0;
     if (prog === null) continue;
@@ -2956,20 +2871,19 @@ function* destructiveMatches(ctx) {
       args = i !== null ? args.slice(i) : [];
       if (!args.length) continue;
       const sub = args[0];
-      const joined = " " + args.join(" ");
       const push = sub === "push" ? gitPushFlags(args.slice(1)) : null;
+      const pushKeep = Boolean(push && pushKeeps(push)); // D1-strict: a push that may reach main keeps the ask
       if (push && push.opaque) yield mKeep("`git push` has a word the guard cannot read (a substitution, backtick or $ expansion): it may force or name a ref.");
-      if (push && push.force) yield m(`\`git push ${clip(push.force)}\` overwrites published history`);
-      if (push && push.mirror) yield m(`\`git push ${clip(push.mirror)}\` overwrites and deletes remote refs to match local.`);
+      if (push && push.force) yield m(`\`git push ${clip(push.force)}\` overwrites published history`, pushKeep);
+      if (push && (push.mirror || push.prune)) yield m(`\`git push ${clip(push.mirror || push.prune)}\` overwrites and deletes remote refs to match local.`, pushKeep);
       if (sub === "reset" && args.includes("--hard")) yield m("`git reset --hard` discards uncommitted work irreversibly");
       if (sub === "branch" && gitBranchForceDelete(args.slice(1))) yield m("`git branch -D` force-deletes a branch");
       if (sub === "clean" && args.some((a) => a.startsWith("-") && a.includes("f"))) yield m("`git clean -f` deletes untracked files irreversibly");
-      if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${clip(sub)}\` rewrites history`);
+      if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${clip(sub)}\` rewrites history`, filterIsReal(args.slice(1)));
       // push --delete/-d/:ref and --force-with-lease mutate published refs; update-ref -d deletes a ref
       // in place -- same "hard to reverse" tier as the existing push --force/branch -D asks.
-      if (sub === "push" && (/(^|\s)(--delete|-d)(\s|$)/.test(joined) || push.delete || /--force-with-lease/.test(joined) ||
-          args.slice(1).some((a) => a.startsWith(":")))) {
-        yield m("\`git push\` deleting or lease-forcing published refs rewrites shared history");
+      if (push && (push.delete || push.lease || args.slice(1).some((a) => a.startsWith(":")))) {
+        yield m("\`git push\` deleting or lease-forcing published refs rewrites shared history", pushKeep);
       }
       if (sub === "update-ref" && args.some((a) => a === "-d" || a === "--delete")) {
         yield m("\`git update-ref -d\` deletes a ref in place");
@@ -2993,6 +2907,7 @@ function* destructiveMatches(ctx) {
       const why = findDeleteReach(args, ctx.home, cwds);
       if (why) yield mKeep(`\`find -delete\` ${why}`);
     }
+    if ((prog === "curl" || prog === "wget") && apiDeleteArgv(args)) yield mKeep("`curl -X DELETE` deletes data through an API and is hard to reverse");
     if (prog === "docker" || prog === "docker-compose") {
       const pos = cleanPositionals(args, CLOUD_VALUE_OPTS.docker || new Set());
       const flags = args.filter((a) => a.startsWith("-")).join(" ");
@@ -3009,19 +2924,10 @@ function* destructiveMatches(ctx) {
     // / matched" -- via argv (`xargs rm -rf {}`) or inside a -c script (`xargs bash -c 'rm -rf {}'`).
     if (progRaw === "xargs" || progRaw === "parallel" || progRaw === "find") {
       const what = progRaw === "find" ? "every match" : "whatever is piped in";
-      if (prog === "rm" && isRecursiveRm(args)) {
-        yield m(`\`${clip(progRaw)} rm -r\` recursively deletes ${what}`);
-      }
-      const script = scriptOf(prog, args, { interp: false });
-      if (script !== null) {
-        for (const inner of [script, ...unwrapScripts(splitSegments(script), 2)]) {
-          for (const innerSeg of splitSegments(inner)) {
-            const [p2, a2] = resolveCommand(innerSeg);
-            if (p2 === "rm" && isRecursiveRm(a2)) {
-              yield m(`\`${clip(progRaw)} ${clip(prog)} -c\` recursively deletes ${what}`);
-            }
-          }
-        }
+      const reach = progRaw === "find" ? findRootsReach(progArgs, ctx.home, cwds) : null; // `find / -exec rm -rf {} +` reaches what `find / -delete` does
+      for (const { script, fed } of itemFedRm(prog, args)) {
+        const keep = Boolean(reach && fed);
+        yield script ? m(`\`${clip(progRaw)} ${clip(prog)} -c\` recursively deletes ${what}`, keep) : m(`\`${clip(progRaw)} rm -r\` recursively deletes ${what}`, keep);
       }
     }
     if (SQL_CLIENTS.has(prog)) {
@@ -3112,6 +3018,20 @@ function* destructiveMatches(ctx) {
       }
     }
   }
+  // `echo / | xargs rm -rf`: the feeder is a segment of its own, so the pipeline is read whole. A feeder that proves a root, home or system
+  // tree keeps the ask, like `find / -delete`; any other feeder stays the converted "whatever is piped in" ask above.
+  for (const text of [ctx.command, ...ctx.unwrappedScripts, ...ctx.inputScripts.map((b) => b.body)]) {
+    if (!/xargs|parallel/.test(text)) continue;
+    for (const pipeline of splitPipelines(stripHeredocs(text))) {
+      for (let j = 1; j < pipeline.length; j++) {
+        const [sink] = programOf(pipeline[j]);
+        if (sink !== "xargs" && sink !== "parallel") continue;
+        const [prog, args] = resolveCommand(pipeline[j]);
+        if (prog === null || ![...itemFedRm(prog, args)].some((hit) => hit.fed)) continue;
+        if (pipeline.slice(0, j).some((stage) => feederReach(stage, ctx.home, ctx.allCwds))) yield mKeep(`\`${clip(sink)} rm -r\` recursively deletes whatever is piped in`);
+      }
+    }
+  }
   // A heredoc/here-string body that feeds xargs/parallel/find -exec gets the same item-fed parity
   // ask: an xargs -I{} sh <<EOF body running `rm -rf {}` deletes per-item like `xargs rm -rf {}` does.
   for (const b of ctx.inputScripts) {
@@ -3127,9 +3047,6 @@ function* destructiveMatches(ctx) {
   if (sqlDrop) yield mKeep(`\`DROP ${clip(sqlDrop.kind)}\` piped to \`${clip(sqlDrop.client)}\` deletes data irreversibly.`);
   const shellPipe = detectShellPipe(ctx);
   if (shellPipe) yield m(`\`${clip(shellPipe.first)} ... | ${clip(shellPipe.target)}\` runs a downloaded script unread.`);
-  // Rule A, yielded last so every block above (and every earlier ask, which ruleDestructive keeps as
-  // `first`) still wins: a token-level `curl`/`wget` DELETE against a non-local API is hard to reverse.
-  if (apiDeleteAsk(ctx.command)) yield m("`curl -X DELETE` deletes data through an API and is hard to reverse");
 }
 
 const sqlClientIn = (text) => {
@@ -3168,7 +3085,7 @@ function ruleDestructive(ctx) {
   for (const hit of destructiveMatches(ctx)) {
     if (ctx.disabled.has(hit.rule)) continue;
     if (hit.severity === "block") return hit;
-    if (!first || (!keepAsk(first, ctx.command) && keepAsk(hit, ctx.command))) first = hit;
+    if (!first || (!first.keep && hit.keep)) first = hit;
   }
   return first;
 }
@@ -3725,7 +3642,6 @@ export function readChoice(a, keys) {
 const MAX_SUBSTITUTIONS = 256;
 /** Count of command-substitution openers (`$(`, `<(`, `>(`, and each backtick). Linear. */
 const substitutionCount = (command) => (command.match(/\$\(|[<>]\(|`/g) || []).length;
-
 // ── nesting cap ──────────────────────────────────────────────────────────────
 const MAX_GROUPING_DEPTH = 64;
 /** Deepest run of unquoted open `(` / `{` in a command (one linear scan; closers lower the count, never below 0). */
@@ -3790,15 +3706,18 @@ export const RULE_LABELS = Object.freeze({
 const withLabel = (out) => (out && out.decision !== "allow" && Object.hasOwn(RULE_LABELS, out.rule) ? { ...out, label: RULE_LABELS[out.rule] } : out);
 export async function guardCommand(input, deps = {}) {
   try {
-    return withLabel(await guardCommandChecked(input, deps));
+    const out = await guardCommandChecked(input, deps);
+    delete out.converted; // internal: guardOnceCore marks a reply converted from a local ask, keepWould reads it
+    return withLabel(out);
   } catch (e) {
     // Anything that throws outside a rule (reading the input, the comment-masking pass): the guard did not finish, so it asks.
     return withLabel(internalError(input && typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e));
   }
 }
-// Two readings that both allow: the kept one still carries the other's would_have (the other reading would ask in base).
-const keepWould = (keep, other) => (keep.decision === "allow" && other.decision === "allow" && other.would_have && !keep.would_have
-  ? { ...keep, would_have: other.would_have, rule: other.rule, reason: other.reason, suggestion: other.suggestion } : keep);
+// Two readings that both allow: the kept one adopts the other's would_have only when that reading's own finding would have asked in base;
+// a flagged fail-open allow never asked there, so a plain allow stays plain.
+const keepWould = (keep, other) => (keep.decision === "allow" && other.decision === "allow" && other.converted && !keep.would_have
+  ? { ...keep, would_have: other.would_have, rule: other.rule, reason: other.reason, suggestion: other.suggestion, converted: true } : keep);
 async function guardCommandMasked(input, deps) {
   // An apostrophe in a comment (`# don't\ncat .env`) opens a quote in every scanner that does not know comments, and the quote
   // swallows the lines after it. Removing comments cannot fix that safely: a `#` the detector mistakes for a comment start
@@ -3991,7 +3910,7 @@ async function guardOnceCore(input, deps, failures) {
     if (m.severity === "soft") { softAsk ??= m; continue; }
     // Shrink (owner decision "shrink" 2026-11-20): only the keep-ask set stays an ask; every other ask
     // converts to allow + would_have:"ask" and later rules still run (a later block still wins).
-    if (m.severity !== "block" && !keepAsk(m, command)) { wouldHave ??= m; continue; }
+    if (m.severity !== "block" && !m.keep) { wouldHave ??= m; continue; }
     out.decision = m.severity === "block" ? "block" : "ask";
     out.score = m.severity === "block" ? 1 : 0.7;
     out.rule = m.rule; out.reason = m.reason; out.suggestion = m.suggestion;
@@ -4000,28 +3919,25 @@ async function guardOnceCore(input, deps, failures) {
     return out;
   }
   // Past the substitution cap, the nesting cap or the process-substitution cap the guard stops reading inner bodies, so a command that no rule
-  // blocked asks instead of passing. A block above still wins; a limit ask is never converted to allow.
+  // blocked asks instead of passing. A block above still wins; a limit ask beats every converted ask, a pending soft ask included.
   // Deeply nested grouping is not something a person types and not something the segment walk reasons about. The scan is linear and its input
   // budgeted; a spent budget asks, as the other work budgets do (a body read out of quotes counts too: `bash -c '(((...)))'` nests as deep).
   let depthBudget = 400000;
   const tooDeep = (text) => { if (depthBudget <= 0) return true; depthBudget -= text.length; return groupingDepth(stripHeredocs(text)) > MAX_GROUPING_DEPTH; };
-  if (!softAsk && SHELL_TOOLS.has(tool) && (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body)))) {
-    softAsk = { rule: "R10-general-risk", reason: `Nests ( ) or { } more than ${MAX_GROUPING_DEPTH} deep; the guard doesn't analyze that.`, suggestion: R10_OPAQUE_SUGGESTION, limit: true };
+  let limit = null;
+  if (SHELL_TOOLS.has(tool)) {
+    if (tooDeep(command) || ctx.unwrappedScripts.some(tooDeep) || ctx.inputScripts.some((b) => tooDeep(b.body))) limit = { rule: "R10-general-risk", reason: `Nests ( ) or { } more than ${MAX_GROUPING_DEPTH} deep; the guard doesn't analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
+    else if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) limit = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
+    else if (procBodies.truncated) limit = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION };
   }
-  if (!softAsk && SHELL_TOOLS.has(tool)) {
-    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION, limit: true };
-    else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION, limit: true };
+  if (limit) {
+    out.decision = "ask"; out.score = 0.7;
+    out.rule = limit.rule; out.reason = limit.reason; out.suggestion = limit.suggestion;
+    out.decided_by = "prefilter";
+    out.jev = { used: false, status: "not_needed" };
+    return out;
   }
-  if (softAsk) {
-    if (softAsk.limit || keepAsk(softAsk, command)) {
-      out.decision = "ask"; out.score = 0.7;
-      out.rule = softAsk.rule; out.reason = softAsk.reason; out.suggestion = softAsk.suggestion;
-      out.decided_by = "prefilter";
-      out.jev = { used: false, status: "not_needed" };
-      return out;
-    }
-    wouldHave ??= softAsk; // shrink: a non-keep soft ask converts to allow + would_have:"ask"
-  }
+  if (softAsk) wouldHave ??= softAsk; // shrink: a soft ask converts to allow + would_have:"ask"
 
   // R10 is the fallback tier: consulted only when no other rule matched.
   let risk = null;
@@ -4033,7 +3949,7 @@ async function guardOnceCore(input, deps, failures) {
   const attachWould = (force = false) => {
     if (!wouldHave && !force) return;
     out.would_have = "ask";
-    if (wouldHave) { out.rule = wouldHave.rule; out.reason = wouldHave.reason; out.suggestion = wouldHave.suggestion; }
+    if (wouldHave) { out.converted = true; out.rule = wouldHave.rule; out.reason = wouldHave.reason; out.suggestion = wouldHave.suggestion; }
   };
   const candidate = ambiguousSecret || risk;
   if (!candidate) { attachWould(); return out; }

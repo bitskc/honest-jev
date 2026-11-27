@@ -652,7 +652,8 @@ test("round 21 B1': a secret read inside any ( ... ) form blocks", async () => {
 
 // A1': a component that bash can expand to a secret-store name (a `?` or class matches any character but a leading dot, and
 // `/`) never allows. Every case here has a literal stem or separator tying it to a store.
-test("round 21 A1': wildcard spellings of a store tail, stem, directory or service-account name ask or block", async () => {
+test("round 21 A1': wildcard spellings of a store tail, stem, directory or service-account name block or convert to allow + would_have", async () => {
+  const BLOCKED = ["cat ~/.docker/config.js?n", "cat ~/.k?be/config", "cat id_ed2551?_x"]; // resolve to a store on main and here
   for (const cmd of [
     "cat server?p?m", "cat tls?k?y", "cat server??em", "cat tls??ey", "cat cert??12", "cat store??ks", "cat terraform??fstate",
     "cat terraform??fstate.backup", "cat server????", "cat tls????", "cat cert????", "cat store????", "cat prod????",
@@ -662,8 +663,12 @@ test("round 21 A1': wildcard spellings of a store tail, stem, directory or servi
     "cat prod?env.local", "cat server?env.x1", "cat ??????_work", "cat id_ed2551?_x", "cat ?????????_ab",
   ]) {
     const r = await guard(cmd, PROJ, HOME);
-    // owner shrink: the ambiguous glob asks convert to allow; a glob that resolves to a store still blocks
-    assert.notEqual(r.decision, "ask", `${cmd} -> ${r.decision}`);
+    // owner shrink: the ambiguous glob asks convert to allow + would_have; a glob that resolves to a store still blocks
+    if (BLOCKED.includes(cmd)) assert.equal(r.decision, "block", cmd);
+    else {
+      assert.equal(r.decision, "allow", cmd);
+      assert.equal(r.would_have, "ask", `${cmd} would_have`);
+    }
   }
   // still allowed: no stem or literal ties them to a store, or the stem ends in a separator
   for (const cmd of ["cat report-????", "cat data_????", "cat log.????", "cat tmp.????", "cat ????", "cat ??????", "cat src/????", "cat ???/???", "cat ?env"]) {
@@ -726,12 +731,14 @@ function mutate(name, rnd, keepLiteral) {
     if (!keepLiteral || lits > 0) return out;
   }
 }
-test("round 21 A1': the guard never allows a token that an independent bash matcher says expands to a store name", async () => {
+test("round 21 A1': a token that an independent bash matcher says expands to a store name blocks or converts to allow + would_have, never a plain allow", async () => {
   const rnd = lcg(21);
   const tokens = new Set();
   for (const name of STORE_NAMES) for (let k = 0; k < 40; k++) tokens.add(mutate(name, rnd, true));
   for (const [d, f] of STORE_DIR_PAIRS) for (let k = 0; k < 40; k++) tokens.add(`${mutate(d, rnd, false)}/${mutate(f, rnd, true)}`);
   let checked = 0;
+  let blocked = 0;
+  let converted = 0;
   for (const tok of tokens) {
     const comps = tok.split("/");
     const hits = [...STORE_NAMES.filter((n) => bashMatch(comps.at(-1), n) && comps.length === 1),
@@ -739,10 +746,19 @@ test("round 21 A1': the guard never allows a token that an independent bash matc
     if (!hits.length) continue;
     checked++;
     const r = await guard(`cat ${tok}`, PROJ, HOME);
-    // owner shrink: an ambiguous glob ask converts to allow (logged would_have); a store-resolving shape still blocks — never an ask
-    assert.notEqual(r.decision, "ask", `cat ${tok} can expand to ${JSON.stringify(hits[0])} -> ${r.decision}`);
+    // owner shrink: each token has exactly one of two outcomes. A store-resolving shape blocks as on main; an ambiguous glob that asked on main is
+    // now allow + would_have:"ask". Never an ask, never a plain allow.
+    const why = `cat ${tok} can expand to ${JSON.stringify(hits[0])} -> ${r.decision}`;
+    if (r.decision === "block") blocked++;
+    else {
+      assert.equal(r.decision, "allow", why);
+      assert.equal(r.would_have, "ask", why);
+      converted++;
+    }
   }
   assert.ok(checked > 400, `matcher should confirm a few hundred tokens, got ${checked}`);
+  // measured against main for this seed: 2456 tokens block there and here, 1499 asked there and convert here, none moved from block to allow
+  assert.deepEqual({ blocked, converted }, { blocked: 2456, converted: 1499 });
 });
 
 // A2': padding must not exhaust a budget that later secret globs need.
@@ -873,10 +889,14 @@ test("round 21b: the peel walk skips a run of grouping marks and keywords, and k
   assert.deepEqual(programOf("FOO=1 ! ( time cat .env )"), ["cat", [".env"]]);
 });
 
-test("round 21b: past the nesting cap a soft ask keeps its own reason", async () => {
-  const r = await guard("(".repeat(65) + "sort credentials" + ")".repeat(65), PROJ, HOME);
-  assert.equal(r.decision, "allow");
-  assert.match(r.reason, /bare credential word/);
+test("round 21b: past the nesting cap the overflow ask wins over a pending soft ask; under it the soft ask converts", async () => {
+  const deep = await guard("(".repeat(65) + "sort credentials" + ")".repeat(65), PROJ, HOME);
+  assert.equal(deep.decision, "ask");
+  assert.match(deep.reason, /Nests \( \) or \{ \}/);
+  const shallow = await guard("(".repeat(10) + "sort credentials" + ")".repeat(10), PROJ, HOME);
+  assert.equal(shallow.decision, "allow");
+  assert.equal(shallow.would_have, "ask");
+  assert.match(shallow.reason, /bare credential word/);
 });
 
 // ── Round 21c ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1250,10 +1270,14 @@ test("round 21c: the ask starts past 256 substitutions or past the process-subst
   assert.match(padded.reason, /^Nests `<\(`\/`>\(` too deep/);
   assert.equal((await guard(`cat ${rep("<(", 60)}${rep("x", 1200)}${rep(")", 60)}; cat .env`, PROJ, HOME)).decision, "block");
   assert.equal((await guard(`cat ${rep("<(", 60)}${rep("x", 600)}${rep(")", 60)}`, PROJ, HOME)).decision, "allow");
-  // an existing ask keeps its own reason, and the block of a later rule still wins
+  // a pending soft ask converts under the cap, but past it the overflow ask wins and names its own reason
   const credAsk = await guard(`sort credentials; echo ${rep("$(ls)", 300)}`, PROJ, HOME);
-  assert.equal(credAsk.decision, "allow");
-  assert.match(credAsk.reason, /bare credential word/);
+  assert.equal(credAsk.decision, "ask");
+  assert.match(credAsk.reason, /more than 256 command substitutions/);
+  const credLow = await guard(`sort credentials; echo ${rep("$(ls)", 10)}`, PROJ, HOME);
+  assert.equal(credLow.decision, "allow");
+  assert.equal(credLow.would_have, "ask");
+  assert.match(credLow.reason, /bare credential word/);
   // a block wins over the ask, and a secret read past the exact-check limit is still reported
   assert.equal((await guard(`echo ${rep("$(ls)", SUBST_EXACT_LIMIT + 50)}$(cat .env)`, PROJ, HOME)).decision, "block");
   assert.equal((await guard(`echo ${rep("$(ls)", 300)}$(cat .env)`, PROJ, HOME)).decision, "block");

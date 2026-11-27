@@ -4,6 +4,17 @@ import { guardCommand } from "../src/kit/guard.mjs";
 
 const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
+// Owner shrink: every entry has exactly one outcome. A command that blocked on main still blocks; one that asked on main is now allow + would_have:"ask".
+async function expectShrunk(cmds, blocked, prefix = "") {
+  for (const c of cmds) {
+    const r = await g(prefix + c);
+    if (blocked.includes(c)) assert.equal(r.decision, "block", c);
+    else {
+      assert.equal(r.decision, "allow", c);
+      assert.equal(r.would_have, "ask", `${c} would_have`);
+    }
+  }
+}
 
 test("Q6: metadata verbs that touch secret paths no longer ask (owner shrink); the path still resolves to a store", async () => {
   for (const c of [
@@ -53,7 +64,7 @@ test("Q6: any other $ expansion on the line no longer asks (owner shrink): the g
 });
 
 test("Q6: tracing and hook changes anywhere on the line no longer ask (owner shrink; dump/store shapes still block): set/shopt with x or v, trap, startup variables, a shell with -x or -v", async () => {
-  for (const c of [
+  await expectShrunk([
     "set -x; . .env", "set -v; source .env", "set -ex; . .env", "set -eux; . .env", "set -xo pipefail; . .env", "set -euxo pipefail; . .env", "set -o xtrace; . .env", "set +x; . .env",
     "set --verbose; . .env", ". .env; set -x", "{ set -x; . .env; }", "set -a; . ./.env; set +a; set -x; ./run.sh", "setopt xtrace; . .env",
     "shopt -o -s xtrace; . .env", "shopt -so xtrace; . .env", "shopt -s -o xtrace; . .env",
@@ -62,15 +73,15 @@ test("Q6: tracing and hook changes anywhere on the line no longer ask (owner shr
     "bash -O extglob -x -c '. .env'", "bash -O extglob -ex -c '. .env'", "bash --rcfile /dev/null -x -c '. .env'", "zsh -x -c '. .env'", "env -i bash -x -c '. .env'",
     ". .env; bash -x run.sh", ". .env; sh -vx run.sh", ". .env; $SHELL -x run.sh", "sh -x .env",
     "trap 'echo $KEY' EXIT; . .env", "trap 'env' EXIT; set -a; . .env; set +a", "trap 'echo $KEY' DEBUG; . .env", "trap '' EXIT; . .env",
-  ]) { const d = (await g(c)).decision; assert.notEqual(d, "ask", `${c} -> ${d}`); } // shrink: converted to allow; dump/store shapes stay block
+  ], ["bash -xc '. ./.env'", "bash -vc '. .env'", "sh -x .env"]);
 });
 
 test("Q6: a program that reads the whole environment without a $ no longer asks (owner shrink): converted allow, while env dumps still block", async () => {
-  for (const c of [
+  await expectShrunk([
     ". .env; declare", ". .env; typeset -p KEY", ". .env; readonly -p", ". .env; printenv KEY", ". .env; ps e", ". .env; ps eww", ". .env; ps -E", ". .env; jq -n env",
     ". .env; perl -E 'say %ENV'", ". .env; python3 -c 'import os as o; print(o.environ)'", ". .env; node -e 'console.log(process.env.KEY)'", ". .env; node -p process.env",
     ". .env; ruby -e 'p ENV'", ". .env; awk 'BEGIN{print ENVIRON[\"K\"]}'", ". .env; python3 -c 'import os; print(os.environ[\"K\"])'",
-  ]) { const d = (await g(c)).decision; assert.notEqual(d, "ask", `${c} -> ${d}`); } // shrink: converted to allow; env-dump shapes stay block
+  ], [". .env; python3 -c 'import os as o; print(o.environ)'", ". .env; node -p process.env", ". .env; ruby -e 'p ENV'"]);
   for (const c of [
     ". .env; env", ". .env && printenv", ". .env; set", ". .env; declare -p", ". .env; export -p", ". .env; export", ". .env; echo $API_KEY", ". .env; printf %s \"$TOKEN\"",
     ". .env; cat /proc/self/environ", "bash -c 'set -a; . ./.env; set +a; env'",
@@ -79,7 +90,7 @@ test("Q6: a program that reads the whole environment without a $ no longer asks 
 
 test("Q6: an inline script that spawns, a bare env word, and the runners that run env or a shell no longer ask (owner shrink; bare printenv still blocks)", async () => {
   const L = "set -a; . ./.env; set +a; ";
-  for (const t of [
+  await expectShrunk([
     "awk 'BEGIN{system(\"env\")}'", "gawk 'BEGIN{system(\"printenv\")}'", "perl -e 'system(\"env\")'", "python3 -c 'import os; os.system(\"env\")'",
     "python3 -c 'import subprocess; subprocess.run([\"printenv\"])'", "node -e 'require(\"child_process\").execSync(\"env\",{stdio:\"inherit\"})'", "lua -e 'os.execute(\"env\")'",
     "php -r 'system(\"env\");'", "ruby -e 'system \"env\"'", "sed '1e env' /etc/hostname", "make -f - <<'MK'\nall:\n\t@env\nMK", "tclsh <<'T'\nputs [array get env]\nT",
@@ -91,7 +102,7 @@ test("Q6: an inline script that spawns, a bare env word, and the runners that ru
     "rsync -e env a b", "parallel ::: env", "bwrap --bind / / env", "xargs printenv </dev/null",
     // spawning calls in inline scripts
     "perl -e 'exec \"id\"'", "ruby -e 'system \"id\"'", "node -e 'execSync(\"id\")'", "python3 -c 'import os; os.popen(\"id\")'",
-  ]) { const d = (await g(L + t)).decision; assert.notEqual(d, "ask", `${t} -> ${d}`); } // shrink: converted to allow; bare-printenv dumps stay block
+  ], ["xargs printenv </dev/null"], L);
   // controls from the owner's real loads: plain tools through npx, an RPC name starting with execute, Python's exec(compile(...)), --env and NODE_ENV are not spawns or the env word
   for (const t of [
     "npx tsx script.ts", "npx vercel --prod", "npx tsc --noEmit", "npx -y prisma migrate deploy", "npm exec -- tsc", "npm x -- vitest run",

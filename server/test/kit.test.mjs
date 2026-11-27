@@ -1151,18 +1151,16 @@ test("round 4 P0: prefix wrappers (timeout/env/nice/sudo/...) inside xargs' invo
   ]) {
     assert.equal((await g(c)).decision, "block", c);
   }
-  // opaque rm -rf {} forms: owner shrink converts these asks to allow; never an ask
+  // a literal `/` feed composes the wrapped body, so every wrapper form blocks as on main; an opaque feed was an ask on main and now converts
   for (const c of [
-    "echo 5 | xargs -I{} timeout {} rm -rf {}",
     "echo / | xargs -I{} env bash -c 'rm -rf {}'",
     "echo / | xargs -I{} nice bash -c 'rm -rf {}'",
     "echo / | xargs -I{} sudo bash -c 'rm -rf {}'",
     "echo / | xargs -I{} timeout 5 sudo bash -c 'rm -rf {}'",
-  ]) {
-    const r = await g(c);
-    assert.ok(r.decision === "allow" || r.decision === "block", `${c} => ${r.decision} (expected allow-or-block)`);
-    assert.notEqual(r.decision, "ask", c);
-  }
+  ]) assert.equal((await g(c)).decision, "block", c);
+  const opaque = await g("echo 5 | xargs -I{} timeout {} rm -rf {}");
+  assert.equal(opaque.decision, "allow");
+  assert.equal(opaque.would_have, "ask");
 });
 test("round 4 documented limit: payloads past 3 shell -c wrapper layers are NOT unwrapped", async () => {
   // unwrapScripts' maxDepth=3 is a deliberate bound (no exponential re-parse); what it means concretely:
@@ -1193,9 +1191,9 @@ test("round 4b P0: the same indirection parity covers find -exec, parallel, su -
     ["find . -exec bash -c 'rm -rf /tmp/x' \\;", "allow", "R7-destructive"],
     ["find . -exec bash -c 'rm -rf /' \\;", "block", "R7-root-delete"],
     ["find . -exec rm -rf {} +", "allow", "R7-destructive"],
-    ["echo / | parallel rm -rf", "allow", "R7-destructive"],
-    ["echo / | parallel bash -c 'rm -rf {}'", "allow", "R7-destructive"],
-    ["echo / | parallel -j4 bash -c 'rm -rf {}'", "allow", "R7-destructive"],
+    ["echo / | parallel rm -rf", "ask", "R7-destructive"], // owner shrink: a proven root feed keeps the ask like find -delete
+    ["echo / | parallel bash -c 'rm -rf {}'", "ask", "R7-destructive"],
+    ["echo / | parallel -j4 bash -c 'rm -rf {}'", "ask", "R7-destructive"],
     ["su -c 'rm -rf /'", "block", "R7-root-delete"],
     ["su root -c 'rm -rf /'", "block", "R7-root-delete"],
     ["runuser -u www-data -- bash -c 'rm -rf /'", "block", "R7-root-delete"],

@@ -333,16 +333,16 @@ test("rules that could not run and no server: allowed, said once per session, an
   notes.length = 0;
 });
 
-test("the marked row differs from 'unclear, no server' by its closed reason, and names the rule that flagged it", async () => {
+test("the marked row differs from 'unclear, no server' even when that row has no rule", async () => {
   env({ JEV_GUARD_RULES: "/nonexistent/guard.mjs", ...NO_SERVER });
   await hook().call(bash("# don't\nnpm publish"));
   const down = rows()[0];
   env({ ...NO_SERVER }); // the real rules
   writeFileSync(LEDGER, "");
-  await hook().call(bash("# don't\nnpm publish")); // unclear through the masked reading only
+  await hook().call(bash("# don't\nnpm publish")); // unclear through the masked reading only: no rule to name
   const unclear = rows()[0];
   expect([down.fail_reason, down.rule]).toEqual(["local_rules_unavailable", null]);
-  expect([unclear.fail_reason, unclear.rule]).toEqual(["client_config", "R10-general-risk"]);
+  expect([unclear.fail_reason, unclear.rule]).toEqual(["client_config", null]);
   notes.length = 0;
 });
 
