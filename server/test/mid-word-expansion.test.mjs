@@ -37,7 +37,7 @@ test("env ./a=b is an assignment: the command behind it is judged", async () => 
     assert.equal(r.decision, "block", `${c} -> ${r.decision} ${r.reason}`);
   }
   assert.equal((await g("env ./a=b cat token")).decision, "allow");
-  assert.equal((await g("env ./a=b token")).decision, "allow"); // env runs the program `token`, no operand (evals/diff-allowlist.json closure exemption)
+  assert.equal((await g("env ./a=b token")).decision, "allow"); // env runs the program `token`, no operand: allow is bash's reading
 });
 
 // env keeps taking `=` words as assignments after `--`.

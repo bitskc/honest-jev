@@ -135,7 +135,7 @@ test("round 16 #94: a secret name in a flag value or a target string is data, no
   assert.equal(r.decision, "allow");
 });
 
-test("round 13 P2-3: a bare credential word operand asks (never allows)", async () => {
+test("round 13 P2-3: a bare credential word operand converts to allow + would_have (owner shrink)", async () => {
   const cases = [
     "sort credentials",
     "npx vitest run credentials",
@@ -146,6 +146,7 @@ test("round 13 P2-3: a bare credential word operand asks (never allows)", async 
   for (const cmd of cases) {
     const r = await guard(cmd, HOME, HOME);
     assert.equal(r.decision, "allow", cmd);
+    assert.equal(r.would_have, "ask", cmd);
   }
 });
 

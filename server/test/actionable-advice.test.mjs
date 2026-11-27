@@ -36,10 +36,11 @@ test("an env-file load that asks for what else is on the line does not advise th
   assert.equal((await g("node --env-file=.env app.js")).decision, "allow");
 });
 
-test("bare credential word on a content printer asks with the bare-word suggestion", async () => {
+test("bare credential word on a content printer converts to allow + would_have and keeps the bare-word suggestion", async () => {
   for (const c of ["cat token", "less TOKEN", "sort credentials", "npx vitest run credentials"]) {
     const r = await g(c);
     assert.equal(r.decision, "allow", c);
+    assert.equal(r.would_have, "ask", c);
     assert.equal(r.suggestion, R1_BARE_WORD_SUGGESTION, c);
   }
 });
@@ -80,9 +81,11 @@ test("Capitalized UI-verb allowlist still allows Collect/Confirm/Approve", async
   }
 });
 
-test("lowercase unknown tools and editors still ask on a bare credential word", async () => {
+test("lowercase unknown tools and editors on a bare credential word convert to allow + would_have", async () => {
   for (const c of ["vim token", "nano token", "nvim password", "python3 token", "node token"]) {
-    assert.equal((await g(c)).decision, "allow", c);
+    const r = await g(c);
+    assert.equal(r.decision, "allow", c);
+    assert.equal(r.would_have, "ask", c);
   }
 });
 

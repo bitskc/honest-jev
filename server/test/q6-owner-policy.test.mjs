@@ -119,14 +119,30 @@ test("Q6: the branches that stop a dumper with no $ and no env word (each leaks 
     "trap set EXIT", "trap export EXIT", "script -qc set /dev/null", "script -qc export /dev/null", "npx sh -c set", "npx -c export", "npm exec -- bash -c export", "npm x -- sh -c set",
     "awk 'BEGIN{system(\"set\")}'", "python3 -c 'import os; os.system(\"export\")'", "node -e 'require(\"child_process\").execSync(\"set\",{stdio:\"inherit\"})'",
     "export -n", "make -p -f /dev/null", "ps e", "ps eww", "ps -e", "ps -ef", "ps -E", "ps aux e", "strace -v -e execve /bin/true",
-  ]) assert.equal((await g(L + t)).decision, "allow", t);
-  for (const t of ["ps aux", "ps -A", "ps -p 1 -o pid,comm", "npx tsx script.ts"]) assert.equal((await g(`. ./.env; ${t}`)).decision, "allow", t);
+  ]) {
+    const r = await g(L + t);
+    assert.equal(r.decision, "allow", t);
+    assert.equal(r.would_have, "ask", t);
+  }
+  for (const t of ["ps aux", "ps -A", "ps -p 1 -o pid,comm", "npx tsx script.ts"]) {
+    const r = await g(`. ./.env; ${t}`);
+    assert.equal(r.decision, "allow", t);
+    assert.equal(r.would_have, undefined, `${t}: a control is a plain allow`);
+  }
 });
 
 test("Q6: only the exact confirm test keeps a $ allowed; a test inside a larger command, or with another operand, no longer asks (owner shrink)", async () => {
   const L = "set -a; . ./.env; set +a; ";
-  for (const t of ["[ -n \"$KEY\" ] && echo ok", "[[ -z $KEY ]] || exit 1", "test -n \"${KEY}\""]) assert.equal((await g(L + t)).decision, "allow", t);
-  for (const t of ["echo \"[ -n $KEY ]\"", "[ \"$KEY\" = x ]", "[ -n \"$KEY\" ] && cat <<<\"$KEY\"", "[ -n \"${KEY:-$OTHER}\" ]", "[ -n \"$(cat f)\" ]"]) assert.equal((await g(L + t)).decision, "allow", t);
+  for (const t of ["[ -n \"$KEY\" ] && echo ok", "[[ -z $KEY ]] || exit 1", "test -n \"${KEY}\""]) {
+    const r = await g(L + t);
+    assert.equal(r.decision, "allow", t);
+    assert.equal(r.would_have, undefined, `${t}: the confirm test is a plain allow, as on main`);
+  }
+  for (const t of ["echo \"[ -n $KEY ]\"", "[ \"$KEY\" = x ]", "[ -n \"$KEY\" ] && cat <<<\"$KEY\"", "[ -n \"${KEY:-$OTHER}\" ]", "[ -n \"$(cat f)\" ]"]) {
+    const r = await g(L + t);
+    assert.equal(r.decision, "allow", t);
+    assert.equal(r.would_have, "ask", t);
+  }
 });
 
 test("Q6: an env file is an allowlist of names; any other .env.<suffix> no longer asks (owner shrink)", async () => {

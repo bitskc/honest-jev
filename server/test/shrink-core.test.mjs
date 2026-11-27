@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { guardCommand } from "../src/kit/guard.mjs";
+import { cpuNow } from "./helpers/cpu.mjs";
 
 const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
@@ -81,7 +82,7 @@ test("rule A: token-level statement-scoped API DELETEs ask in every spelling", a
     "curl --request=DELETE https://example.com/a",
     "curl --request DELETE https://example.com/a",
     "wget --method=DELETE https://example.com/a",
-    "wget --method=DELETE https://example.com/a",
+    "wget --method DELETE https://example.com/a",
     "curl \\\n  -X DELETE https://example.com/a",
     "curl -X DELETE https://api.example.com/a && echo done",
   ]) await ask(c);
@@ -286,4 +287,78 @@ test("P3: keepWould adopts the other reading's would_have only when that reading
   assert.equal(flagOnly.would_have, undefined);
   // the masked reading finds a converted ask (base asked): the would_have is adopted
   await allowWould("echo ok # don't\nsort ~/.*");
+});
+
+// -- final review (PR #120 at 1c12baf): per-word facts the parse must not lose ----------------------------------------------------
+
+test("F1: a quoted or escaped `#` word is an argument, not a comment; only an unquoted `#` word ends the statement", async () => {
+  for (const c of [
+    "git push -o '#skip' -f origin main", "git push --push-option '#x' -f origin main", "git push -o '#x' --force-with-lease origin main",
+    "git push '#x' -f origin main", "git push origin \"#x\" -f main", "git push origin \\#x -f main", `bash -c ${q("git push -o '#x' -f origin main")}`,
+    "git filter-repo '#x' --force --path a", "git filter-branch '#x' -f --index-filter x main", "git push -f origin main # c",
+  ]) await ask(c);
+  // an unquoted comment still hides what it holds: the words after it are not arguments
+  await allowWould("git push -f origin feature # main");
+  await allowWould("git push -f origin feature #x main");
+  await allowWould("git filter-repo --version # --force");
+});
+
+test("F2: a word with a brace expansion in a push is opaque and keeps the ask, flag or refspec", async () => {
+  for (const c of [
+    "git push -f origin {main,dev}", "git push -f origin {feature,main}", "git push -f origin {a..c}", "git push --force-with-lease origin {main,dev}",
+    "git push -f{,} origin main", "git push {--force-with-lease,} origin main", "git push -f origin ma{in,}", `bash -c ${q("git push -f origin {main,dev}")}`,
+    "git push origin {+main,dev}",
+  ]) await ask(c);
+  // no comma or range: bash leaves `{feature}` alone, and it is not a protected name
+  await allowWould("git push -f origin {feature}");
+  await allowWould("git push -f origin feature");
+});
+
+test("F3: the matching refspec `:` / `+:` pushes every matching branch and keeps the ask; `src:` (a delete) converts", async () => {
+  for (const c of ["git push -f origin :", "git push origin +:", "git push --force-with-lease origin :", "git push -f origin '+:'", "git push -f origin feature :"]) await ask(c);
+  await allowWould("git push -f origin main:");
+  await allowWould("git push origin :refs/heads/b");
+  await allowWould("git push --delete origin b");
+});
+
+test("F4: find's leading global options do not hide its roots from the root/home reach checks", async () => {
+  for (const c of [
+    "find -L / -exec rm -rf {} +", "find -H ~ -name x -exec rm -rf {} \\;", "find -L / -print0 | xargs -0 rm -rf", "find -D tree / -exec rm -rf {} +",
+    "find -O3 -P / -exec rm -rf {} +", "find -L / -name x -delete", "find -P ~/Documents -type f -delete",
+  ]) await ask(c);
+  for (const c of ["find -L . -name x -exec rm -rf {} +", "find -H dist -exec rm -rf {} \\;", "find -L /tmp/x -exec rm -rf {} +", "find -L . -print0 | xargs -0 rm -rf"]) await allowWould(c);
+});
+
+test("I4: rule A reads the URL scheme case-insensitively", async () => {
+  for (const c of ["curl -XDELETE HTTPS://api.example.com/x", "curl -X DELETE Http://api.example.com/x", "wget --method DELETE HTTPS://api.example.com/x"]) {
+    const r = await ask(c);
+    assert.equal(r.rule, "R7-destructive");
+  }
+  await allowPlain("curl -XDELETE HTTP://127.0.0.1:3000/x");
+});
+
+test("F5: the pipeline feeder scan is linear: long xargs chains stay far under the hook's 1.5 s local budget (CPU time)", async () => {
+  const R = (s, n) => s.repeat(n);
+  for (const stages of [200, 400]) {
+    const c = `echo ${R("a ", 1000)}| ${R("xargs rm -rf | ", stages)}cat; git push --force origin main`;
+    const t = cpuNow();
+    const r = await g(c);
+    const ms = cpuNow() - t;
+    assert.equal(r.decision, "ask", `${stages} stages`);
+    assert.ok(ms < 700, `${stages} stages (${c.length} chars): ${ms.toFixed(0)} ms CPU`); // measured ~100 ms linear; the quadratic scan took 1.5 s at 200 stages
+  }
+  // the linear scan still pairs a feeder with every later sink
+  await ask(`echo / | ${R("cat | ", 50)}xargs rm -rf`);
+  await allowWould(`echo build | ${R("cat | ", 50)}xargs rm -rf`);
+});
+
+test("I3: a heredoc body that runs a recursive delete per piped item keeps the ask behind a proven root/home feeder, like xargs rm -rf", async () => {
+  for (const c of ["echo / | xargs -I{} sh <<'EOF'\nrm -rf {}\nEOF", "echo ~ | parallel sh <<'EOF'\nrm -rf {}\nEOF"]) await ask(c);
+  for (const c of ["echo build | xargs -I{} sh <<'EOF'\nrm -rf {}\nEOF", "ls | xargs -I{} sh <<'EOF'\nrm -rf {}\nEOF"]) await allowWould(c);
+});
+
+test("a force that only appears inside an unquoted comment is not a force: the push is a plain allow (main asked on the comment text)", async () => {
+  const r = await allowPlain("git push origin feature # -f main");
+  assert.equal(r.would_have, undefined);
+  await ask("git push origin '#x' -f main"); // the same words, quoted, are arguments
 });
