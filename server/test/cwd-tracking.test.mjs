@@ -43,9 +43,11 @@ test("#133: after a non-literal cd the cwd is unknown, and a dot/glob operand as
     "pushd && chmod -R 777 .", "popd && chmod -R 777 ."]) {
     assert.equal((await g(c)).decision, "ask", c);
   }
-  const whole = await g("cd $X && rm -rf *");
-  assert.equal(whole.decision, "allow");
-  assert.equal(whole.rule, "R7-destructive");
+  for (const c of ["cd $X && rm -rf *", "cd \"$WORKDIR\" || exit 1; rm -rf *", "cd - && rm -rf ."]) {
+    const whole = await g(c);
+    assert.equal(whole.decision, "ask", c);
+    assert.equal(whole.rule, "R7-destructive", c);
+  }
   // no hook cwd at all is the same unknown start
   assert.equal((await g("chmod -R 777 .", "")).decision, "ask");
   assert.equal((await g("cd build && chmod -R 777 .", "")).decision, "ask");

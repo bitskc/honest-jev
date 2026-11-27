@@ -83,7 +83,7 @@ test("B: a first word that cannot be an executable name is not a printer: no bar
   }
 });
 
-test("B: a possible executable still asks, and a real reader behind junk still asks", async () => {
+test("B: a possible executable is still flagged R1, and so is a real reader behind junk (a converted ask: allow, owner shrink)", async () => {
   for (const c of ["getSession token", "foo token", "f() { cat token; }", "f() ( cat token ); f", "f() cat token; f", "function f() ( cat token ); f",
     "f() { echo ok; }; f token", "// cat token", "getSession() // cat token", "$(which cat) token", "`which cat` token"]) {
     const r = await g(c);
@@ -130,7 +130,7 @@ test("P1: the header peel finds the body for every name class in programOf too",
   }
 });
 
-test("P2-1: brace expansion makes a braced word a real program: it keeps asking, and a store shape still blocks", async () => {
+test("P2-1: brace expansion makes a braced word a real program: it is still flagged (a converted ask, allow), and a store shape still blocks", async () => {
   for (const c of ["ca{t,t} token", "{cat,} token", "c{a,}t token", "/bin/ca{t,} token", "ca{t,t} credentials"]) {
     const r = await g(c);
     assert.equal(r.decision, "allow", `${c} -> ${r.decision}`);
@@ -138,7 +138,7 @@ test("P2-1: brace expansion makes a braced word a real program: it keeps asking,
   for (const c of ["ca{t,t} .env", "ca{t,t} ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
 });
 
-test("P2-2: a quoted or escaped word is a program, never a function header: its operand still blocks or asks", async () => {
+test("P2-2: a quoted or escaped word is a program, never a function header: its operand still blocks or is flagged (a converted ask, allow)", async () => {
   for (const c of ["'./f()' .env", "./f\\(\\) .env", "\"./f()\" .env", "'f()' .env", "'f()' ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
   for (const c of ["'./f()' token", "'f()' token", "./f\\(\\) token"]) assert.equal((await g(c)).decision, "allow", c);
   // the same words bare are headers: nothing to read behind them

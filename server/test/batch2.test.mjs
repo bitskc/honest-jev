@@ -14,7 +14,7 @@ test("#59: recursive deletes — home dotfiles, document folders, find -delete a
   await expectAll(["rm -rf ~/.config/foo", "rm -rf ~/.cache", "rm -rf node_modules", "rm -rf .github", "rm -rf ~/proj", "rm -rf docs/.gitkeep", "rm .git", "find . -name '*.log' -delete", "find src -type f -delete", "find /tmp/x -delete",
     "supabase db push", "docker compose down", "docker compose -f a.yml up -v", "docker volume ls", "docker system prune"], "allow");
 });
-test("#73: a dot-glob operand of a program that prints its operands asks; listing and a regex pattern do not", async () => {
+test("#73: a dot-glob operand of a program that prints its operands is a converted ask (allow + would_have, owner shrink); listing and a regex pattern are plain allows", async () => {
   await expectAll(["cat .*", "cat ./.*", "cat dir/.*", "cat ~/.*", "cat .[!.]*", "head -1 .*", "grep x .*", "tar czf a.tgz .*"], "allow");
   assert.equal((await g("cat .??*")).decision, "block"); // the literal-shaped glob was already a block
   await expectAll(["ls -a .*", "rm -f .*", "wc -l .*", "echo .*", "grep '.*' file.txt", "cat .gitignore", "cat .*.swp", "cat *.txt"], "allow");
@@ -53,7 +53,7 @@ test("#79: a find nothing reads prints names; an -exec body or a consumer that r
   // review of #168: a find -delete that reaches .git or a key directory empties it like `rm -rf` does, so it asks
   await expectAll(["find .git -delete", "find ~/.ssh -type f -delete", "find ~/.ssh -name 'id_*' -delete", "find ~/.gnupg -type f -delete"], "ask");
 });
-test("#83: env filtered to a plain name asks; anything that could select credentials, or unfiltered output, blocks", async () => {
+test("#83: env filtered to a plain name is a converted ask (allow, owner shrink); anything that could select credentials, or unfiltered output, blocks", async () => {
   await expectAll(["env | grep -i path", "env | grep -i path | head", "env | grep -E 'PATH|HOME'", "env | grep ^HOME=", "printenv | grep -i lang", "env | grep -i path > out.txt", "bash -c 'env | grep -i path'", "bash <<'EOF'\nenv | grep -i path\nEOF"], "allow");
   await expectAll(["env | grep TOKEN", "env | grep -E 'PATH|TOKEN'", "env | grep -v HOME", "env | grep --inv HOME", "env | grep --invert-match HOME", "env | grep -iv HOME", "env | grep .", "env | grep -f pats", "env | sort", "env", "env | head", "env | grep path file.txt", "env | grep -e path -e KEY", "printenv | grep PASS", "env | grep '^[A-Z]'"], "block");
   // review of #168: the exemption is one stage, and a filter that prints everything or selects credentials is not a name filter
@@ -63,7 +63,7 @@ test("#83: env filtered to a plain name asks; anything that could select credent
     "env | xargs grep path", "env | xargs -0 grep path", "env | parallel grep path", "env | grep -i e", "env | grep -i s", "env | grep -i aws", "env | grep -i github", "env | grep -i openai", "env | grep -i db"], "block");
   await expectAll(["env | grep -ie path", "env | grep -i path; env | grep -i home", "env|grep -i path"], "allow");
 });
-test("#130 / Q6: credentials* glob asks on content readers; read-only git/sort allow", async () => {
+test("#130 / Q6: a credentials* glob on a content reader is a converted ask (allow, owner shrink); read-only git/sort allow", async () => {
   await expectAll(["cat credentials*"], "allow");
   await expectAll(["git diff src/credentials*", "git log -- credentials*", "git log -p -- credentials*", "git blame credentials*", "git diff --no-index /dev/null credentials*", "sort credentials*", "git diff src/*", "git status credentials*"], "allow");
   await expectAll(["git config --file credentials* --list"], "allow");

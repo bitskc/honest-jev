@@ -278,7 +278,7 @@ function* pathParts(tokens) {
 // `.netrc` however many spellings it has. A `*` that would have to supply secret-name letters (`.n*rc` for `.netrc`) is
 // not followed. A wildcard never stands for the dot that opens a hidden name, and a secret tail (`.pem`, `-credentials.json`)
 // needs its separator spelled literally: `cat ????` and `cat report-????` name no store, `cat mykey.???` asks.
-// Past a work budget the guard asks rather than guessing.
+// Past a work budget the guard stops reading: the glob scan's budget is a soft R1 ask (it converts like any other); the substitution, nesting and process-substitution caps ask outright.
 const GLOB_CHAR_RE = /[*?[]/;
 const GLOB_UNIT_RE = /\[[!^]?[^\]]*\]|\*|\?|[^*?[]+|\[/g;
 const STAR = { k: "*" };
@@ -2614,18 +2614,21 @@ function isBlockDeviceTok(a, home) {
   const p = normalizePath(expand(a, home));
   return p.startsWith("/dev/") && DD_BLOCK_DEVICE_RE.test(p) && !DD_HARMLESS.some((h) => p.startsWith(h));
 }
-/** Positional operands with redirect operators and their operands removed: `tee /dev/sda < img`'s
- *  real destination is /dev/sda, not img -- a bare `<`/`>`/`2>`/`>>` consumes its following token,
- *  and an attached `<img`/`>img`/`2>log` token is never a positional. */
-function nonRedirPositionals(args) {
+/** Indices of the positional operands of an argv with redirect operators and their operands removed: a bare `<`/`>`/`2>`/`>>` consumes
+ *  its following token, and an attached `<img`/`>img`/`2>log` token is never a positional. */
+function nonRedirIndexes(args) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
     if (/^\d*[<>]{1,2}$/.test(t)) { i++; continue; }
     if (/^\d*[<>]{1,2}&?\d*$/.test(t) || /^\d*[<>]{1,2}&?\S+$/.test(t)) continue;
-    out.push(t);
+    out.push(i);
   }
   return out;
+}
+/** The positional operands themselves: `tee /dev/sda < img`'s real destination is /dev/sda, not img. */
+function nonRedirPositionals(args) {
+  return nonRedirIndexes(args).map((i) => args[i]);
 }
 /** Redirect write-targets of a segment (`>x`, `>>x`, `2>x`): like r10RedirectTargets but the token
  *  itself is what matters here, not its cwd relation. */
@@ -2644,6 +2647,7 @@ const HOME_VALUABLE = new Set(["Documents", "Desktop", "Pictures", "Music", "Vid
   ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig", ".netrc", ".npmrc", ".pypirc", ".mozilla", ".thunderbird"]);
 function rmValuableTarget(operand, home, cwd) {
   let p = operand.replace(/\/+(?:\.?\*)?$/, "").replace(/\/\.$/, "");
+  if (/^(?:\.\/)?(?:\.?\*|\.\[!\.\]\*)$/.test(p)) p = "."; // a bare glob (`*`, `.*`, `.[!.]*`) names the working directory itself
   if (!p) return null;
   p = p.replace(/^\$\{HOME\}|^\$HOME|^~(?=\/|$)/, home || "");
   if (!p.startsWith("/")) { if (!cwd.startsWith("/")) return /(^|\/)\.git$/.test(p) ? "a repository's whole history" : null; p = `${cwd}/${p}`; }
@@ -2656,14 +2660,18 @@ function rmValuableTarget(operand, home, cwd) {
 // `find ... -delete` (#59): unfiltered it removes everything under its roots; filtered it is routine inside the project, but a root that
 // is home, `/`, a system tree or an ancestor of the cwd (`find .. -name ".*" -delete`) reaches far beyond it.
 const FIND_FILTERS = new Set(["-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-wholename", "-type", "-newer", "-mtime", "-mmin", "-atime", "-ctime", "-empty", "-user", "-group", "-size", "-perm", "-lname", "-links", "-samefile"]);
-/** The path roots of a `find` argv: after its leading global options (`-H`, `-L`, `-P`, `-O<n>`, `-D <debugopts>`), the words before the first
- *  expression. No root means `.`. */
+/** The path roots of a `find` argv: after its leading global options (GNU `-H` `-L` `-P` `-O<n>` `-D <debugopts>`, BSD/macOS `-E` `-x` `-s` `-d`
+ *  `-X` and `-f <path>`, which names a root of its own) and an end-of-options `--`, the words before the first expression. No root means `.`. */
+const FIND_LEADING_FLAGS = new Set(["-H", "-L", "-P", "-E", "-x", "-s", "-d", "-X"]);
 function findRoots(args) {
   const roots = [];
   let i = 0;
   while (i < args.length) {
-    if (args[i] === "-H" || args[i] === "-L" || args[i] === "-P" || /^-O\d*$/.test(args[i])) i++;
-    else if (args[i] === "-D") i += 2;
+    const a = args[i];
+    if (FIND_LEADING_FLAGS.has(a) || /^-O\d*$/.test(a)) i++;
+    else if (a === "-D") i += 2;
+    else if (a === "-f" && i + 1 < args.length) { roots.push(args[i + 1]); i += 2; }
+    else if (a === "--") { i++; break; }
     else break;
   }
   while (i < args.length && !args[i].startsWith("-") && args[i] !== "(" && args[i] !== "!") roots.push(args[i++]);
@@ -2705,10 +2713,12 @@ const KNOWN_PUSH_SHORT = "dfnpqruv46"; // f force, d delete, n dry-run, p prune,
  *  any --force-with-lease, `positionals` is [remote, ...refspecs] with redirects and option values removed. Git accepts bundled short
  *  flags (`-fu`, `-uf`, `-qf`); a `+` refspec (`+main`, `+HEAD:main`, `'+refs/heads/*:...'`) forces that one ref; `--mirror` / `--prune`
  *  force-update or delete remote refs; a bundled `-d` (`-ud`) deletes. `forces` is `force` minus a cluster holding a letter push does not
- *  know (`-filter`): reported as a force, but too doubtful to keep the ask. `args` is already cut at an unquoted comment (commentEnd). */
-function gitPushFlags(args) {
-  const argv = nonRedirPositionals(args);
-  const out = { force: null, forces: false, lease: false, leaseProtected: false, mirror: null, prune: null, delete: false, positionals: [], opaque: argv.some((a) => /[$`]/.test(a) || BRACE_EXPANSION_RE.test(a)) }; // a `$`/backtick/brace word may be a flag or a ref
+ *  know (`-filter`): reported as a force, but too doubtful to keep the ask. `args` is already cut at a real comment (pushView); `lit[i]` says
+ *  whether args[i] is written as a plain literal, and one word that is not makes the whole push `opaque` (Rule 1, see PUSH_PLAIN_WORD_RE). */
+function gitPushFlags(args, lit) {
+  const idx = nonRedirIndexes(args);
+  const argv = idx.map((i) => args[i]);
+  const out = { force: null, forces: false, lease: false, leaseProtected: false, mirror: null, prune: null, delete: false, positionals: [], opaque: lit === null || idx.some((i) => !lit[i]) };
   const force = (spelling, known = true) => { out.force ??= spelling; if (known) out.forces = true; };
   for (let i = 0; i < argv.length; i++) {
     const a = rdUnquote(argv[i]);
@@ -2768,12 +2778,57 @@ function gitBranchForceDelete(args) {
 // Keeps: a push that may reach main (protected, unprovable or glob refspec, no refspec, an unreadable word, --mirror), real
 // filter-branch/filter-repo rewrites (D2), class-(c) destroys, root/home reach of find/xargs rm, and rule A (curl/wget DELETE).
 const GLOB_REF_RE = /[*?[]/;
-// A word with a bash brace expansion (`{main,dev}`, `{a..c}`, `-f{,}`) becomes several words before git sees them. Whether a quoted or mixed word
-// (`{main,"dev"}`) expands cannot be told from the unquoted token form, so any such word, quoted or not, is read as opaque.
-const BRACE_EXPANSION_RE = /\{[^{}\s]*(?:,|\.\.)[^{}\s]*\}/;
+// Push words are judged on their source text (owner policy "seatbelt, not a wall": two structural rules, not one patch per spelling).
+// Rule 1, literal-only words: a word is provable only when it is written as a plain literal, unquoted characters from [A-Za-z0-9._/:+^~@=-] or ONE
+// single- or double-quoted run with no `$`, backtick or backslash in it. Every other word (a variable, a substitution, `$'..'`, an unquoted brace
+// or glob, mixed quoting, a backslash, a NUL) may expand to a flag or a ref at run time, so a push holding one keeps the ask. A quoted brace
+// word (`'v{1,2}'`, a JSON push option) is a literal. Rule 2, run-time-fed pushes: a force-ish push run by xargs/parallel/find -exec gets
+// extra refspecs appended at run time, so it keeps the ask (see `fed` in pushView).
+const PUSH_PLAIN_WORD_RE = /^[A-Za-z0-9._/:+^~@=-]+$/;
+const PUSH_QUOTED_WORD_RE = /^(?:'[^'\\$`\0]*'|"[^"\\$`\0]*")$/;
+// resolveCommand drops what is not part of the invoked argv: a subshell's closing `)`, find -exec's `;`/`+` terminator
+const PUSH_ALIGN_SKIP = new Set(["(", ")", ";", "+"]);
+const RUNTIME_FEEDERS = new Set(["xargs", "parallel", "find"]);
+const isOddSep = (c) => c === 11 || c === 12 || c === 13; // bash does not split a word at VT, FF or CR; the tokenizer does
+/** The words of a git segment as the push and filter rules read them: `live`, the resolved argv (a tail of the segment's own tokens) cut at a
+ *  real shell comment; `lit`, per live word, whether its SOURCE text is a plain literal (null when the argv cannot be matched to the segment's
+ *  tokens: no word is then provable); `fed`, whether an xargs/parallel/find runs the command (items are appended to its argv at run time).
+ *  Only a literal unquoted `#` at the start of a word, after a blank, starts a comment: a `#` from a variable or substitution is escaped by the
+ *  literal fold, and one after VT/FF/CR is inside a word. */
+function pushView(seg, args) {
+  const w = wordsQ(seg);
+  const at = new Array(args.length);
+  let j = w.t.length - 1;
+  for (let i = args.length - 1; i >= 0; i--, j--) {
+    while (j >= 0 && w.t[j] !== args[i] && PUSH_ALIGN_SKIP.has(w.t[j])) j--;
+    if (j < 0 || w.t[j] !== args[i]) return { live: args, lit: null, fed: false };
+    at[i] = j;
+  }
+  const s = w.s;
+  let cut = args.length;
+  for (let k = 0; k < args.length; k++) {
+    const st = w.ws[at[k]];
+    const prev = st === 0 ? 32 : s.charCodeAt(st - 1);
+    if (s.charCodeAt(st) === 35 && (prev === 32 || prev === 9 || prev === 10 || prev === 40 || prev === 41)) { cut = k; break; }
+  }
+  const lit = new Array(cut);
+  for (let k = 0; k < cut; k++) {
+    const st = w.ws[at[k]];
+    const en = w.we[at[k]];
+    const raw = s.slice(st, en);
+    lit[k] = !isOddSep(s.charCodeAt(st - 1)) && !isOddSep(s.charCodeAt(en)) && (PUSH_PLAIN_WORD_RE.test(raw) || PUSH_QUOTED_WORD_RE.test(raw));
+  }
+  const fed = args.length > 0 && w.t.slice(0, at[0]).some((t) => RUNTIME_FEEDERS.has(base(t)));
+  return { live: args.slice(0, cut), lit, fed };
+}
 /** The two sides of a push refspec (`[+]src:dst`, or a bare name that is both). `matching` is the lone `:` (`+:`): git's "every matching branch". */
 function refSides(ref) {
-  let t = String(ref).replace(/^[<({!~]+|[)};]+$/g, "");
+  let t = String(ref);
+  let a = 0;
+  let b = t.length;
+  while (a < b && "<({!~".includes(t[a])) a++; // group marks and the like around a word
+  while (b > a && ")};".includes(t[b - 1])) b--;
+  t = t.slice(a, b);
   if (t.startsWith("+")) t = t.slice(1);
   const c = t.indexOf(":");
   if (c < 0) return { dst: t, matching: false };
@@ -2790,7 +2845,7 @@ function isUnprovableRef(ref) {
   const { dst, matching } = refSides(ref);
   if (matching) return true; // `:` / `+:` pushes every matching branch, main included
   if (dst === "") return false;
-  return dst === "HEAD" || /^[$@`]/.test(dst) || /[({*?[]/.test(dst); // HEAD, $var, @{…}, $(…), a glob that can match main (D1-strict arm)
+  return dst === "HEAD" || /^[$@`]/.test(dst) || GLOB_REF_RE.test(dst); // HEAD, $var, @{…}, a glob that can match main (D1-strict arm); an unquoted brace or `$(…)` never gets here (Rule 1)
 }
 /** Whether a parsed push (gitPushFlags) keeps the ask: it may rewrite or delete a protected ref (§1.3). */
 function pushKeeps(p) {
@@ -2801,16 +2856,7 @@ function pushKeeps(p) {
 }
 // `--version`/`--help` probes of filter-branch/filter-repo are noise; anything else is a real rewrite (D2).
 const FILTER_PROBE_ARGS = new Set(["--version", "--help", "-h"]);
-/** Where a shell comment starts in a resolved argv: the first word that begins with an UNQUOTED `#`. The argv is the unquoted token form, so
- *  the quote flags come from tokenizing the segment again; a word flagged quoted (`'#x'`, `\#x`) is an argument, and an argv that is not a tail
- *  of the segment's own tokens cannot be checked, so nothing is cut (a longer argv only keeps more asks). */
-function commentEnd(seg, args) {
-  const w = wordsQ(seg);
-  const off = w.t.length - args.length;
-  if (off < 0 || !args.every((a, i) => w.t[off + i] === a)) return args.length;
-  const k = args.findIndex((a, i) => a.startsWith("#") && !(w.q && w.q.has(off + i)));
-  return k < 0 ? args.length : k;
-}
+// (the comment cut and the literal check of a push's words are pushView, above)
 const filterIsReal = (rest) => nonRedirPositionals(rest).some((t) => !FILTER_PROBE_ARGS.has(t));
 /** The recursive deletes an item-fed command runs (`xargs rm -rf`, `find -exec rm -rf {} +`, `xargs bash -c 'rm -rf {}'`): `script` says the
  *  delete sits in a -c script, `fed` that its operand is the fed item (an argv rm always is; a script's rm only when it names `{}`, a `%`
@@ -2826,17 +2872,21 @@ function* itemFedRm(prog, args) {
     }
   }
 }
-/** The root/home/system reach a pipeline stage proves for the `xargs rm` it feeds: a literal `echo`/`printf` word or a `find` root. */
+/** The root/home/system reach a pipeline stage proves for the `xargs rm` it feeds: any word of its argv that names such a path (`echo /`, `ls ~`,
+ *  `ls -d ~/*`), `ls` with no operand reading its cwd, or a `find` root. */
 function feederReach(stage, home, cwds) {
   const [prog, args] = resolveCommand(stage);
+  if (prog === null) return null;
   if (prog === "find") return findRootsReach(args, home, cwds);
-  if (prog !== "echo" && prog !== "printf") return null;
+  const named = [];
   for (const a of args) {
     if (a.startsWith("-")) continue;
-    for (const word of a.split(/\s+/)) {
-      const why = word && rootReach(word, home, cwds);
-      if (why) return why;
-    }
+    for (const word of a.split(/\s+/)) if (word) named.push(word);
+  }
+  if (prog === "ls" && !named.length) named.push("."); // `cd ~/.ssh && ls | xargs rm -rf`
+  for (const word of named) {
+    const why = rootReach(word, home, cwds);
+    if (why) return why;
   }
   return null;
 }
@@ -2891,10 +2941,12 @@ function* destructiveMatches(ctx) {
       args = i !== null ? args.slice(i) : [];
       if (!args.length) continue;
       const sub = args[0];
-      const live = args.slice(0, commentEnd(seg, args)); // the words before an unquoted `# comment`
-      const push = sub === "push" ? gitPushFlags(live.slice(1)) : null;
-      const pushKeep = Boolean(push && pushKeeps(push)); // D1-strict: a push that may reach main keeps the ask
-      if (push && push.opaque) yield mKeep("`git push` has a word the guard cannot read (a substitution, $ or brace expansion): it may force or name a ref.");
+      const view = sub === "push" || sub === "filter-branch" || sub === "filter-repo" ? pushView(seg, args) : null;
+      const live = view ? view.live : args; // the words before a real `# comment`
+      const push = sub === "push" ? gitPushFlags(live.slice(1), view.lit && view.lit.slice(1)) : null;
+      // D1-strict: a push that may reach main keeps the ask; so does a force-ish push an xargs/parallel/find runs (items are appended at run time)
+      const pushKeep = Boolean(push && (pushKeeps(push) || (view.fed && (push.forces || push.lease))));
+      if (push && push.opaque) yield mKeep("`git push` has a non-literal word (variable, substitution, brace, glob, mixed quotes): it may force or name a ref.");
       if (push && push.force) yield m(`\`git push ${clip(push.force)}\` overwrites published history`, pushKeep);
       if (push && (push.mirror || push.prune)) yield m(`\`git push ${clip(push.mirror || push.prune)}\` overwrites and deletes remote refs to match local.`, pushKeep);
       if (sub === "reset" && args.includes("--hard")) yield m("`git reset --hard` discards uncommitted work irreversibly");
@@ -2903,7 +2955,7 @@ function* destructiveMatches(ctx) {
       if (sub === "filter-branch" || sub === "filter-repo") yield m(`\`git ${clip(sub)}\` rewrites history`, filterIsReal(live.slice(1)));
       // push --delete/-d/:ref and --force-with-lease mutate published refs; update-ref -d deletes a ref
       // in place -- same "hard to reverse" tier as the existing push --force/branch -D asks.
-      if (push && (push.delete || push.lease || args.slice(1).some((a) => a.startsWith(":")))) {
+      if (push && (push.delete || push.lease || live.slice(1).some((a) => a.startsWith(":")))) {
         yield m("\`git push\` deleting or lease-forcing published refs rewrites shared history", pushKeep);
       }
       if (sub === "update-ref" && args.some((a) => a === "-d" || a === "--delete")) {
@@ -2917,7 +2969,7 @@ function* destructiveMatches(ctx) {
       if (!isRecursiveRm(args)) continue;
       for (const a of args) {
         if (a.startsWith("-")) continue;
-        if (cwds.some((c) => wholeTreeTarget(a, ctx.home, c))) yield m(`\`rm -rf ${clip(a)}\` would delete a whole tree`);
+        if (cwds.some((c) => wholeTreeTarget(a, ctx.home, c))) yield m(`\`rm -rf ${clip(a)}\` would delete a whole tree`, cwds.some((c) => !c.startsWith("/"))); // an unknown cwd keeps the ask, like chmod -R
         const valued = cwds.map((c) => rmValuableTarget(a, ctx.home, c)).find(Boolean);
         if (valued) yield mKeep(`\`rm -r ${clip(a)}\` deletes ${valued}`);
       }
@@ -3057,7 +3109,7 @@ function* destructiveMatches(ctx) {
           const [sink] = programOf(pipeline[j]);
           if (sink === "xargs" || sink === "parallel") {
             const [prog, args] = resolveCommand(pipeline[j]);
-            if (prog !== null && (heredocRm || [...itemFedRm(prog, args)].some((hit) => hit.fed))) yield mKeep(`\`${clip(sink)} rm -r\` recursively deletes whatever is piped in`);
+            if (prog !== null && ((heredocRm && /<</.test(pipeline[j])) || [...itemFedRm(prog, args)].some((hit) => hit.fed))) yield mKeep(`\`${clip(sink)} rm -r\` recursively deletes whatever is piped in`);
           }
         }
         fed ??= feederReach(pipeline[j], ctx.home, ctx.allCwds);

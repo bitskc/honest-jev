@@ -57,7 +57,11 @@ test("F3 (#66): round 12's false positives stay fixed: source, test, doc, type-s
     "git commit -m \"fix: credentials validation\"", "git add src/credentials.component.html", "git add src/credentials.module.css"]) {
     assert.equal((await g(c)).decision, "allow", c);
   }
-  for (const c of ["cat credentials", "npx vitest run credentials"]) assert.equal((await g(c)).decision, "allow", c); // a bare word still asks
+  for (const c of ["cat credentials", "npx vitest run credentials"]) { // a bare word is still flagged: a converted ask
+    const r = await g(c);
+    assert.equal(r.decision, "allow", c);
+    assert.equal(r.would_have, "ask", c);
+  }
 });
 test("F3 (#66): the credentials matcher is linear on a long dotted chain and on many `credentials` words", async () => {
   for (const cmd of [`cat credentials${".a".repeat(9000)}`, `cat ${"credentials.a.".repeat(1300)}x`, `cat ${"credentials".repeat(1800)}`, `git add ${"-credentials".repeat(1600)}`]) {

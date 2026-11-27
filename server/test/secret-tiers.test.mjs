@@ -1180,11 +1180,16 @@ test("round 24 F3/F4: relative operands and $PWD anchors resolve against the cwd
     assert.equal(r.decision, "block", `${cwd} ${cmd}`);
     assert.equal(r.rule, "R7-root-delete", `${cwd} ${cmd}`);
   }
-  for (const [cwd, cmd] of [["/home/u/proj/a/b", "rm -rf ../.."], ["/home/u/proj", "rm -rf ."], ["/home/u/proj", "rm -rf *"], ["/home/u/proj", "rm -rf ./*"], [undefined, "rm -rf ."]]) {
+  for (const [cwd, cmd] of [["/home/u/proj/a/b", "rm -rf ../.."], ["/home/u/proj", "rm -rf ."], ["/home/u/proj", "rm -rf *"], ["/home/u/proj", "rm -rf ./*"]]) {
     const r = await at(cwd ?? "", cmd);
     assert.equal(r.decision, "allow", `${cwd} ${cmd}`);
+    assert.equal(r.would_have, "ask", `${cwd} ${cmd}`);
     assert.equal(r.rule, "R7-destructive", `${cwd} ${cmd}`);
   }
+  // no hook cwd at all is an unknown start: the whole-tree target keeps the ask, like chmod -R (owner: strict parity)
+  const noCwd = await at("", "rm -rf .");
+  assert.equal(noCwd.decision, "ask");
+  assert.equal(noCwd.rule, "R7-destructive");
   for (const [cwd, cmd] of [["/home/u/proj", "rm -rf ../other"], ["/home/u/proj", "rm -rf build"], ["/home/u/proj", "rm -rf ./dist"], ["/home/u", "rm -rf ./build"], ["/home/u/proj/a/b", "rm -rf ../c"],
     ["", "rm -rf $PWD/.."], ["/home/u/proj", "rm -rf $PWD/dist"], ["/home/u/proj", "rm -rf $(pwd)/dist"]]) {
     assert.equal((await at(cwd, cmd)).decision, "allow", `${cwd} ${cmd}`);
