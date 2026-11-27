@@ -1957,9 +1957,11 @@ function ruleSecret(ctx) {
       }
     }
   }
-  if (sourced && !soft) {
+  if (sourced) {
     const leak = sourceLeaks(secretSegs, ctx.command, sourced.src);
-    if (leak) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
+    // A sourced env file hands its secrets to an inline script that reads one of them: block, as the base kit did.
+    if (leak && converted) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, and ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
+    if (leak && !soft) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
   }
   // Priority: a real ask (soft) or an ambiguous flag outranks a read-and-use conversion; both are decided
   // downstream, a converted finding only records would_have:"ask".
@@ -2963,7 +2965,7 @@ function filterIsReal(stmt) {
     .filter((t) => !/^\d*>>?\S*$|^&>\S*$/.test(t)); // redirects: `2>/dev/null`, `2>&1`, `>>file`, `&>file`
   return rest.length > 0;
 }
-const KEEP_CLASS_C_RE = /under home \(personal or credential files\)|the filesystem root, home or a system tree|deletes data irreversibly|deletes volume data|deletes the stack's volumes|deletes all unused images, containers and volumes|destroys cloud resources|tears down real infrastructure|removes a deployed release/;
+const KEEP_CLASS_C_RE = /under home \(personal or credential files\)|the filesystem root, home or a system tree|deletes data irreversibly|deletes volume data|deletes the stack's volumes|deletes all unused images, containers and volumes|destroys cloud resources|tears down real infrastructure|removes a deployed release|apply -auto-approve` changes infrastructure with no confirmation/;
 const KEEP_REWRITE_RE = /overwrites published history|overwrites and deletes remote refs|rewrites history|deleting or lease-forcing published refs/;
 // keepAsk runs once per destructive hit, and rule A depends only on the command: memoise the last command's answer.
 let ruleAMemo = { command: null, value: false };
