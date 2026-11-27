@@ -1230,84 +1230,6 @@ const INTERP_ENV_RULES = {
 const INTERP_ENV_BASE = { node: "node", nodejs: "node", bun: "node", deno: "node", python: "python", ruby: "ruby",
   perl: "perl", php: "php", pwsh: "pwsh", powershell: "pwsh" };
 
-// ── P1-1: does the payload PRINT the value it read? ──────────────────────────────────────────────
-// A named read whose value reaches a print sink keeps the block (class (a): printing a secret); a read
-// that never reaches one is read-and-use and converts to allow + would_have:"ask" (owner decision
-// "shrink" 2026-11-20). The sink vocabulary composes the shell printers (ENV_PRINTERS' echo/printf)
-// with each language's own print calls — the same notion containerCommandPrints applies at the
-// invocation level (its `-c`/`-e`/`-r` printer test).
-const PRINT_SINK_RE = /(?:^|[^\w.])(?:console\.(?:log|error|warn|info|debug|dir|table|trace)|process\.(?:stdout|stderr)\.write|Deno\.(?:stdout|stderr)\.write|sys\.(?:stdout|stderr)\.write|\b(?:printf|print|puts|pp)\b\s*\(?|\becho\s+)/g;
-/** Any access to the environment (any var): the print may name the read indirectly (`console.log(process.env.X)`). */
-const ANY_ENV_ACCESS_RE = /process\.env(?:\.[A-Za-z_]\w*|\[['"][^'"]+['"]\]|\[\w+\])|process\[['"]env['"]\]|Bun\.env|Deno\.env|import\.meta\.env|os\.environ(?:\s*\[|\s*\.|\s*\))|os\.getenv\s*\(|(?<![\w$@])getenv\s*\(|(?<![\w$@])environ\s*\[|(?<![\w$@])environ\.(?:get|values|items)\s*\(|(?<![\w$@])ENV\s*\[|ENV\.fetch\s*\(|\$env:|\$ENV\{|\$_ENV\[|\$_SERVER\[|%ENV\b|\bos\.environ\b|\bprocess\.env\b|\bBun\.env\b|\bDeno\.env\b|\bimport\.meta\.env\b/;
-const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** Idents whose assignment carries the reason var's VALUE: a direct read of that var (or of the whole
- *  environment) into the ident, or a string-ish copy of an already-marked ident — concat, quoted text,
- *  f-strings, and a bare `a = b` chain. Object passing (`resp = urlopen(req)`) is NOT string-ish, so a
- *  response print never becomes a print of the value. Fixpoint, capped. */
-function secretCarryIdents(payload, name) {
-  const n = escRe(name);
-  const reasonAccess = new RegExp(
-    String.raw`process\.env\.?(?:${n})\b|process\[['"\`](?:${n})['"\`]\]|` +
-    String.raw`os\.environ\s*\[\s*['"\`](?:${n})['"\`]|os\.(?:environ\.get|getenv)\s*\(\s*['"\`](?:${n})|` +
-    String.raw`environ\s*\[\s*['"\`](?:${n})['"\`]|environ\.(?:get)\s*\(\s*['"\`](?:${n})|` +
-    String.raw`getenv\s*\(\s*['"\`](?:${n})|\.(?:get|fetch)\s*\(\s*['"\`](?:${n})|` +
-    String.raw`Bun\.env\.?(?:${n})\b|Deno\.env\.get\s*\(\s*['"\`](?:${n})|` +
-    String.raw`\$env:(?:${n})\b|ENV\s*\[\s*['"\`](?:${n})['"\`]`);
-  const wholeEnv = /\b(?:os\.environ|process\.env|Bun\.env|Deno\.env|import\.meta\.env)\b(?!\s*[.[])/;
-  const ids = new Set();
-  let changed = true;
-  let guard = 0;
-  // `x = …`, `d['k'] = …` and `o.k = …` (the base ident holds the value), and loop variables `for (const c of …)` / `[… for c in …]`.
-  const assignRe = /(?<![\w.])([A-Za-z_]\w*)(?:\s*\[[^\]=\n]*\]|\.\w+)*\s*=\s*([^;\n]+)/g;
-  const loopRe = /\bfor\s*\(?\s*(?:(?:const|let|var|my|local)\s+)?([A-Za-z_]\w*)\s+(?:of|in)\s+([^;\n]+)/g;
-  while (changed && guard++ < 5) {
-    changed = false;
-    for (const re of [assignRe, loopRe]) {
-      re.lastIndex = 0;
-      let m;
-      while ((m = re.exec(payload))) {
-        const [, id, expr] = m;
-        if (ids.has(id)) continue;
-        const direct = reasonAccess.test(expr) || wholeEnv.test(expr);
-        const stringy = /["'`]/.test(expr) || /\+/.test(expr) || /^\s*[A-Za-z_]\w*\s*$/.test(expr); // a bare copy of an ident carries the same string
-        const fromMarked = stringy && [...ids].some((s) => new RegExp(`\\b${s}\\b`).test(expr));
-        if (direct || fromMarked) { ids.add(id); changed = true; }
-      }
-    }
-  }
-  return ids;
-}
-/** True when the payload PRINTS the read value: a print sink whose argument region (balanced parens, or
- *  the rest of the line for echo/printf-style) references an env access, a string-carrying alias ident,
- *  or the var name quoted/dotted (covers `e.get('API_TOKEN')`-style alias accesses). */
-export function payloadPrintsValue(payload, name) {
-  const ids = secretCarryIdents(payload, name);
-  const quotedName = new RegExp(`['"\`]${escRe(name)}['"\`]`);
-  const dottedName = new RegExp(`\\.${escRe(name)}\\b`);
-  const hasRef = (t) => ANY_ENV_ACCESS_RE.test(t)
-    || [...ids].some((s) => new RegExp(`\\b${s}\\b`).test(t))
-    || quotedName.test(t) || dottedName.test(t);
-  PRINT_SINK_RE.lastIndex = 0;
-  let m;
-  while ((m = PRINT_SINK_RE.exec(payload))) {
-    const after = payload.slice(m.index + m[0].length);
-    let arg;
-    if (m[0].trimEnd().endsWith("(")) {
-      const start = m.index + m[0].length - 1; // at the open paren
-      let depth = 1;
-      let j = start + 1;
-      for (; j < payload.length && j < start + 1200 && depth > 0; j++) {
-        if (payload[j] === "(") depth++;
-        else if (payload[j] === ")") depth--;
-      }
-      arg = payload.slice(start + 1, Math.min(j, start + 1200));
-    } else {
-      arg = after.split(/\n|;/)[0].slice(0, 300); // echo/printf style: rest of line
-    }
-    if (hasRef(arg)) return true;
-  }
-  return false;
-}
 /** The env-read reason for an interpreter invocation's payload, or null. Named reads are checked first so a
  *  secret-named read reports its variable; any whole-environment reference is the dump case. */
 // Python names the environment through an alias: `import os as o; o.environ['X']`, `from os import environ [as e]; environ['X']`,
@@ -1344,10 +1266,8 @@ function interpEnvLeak(prog, args) {
   const payload = interpScriptText(prog, args);
   return payload === null ? null : interpBodyLeak(prog, payload);
 }
-/** What an interpreter body (the text of -e/-c, or a script read from stdin) does to the environment:
- *  null, or `{ why, convert }`. `convert` marks the P1-1 read-and-use split: a named read of a secret
- *  var whose value the payload never prints (no print sink reaches it) — the caller records
- *  would_have:"ask" and keeps looking; print/store-read/dump shapes have convert:false and block. */
+/** What an interpreter body (the text of -e/-c, or a script read from stdin) does to the environment: null, or { why }.
+ * Named reads of a secret var and whole-environment references both block; the guard does not split reads from prints. */
 function interpBodyLeak(prog, payload) {
   // a version suffix (python3.11, node22); (?<!\d) starts the scan at the first digit of a run only
   const base = INTERP_ENV_BASE[prog.replace(/(?<!\d)\d+(?:\.\d+)*$/, "")];
@@ -1357,11 +1277,10 @@ function interpBodyLeak(prog, payload) {
   for (const re of rules.named) {
     for (const m of payload.matchAll(re)) {
       const name = m[m.length - 1];
-      if (SECRET_VAR_NAME_RE.test(name)) return { why: `reads $${clipName(name)}`, convert: !payloadPrintsValue(payload, name) };
+      if (SECRET_VAR_NAME_RE.test(name)) return { why: `reads $${clipName(name)}` };
     }
   }
-  // A whole-environment reference dumps everything it touches: it prints by definition, so it never converts.
-  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? { why: "dumps every env var, secrets included", convert: false } : null;
+  return rules.whole.some((re) => (typeof re === "function" ? re(payload) : re.test(payload))) ? { why: "dumps every env var, secrets included" } : null;
 }
 // `env` with no command operand prints the environment; `VAR=value` operands only set variables.
 function envPrintsEnvironment(args) {
@@ -1549,9 +1468,7 @@ function stdinScriptFindings(ctx) {
           const hit = leak ? null : interpBodySecretRead(b, ctx.home);
           const why = leak ? leak.why : hit ? `reads secret store \`${clip(hit)}\`` : null;
           if (why) {
-            const cand = { prog, why, convert: Boolean(leak && leak.convert) };
-            if (!res.leak) res.leak = cand;
-            else if (res.leak.convert && !cand.convert) res.leak = cand; // a store-read/print block beats a read-and-use finding
+            res.leak ??= { prog, why };
           }
         }
         const fed = i > 0 || args.some((a) => INPUT_REDIRECT_RE.test(a) || STDIN_PATH_RE.test(a)) || stage.includes("<(");
@@ -1756,7 +1673,6 @@ function ruleSecret(ctx) {
   if (!SHELL_TOOLS.has(tool) || !ctx.command) return null;
   let ambiguous = null;
   let soft = null;
-  let converted = null; // P1-1 read-and-use: a reads-$VAR finding whose payload never prints it (would_have:"ask")
   let fed = null;
   let envFilters = null;
   let assigned = null;
@@ -1768,9 +1684,7 @@ function ruleSecret(ctx) {
     stdinFindings = stdinScriptFindings(ctx);
     if (stdinFindings.leak) {
       const lk = stdinFindings.leak;
-      const finding = { rule: "R1-secret-exposure", severity: lk.convert ? "convert" : "block", reason: `\`${clip(lk.prog)}\` reads a stdin script that ${lk.why}.`, suggestion: R1_SUGGESTION };
-      if (lk.convert) converted ??= finding;
-      else return finding;
+      return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(lk.prog)}\` reads a stdin script that ${lk.why}.`, suggestion: R1_SUGGESTION };
     }
     if (stdinFindings.unseen) soft ??= { rule: "R1-secret-exposure", severity: "soft", reason: `\`${clip(stdinFindings.unseen)}\` runs a stdin script; the guard can't see what it does with env vars.`, suggestion: R1_STDIN_SCRIPT_SUGGESTION };
   }
@@ -1887,21 +1801,13 @@ function ruleSecret(ctx) {
     const interpHit = interpScriptSecretRead(prog, args, home);
     if (interpHit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that reads secret store \`${clip(interpHit)}\`.`, suggestion: R1_SUGGESTION };
     const interpEnv = interpEnvLeak(prog, args);
-    if (interpEnv) {
-      const finding = { rule: "R1-secret-exposure", severity: interpEnv.convert ? "convert" : "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv.why}.`, suggestion: R1_SUGGESTION };
-      if (interpEnv.convert) converted ??= finding;
-      else return finding;
-    }
+    if (interpEnv) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` runs an inline script that ${interpEnv.why}.`, suggestion: R1_SUGGESTION };
     // The same body check for a script the interpreter reads from STDIN (#185), run here so every segment walk reaches it: substitutions, subshells,
     // function bodies and both quote styles of `bash -c`. The here-string is in the segment; a heredoc body is found by the line it is attached to.
     if (interpFamily(prog) && /<</.test(seg) && interpReadsStdinScript(prog, args)) {
       for (const body of stdinBodiesOf(seg, (feedIndex ??= buildFeedIndex(ctx)))) {
         const why = interpBodyLeak(prog, body);
-        if (why) {
-          const finding = { rule: "R1-secret-exposure", severity: why.convert ? "convert" : "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why.why}.`, suggestion: R1_SUGGESTION };
-          if (why.convert) converted ??= finding;
-          else return finding;
-        }
+        if (why) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that ${why.why}.`, suggestion: R1_SUGGESTION };
         const hit = interpBodySecretRead(body, home);
         if (hit) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${clip(prog)}\` reads a stdin script that reads secret store \`${clip(hit)}\`.`, suggestion: R1_SUGGESTION };
       }
@@ -1959,13 +1865,10 @@ function ruleSecret(ctx) {
   }
   if (sourced) {
     const leak = sourceLeaks(secretSegs, ctx.command, sourced.src);
-    // A sourced env file hands its secrets to an inline script that reads one of them: block, as the base kit did.
-    if (leak && converted) return { rule: "R1-secret-exposure", severity: "block", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, and ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
     if (leak && !soft) soft = { rule: "R1-secret-exposure", severity: "soft", reason: `\`${sourced.prog} ${clip(sourced.src)}\` loads an env file, but ${leak}.`, suggestion: R1_SOURCE_SUGGESTION };
   }
-  // Priority: a real ask (soft) or an ambiguous flag outranks a read-and-use conversion; both are decided
-  // downstream, a converted finding only records would_have:"ask".
-  return soft ?? ambiguous ?? converted;
+  // Priority: a real ask (soft) or an ambiguous flag outranks everything else; both are decided downstream.
+  return soft ?? ambiguous;
 }
 
 // ── R1-secret-exfiltration (block, deterministic): a secret file's contents reaching a network sink ──
@@ -3034,7 +2937,7 @@ export function apiDeleteAsk(cmd) {
 function* destructiveMatches(ctx) {
   if (!SHELL_TOOLS.has(ctx.tool)) return;
   const m = (reason) => ({ rule: "R7-destructive", severity: "ask", reason, suggestion: R7_SUGGESTION });
-  const mKeep = (reason) => ({ ...m(reason), keep: true }); // stays an ask under the allow-with-log profile: a class-(c) destroy, or a convert the plan does not sanction
+  const mKeep = (reason) => ({ ...m(reason), keep: true }); // stays an ask under the allow-with-log profile: a class-(c) destroy
   const block = (reason) => ({ rule: "R7-irreversible", severity: "block", reason, suggestion: R7_IRREVERSIBLE_SUGGESTION });
   const tokenFile = (reason) => ({ rule: "R1-secret-exfiltration", severity: "block", reason, suggestion: R1_EXFIL_SUGGESTION });
   for (const [si, seg] of ctx.expandedSegments.entries()) {
@@ -3816,6 +3719,13 @@ export function readChoice(a, keys) {
 const MAX_SUBSTITUTIONS = 256;
 /** Count of command-substitution openers (`$(`, `<(`, `>(`, and each backtick). Linear. */
 const substitutionCount = (command) => (command.match(/\$\(|[<>]\(|`/g) || []).length;
+// The command with every top-level substitution removed, as the shell expands it: an empty `$(true)` makes the next word the command name.
+const stripSubstitutions = (command) => {
+  let out = "";
+  let at = 0;
+  for (const sp of substitutionSpans(command)) { out += command.slice(at, sp.start); at = sp.end; }
+  return out + command.slice(at);
+};
 // ── nesting cap ──────────────────────────────────────────────────────────────
 const MAX_GROUPING_DEPTH = 64;
 /** Deepest run of unquoted open `(` / `{` in a command (one linear scan; closers lower the count, never below 0). */
@@ -3886,6 +3796,9 @@ export async function guardCommand(input, deps = {}) {
     return withLabel(internalError(input && typeof input.ask_at === "number" ? input.ask_at : DEFAULT_ASK_AT, "analysis", e));
   }
 }
+// Two readings that both allow: the kept one still carries the other's would_have (the other reading would ask in base).
+const keepWould = (keep, other) => (keep.decision === "allow" && other.decision === "allow" && other.would_have && !keep.would_have
+  ? { ...keep, would_have: other.would_have, rule: other.rule, reason: other.reason, suggestion: other.suggestion } : keep);
 async function guardCommandMasked(input, deps) {
   // An apostrophe in a comment (`# don't\ncat .env`) opens a quote in every scanner that does not know comments, and the quote
   // swallows the lines after it. Removing comments cannot fix that safely: a `#` the detector mistakes for a comment start
@@ -3902,7 +3815,7 @@ async function guardCommandMasked(input, deps) {
   // only; if it did not (nothing to score as written, e.g. an apostrophe in a comment hid the command), the second may.
   const spent = Boolean(first.jev && first.jev.used);
   const second = await guardOnceSafe({ ...input, command: masked }, spent ? { ...deps, ask: null, jevAvailable: false } : deps);
-  if (DECISION_RANK[second.decision] <= DECISION_RANK[first.decision]) return first;
+  if (DECISION_RANK[second.decision] <= DECISION_RANK[first.decision]) return keepWould(first, second);
   return { ...second, jev: spent ? first.jev : second.jev, notes: [...(second.notes || []), "Decided on the command with the quote characters inside its comments masked: an apostrophe in a comment is not a quote."] };
 }
 const DECISION_RANK = { allow: 0, ask: 1, block: 2 };
@@ -3918,7 +3831,7 @@ async function guardCommandChecked(input, deps) {
   if (blanks === raw) return best;
   const spent = Boolean(best.jev && best.jev.used);
   const alt = await guardCommandMasked({ ...input, command: blanks }, spent ? { ...deps, ask: null, jevAvailable: false } : deps);
-  if (DECISION_RANK[alt.decision] <= DECISION_RANK[best.decision]) return best;
+  if (DECISION_RANK[alt.decision] <= DECISION_RANK[best.decision]) return keepWould(best, alt);
   return { ...alt, jev: spent ? best.jev : alt.jev, notes: [...(alt.notes || []), "Decided on the command with its Unicode spaces read as blanks: bash keeps one inside a word, but the stricter reading stands."] };
 }
 // guardOnce never lets a rule's exception look like "no match": the core records each one and the result is marked (see markRuleFailures).
@@ -4061,7 +3974,7 @@ async function guardOnceCore(input, deps, failures) {
   const rules = [...guardRules].filter(([id]) => id !== "R10-general-risk");
   let ambiguousSecret = null;
   let softAsk = null;
-  let wouldHave = null; // a converted finding (read-and-use reads-$VAR, or a non-keep ask): allow + would_have:"ask" if nothing stricter lands
+  let wouldHave = null; // a non-keep ask: allow + would_have:"ask" if nothing stricter lands
   for (const [id, fn] of rules) {
     // R7-destructive's function reports R7-irreversible too and filters its own disabled ids (ctx.disabled), so
     // disabling one of the two never hides the other's matches; every other function reports only its own id.
@@ -4074,8 +3987,6 @@ async function guardOnceCore(input, deps, failures) {
     // disable_rules names the id a caller actually SAW in a response, so honor the match's own id too.
     if (disabled.has(m.rule)) continue;
     if (m.severity === "ambiguous") { ambiguousSecret ??= m; continue; }
-    // P1-1 read-and-use: a reads-$VAR finding whose payload never prints the value records would_have and keeps looking.
-    if (m.severity === "convert") { wouldHave ??= m; continue; }
     // "soft": a deterministic ask (bare credential word, consumer-fed secret glob). A block from any later rule still wins.
     if (m.severity === "soft") { softAsk ??= m; continue; }
     // Shrink (owner decision "shrink" 2026-11-20): only the keep-ask set stays an ask; every other ask
@@ -4099,7 +4010,16 @@ async function guardOnceCore(input, deps, failures) {
   // Past these limits the guard stops analyzing inner bodies (see substitutedSegments and processSubBodies), so a command
   // that no rule blocked asks instead of passing.
   if (!softAsk && SHELL_TOOLS.has(tool)) {
-    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
+    if (command.length > MAX_SUBSTITUTIONS && substitutionCount(command) > MAX_SUBSTITUTIONS) {
+      // Past the cap the inner bodies are not analysed, but the top level still is. An empty `$(true)` leaves the next word as the
+      // command name (`$(true) rm -rf ~`), so the top level is re-read with every top-level substitution removed. Its block or its own
+      // (non-fallback) ask stands; otherwise the cap's soft ask stands.
+      if (!input._capStripped) {
+        const top = await guardOnceCore({ ...input, command: stripSubstitutions(command), _capStripped: true }, { ...deps, ask: null, jevAvailable: false }, []);
+        if (top.decision === "block" || (top.decision === "ask" && top.rule !== "R10-general-risk")) return top;
+      }
+      softAsk = { rule: "R10-general-risk", reason: `Has more than ${MAX_SUBSTITUTIONS} command substitutions; the guard doesn't fully analyze that.`, suggestion: R10_OPAQUE_SUGGESTION };
+    }
     else if (procBodies.truncated) softAsk = { rule: "R10-general-risk", reason: "Nests `<(`/`>(` too deep for the guard to analyze every body.", suggestion: R10_OPAQUE_SUGGESTION };
   }
   if (softAsk) {
