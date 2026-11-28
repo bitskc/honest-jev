@@ -572,3 +572,72 @@ test("a feeder of any program proves its reach, in its own cwd: `find / -print |
   ]) await ask(c);
   for (const c of ["cat list | xargs rm -rf", "git ls-files | xargs rm -rf", "cat ~/list | xargs rm -rf", "find build -name x | xargs rm -rf", "cd ~/.ssh; cd /tmp/x && ls | xargs rm -rf"]) await allowWould(c);
 });
+
+// -- final review, round 4 (PR #120 at 007bc5d): the redirect reader belongs to the push words, not to the block classes -------------
+
+test("F21/F22/F23: a quoted operator-looking word, a quoted paren and a bare `>&` / `<<<` never hide a block-class operand", async () => {
+  for (const c of [
+    // quoted words that merely look like redirect operators are ordinary operands (F21)
+    "tee '>|' /dev/sda < img", "tee '<<<' /dev/sda < img", "tee '&>' /dev/sda < img", "tee '>&' /dev/sda < img", "tee '<&' /dev/sda < img",
+    "tee '&>>' /dev/sda < img", "tee '<<-' /dev/sda < img", "tee '>|' /dev/nvme0n1 < img", "declare '>|' -px", "typeset '>|' -x",
+    // parens inside quotes do not open a process substitution
+    "tee >(grep '(') /dev/sda 2>'x)' < img", "cp 2> >(grep -v '(' >&2) img /dev/sda >'x)'",
+    // a bare `>&` / `1>&` / `<<<` keeps the block-class reading it had on main (F22, F23)
+    "tee >& /dev/sda", "cp x >& /dev/sda", "install -m 644 x >& /dev/sda", "tee 1>& /dev/sda", "echo x | tee >& /dev/nvme0n1",
+    "tee <<< /dev/sda", "cp x y <<< /dev/sda", "declare >& -px", ". .env; declare >& -p",
+  ]) await block(c);
+});
+
+test("I25: a quoted push-option value that looks like a redirect cannot hide the force flag after it", async () => {
+  for (const c of ["git push -o '&>' -f origin main", "git push -o '>' -f origin main", "git push -o '<' -f origin main", "git push -o '>&' -f origin main", "git push -o '<<' -f origin main"]) await ask(c);
+});
+
+test("F24: a redirect is not an operand of a feeder: `ls 2>/dev/null` still reads its cwd", async () => {
+  for (const c of [
+    "cd ~/.ssh && ls 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls -A 2>&1 | xargs rm -rf", "cd ~ && ls -1 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls </dev/null | xargs rm -rf",
+    "cd ~/.ssh && ls | xargs rm -rf", "cd ~ && ls -A | xargs rm -rf", "cd ~/.ssh && ls . | xargs rm -rf",
+  ]) await ask(c);
+  await allowWould("cd /tmp/x && ls 2>/dev/null | xargs rm -rf"); // a non-home cwd still converts
+});
+
+test("F25: `$HOME` and `${HOME}` in a cd target name home like `~`", async () => {
+  for (const c of ["cd $HOME && ls | xargs rm -rf", "cd ${HOME} && ls | xargs rm -rf", 'cd "$HOME/.ssh" && ls | xargs rm -rf', 'cd "$HOME" && ls | xargs rm -rf', "cd $HOME/.ssh && ls | xargs rm -rf"]) await ask(c);
+  await allowWould("cd $X && ls | xargs rm -rf"); // a truly unknown cwd follows the plan: an unproven feeder converts
+  await allowWould("cd $HOMEDIR && ls | xargs rm -rf");
+  await block("cd $HOME && rm -rf *"); // known home, like `cd ~ && rm -rf *`
+  await block("cd ~ && rm -rf *");
+});
+
+test("I23/I24: a force or --prune push a feeder runs keeps the ask in an interpreter body and as an argv", async () => {
+  for (const c of [
+    `echo main | xargs -I{} python3 -c "import os;os.system('git push -f origin {}')"`,
+    `echo main | xargs -I{} perl -e 'system("git push -f origin {}")'`,
+    `echo main | xargs -I{} node -e "require('child_process').execSync('git push -f origin {}')"`,
+    `echo main | xargs -I{} ruby -e "system('git push -f origin {}')"`,
+    "echo main | xargs -I{} git push --prune origin {}", "echo main | xargs -I{} sh -c 'git push --prune origin {}'", "find . -name x -exec git push --prune origin {} +",
+  ]) await ask(c);
+  // controls: nothing force-ish or pruning is fed
+  await allowClean(`python3 -c "import os;os.system('git push origin feature')"`);
+  await allowWould(`python3 -c "import os;os.system('git push -f origin feature')"`);
+  await allowWould("echo main | xargs -I{} git push --delete origin {}");
+});
+
+test("I27: unbalanced process-substitution openers cost the same as balanced ones (CPU time)", async () => {
+  for (const c of ["git push origin " + ">(a ".repeat(5000), "echo " + ">(a ".repeat(5000), "git push -f origin feat " + "<(a ".repeat(5000)]) {
+    const t = cpuNow();
+    const r = await g(c);
+    const ms = cpuNow() - t;
+    assert.equal(r.decision, "ask", c.slice(0, 40));
+    assert.ok(ms < 1500, `${ms.toFixed(0)} ms CPU for ${c.slice(0, 30)}... (${c.length} chars)`); // measured ~250-500 ms; the quadratic scan took 3-3.5 s
+  }
+});
+
+test("controls: honest pushes with redirects, quoted operator words and process substitutions stay plain allows", async () => {
+  for (const c of [
+    "git push -u origin feat &>/dev/null", "git push origin feat &>>log", "git push origin feat 2> >(tee e)", "git push origin feat 2> >(grep '(' >&2)", "git push origin feat <(echo x)",
+    "git push origin feat 2>&1 | tee x", "git push -o '>' origin feat", "git push -o 'a b' origin feat", "git push origin '>|' feat", "git push origin feat >&2", "git push origin feat 3<>f",
+    "git push -o merge_request.title=\"Fix login bug\" origin feature", "git push --push-option='ci.skip' origin feature", "git push gerrit HEAD:refs/for/main%topic=x,r=bob",
+  ]) await allowClean(c);
+  for (const c of ["git push -f origin feat &>/dev/null", "git push -f origin feat 2> >(grep '(' >&2)"]) await allowWould(c);
+  for (const c of ["git push -f origin main 2> >(grep '(' >&2)", "git push -f origin main &>/dev/null", "git push >(echo '(') -f origin main"]) await ask(c);
+});

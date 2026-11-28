@@ -1534,9 +1534,12 @@ function dirOperands(args) {
   return out;
 }
 
-/** The directory a literal `cd`/`pushd` operand names, from `cwd`; null when the text cannot say. */
+/** The directory a literal `cd`/`pushd` operand names, from `cwd`; null when the text cannot say. `$HOME` / `${HOME}` (the operand's own
+ *  words are already unquoted, so `"$HOME/.ssh"` too) name home like `~` does. */
+const HOME_VAR_RE = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
 function resolveDirOperand(op, cwd, homeRoot) {
   if (op === "") return cwd; // `cd ""` stays put
+  if (HOME_VAR_RE.test(op)) op = "~" + op.replace(HOME_VAR_RE, "");
   if (/[$`*?[\]{}\\]/.test(op) || op === "-" || /^~[^/]/.test(op)) return null;
   let p = op;
   if (p === "~" || p.startsWith("~/")) p = homeRoot + p.slice(1);
