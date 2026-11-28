@@ -1534,9 +1534,10 @@ function dirOperands(args) {
   return out;
 }
 
-/** The directory a literal `cd`/`pushd` operand names, from `cwd`; null when the text cannot say. `$HOME` / `${HOME}` (the operand's own
- *  words are already unquoted, so `"$HOME/.ssh"` too) name home like `~` does. */
+/** A `cd`/`pushd` operand that names home through the variable: `$HOME` or `${HOME}`, alone or before a `/`. */
 const HOME_VAR_RE = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
+/** The directory a `cd`/`pushd` operand names, from `cwd`; null when the text cannot say. The operand's own words are already unquoted, so
+ *  `"$HOME/.ssh"` names home like `~` does, as `$HOME` and `${HOME}` do. */
 function resolveDirOperand(op, cwd, homeRoot) {
   if (op === "") return cwd; // `cd ""` stays put
   if (HOME_VAR_RE.test(op)) op = "~" + op.replace(HOME_VAR_RE, "");

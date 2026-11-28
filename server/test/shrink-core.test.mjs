@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { guardCommand } from "../src/kit/guard.mjs";
+import { guardCommand, operandIndexes } from "../src/kit/guard.mjs";
 import { cpuNow } from "./helpers/cpu.mjs";
 
 const noJev = { ask: null, jevAvailable: false };
@@ -592,12 +592,18 @@ test("I25: a quoted push-option value that looks like a redirect cannot hide the
   for (const c of ["git push -o '&>' -f origin main", "git push -o '>' -f origin main", "git push -o '<' -f origin main", "git push -o '>&' -f origin main", "git push -o '<<' -f origin main"]) await ask(c);
 });
 
-test("F24: a redirect is not an operand of a feeder: `ls 2>/dev/null` still reads its cwd", async () => {
+test("F24/F26: an output redirect or fd dup is not an operand of a feeder, a here-string's content is", async () => {
   for (const c of [
     "cd ~/.ssh && ls 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls -A 2>&1 | xargs rm -rf", "cd ~ && ls -1 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls </dev/null | xargs rm -rf",
     "cd ~/.ssh && ls | xargs rm -rf", "cd ~ && ls -A | xargs rm -rf", "cd ~/.ssh && ls . | xargs rm -rf",
+    "cd ~/.ssh && ls &>/dev/null | xargs rm -rf", "cd ~/.ssh && ls >/dev/null | xargs rm -rf", "echo / 2>&1 | xargs rm -rf",
+    // F26: the word after `<<<` is the stage's stdin content, bare or attached, in any program
+    "cat <<< / | xargs rm -rf", "cat <<< ~ | xargs rm -rf", "tr x y <<< / | xargs rm -rf", "sed p <<< ~ | xargs rm -rf", "grep . <<< / | xargs rm -rf",
+    "cat <<</ | xargs rm -rf", "cat 0<<< ~ | xargs rm -rf", "cat <<< '/' | xargs rm -rf", 'cat <<< "~" | xargs rm -rf', "cat 2>/dev/null <<< / | xargs rm -rf",
   ]) await ask(c);
+  await block("cat <<< / | sudo xargs rm -rf");
   await allowWould("cd /tmp/x && ls 2>/dev/null | xargs rm -rf"); // a non-home cwd still converts
+  for (const c of ["cat <<< x | xargs rm -rf", "cat 2>/dev/null <<< x | xargs rm -rf", "cd ~/.ssh && ls '>' x | xargs rm -rf"]) await allowWould(c); // content or operands that prove nothing convert
 });
 
 test("F25: `$HOME` and `${HOME}` in a cd target name home like `~`", async () => {
@@ -608,13 +614,19 @@ test("F25: `$HOME` and `${HOME}` in a cd target name home like `~`", async () =>
   await block("cd ~ && rm -rf *");
 });
 
-test("I23/I24: a force or --prune push a feeder runs keeps the ask in an interpreter body and as an argv", async () => {
+test("I23/I24/I36: a force or --prune push a feeder runs keeps the ask in an interpreter body, a nested script and as an argv", async () => {
   for (const c of [
     `echo main | xargs -I{} python3 -c "import os;os.system('git push -f origin {}')"`,
     `echo main | xargs -I{} perl -e 'system("git push -f origin {}")'`,
     `echo main | xargs -I{} node -e "require('child_process').execSync('git push -f origin {}')"`,
     `echo main | xargs -I{} ruby -e "system('git push -f origin {}')"`,
     "echo main | xargs -I{} git push --prune origin {}", "echo main | xargs -I{} sh -c 'git push --prune origin {}'", "find . -name x -exec git push --prune origin {} +",
+    `echo main | xargs -I{} python3 -c "import os;os.system('git push --prune origin {}')"`,
+    `echo main | xargs -I{} perl -e 'system("git push --prune origin {}")'`,
+    `echo main | xargs -I{} node -e "require('child_process').execSync('git push --prune origin {}')"`,
+    `echo main | xargs -I{} ruby -e "system('git push --prune origin {}')"`,
+    // a script inside a script: the fed item is still the refspec (unwrapScripts at depth 2)
+    `echo main | xargs -I{} sh -c "bash -c 'git push -f origin {}'"`,
   ]) await ask(c);
   // controls: nothing force-ish or pruning is fed
   await allowClean(`python3 -c "import os;os.system('git push origin feature')"`);
@@ -622,7 +634,7 @@ test("I23/I24: a force or --prune push a feeder runs keeps the ask in an interpr
   await allowWould("echo main | xargs -I{} git push --delete origin {}");
 });
 
-test("I27: unbalanced process-substitution openers cost the same as balanced ones (CPU time)", async () => {
+test("I27: unbalanced process-substitution openers stay linear (CPU time)", async () => {
   for (const c of ["git push origin " + ">(a ".repeat(5000), "echo " + ">(a ".repeat(5000), "git push -f origin feat " + "<(a ".repeat(5000)]) {
     const t = cpuNow();
     const r = await g(c);
@@ -630,6 +642,32 @@ test("I27: unbalanced process-substitution openers cost the same as balanced one
     assert.equal(r.decision, "ask", c.slice(0, 40));
     assert.ok(ms < 1500, `${ms.toFixed(0)} ms CPU for ${c.slice(0, 30)}... (${c.length} chars)`); // measured ~250-500 ms; the quadratic scan took 3-3.5 s
   }
+});
+
+test("I27/I36: the paren match is one pass, not a rescan per opener (operandIndexes on 20,000 openers, CPU time)", () => {
+  const words = Array.from({ length: 20000 }, () => ">(a");
+  let t = cpuNow();
+  assert.deepEqual(operandIndexes(words, words), []); // every unclosed opener drops its own word
+  const open = cpuNow() - t;
+  const mixed = Array.from({ length: 10000 }, (_, k) => (k % 2 ? "a)" : ">(a"));
+  t = cpuNow();
+  assert.deepEqual(operandIndexes(mixed, mixed), []); // each `>(a` closes at the next word
+  const closed = cpuNow() - t;
+  assert.ok(open < 300 && closed < 300, `${open.toFixed(0)} ms unclosed, ${closed.toFixed(0)} ms closed`); // measured a few ms; a per-opener rescan takes seconds
+});
+
+test("I32: a `)` that is a word of its own closes its process substitution, spaced or not", async () => {
+  for (const c of [
+    "git push -f origin 2> >(tee push.log )", "git push -f origin 2> >(tee push.log)", "git push -f origin 2> >( tee push.log )", "git push -f origin >(tee x )",
+    "git push --force-with-lease origin 2> >(tee push.log )", "git push --prune origin 2> >(tee push.log )", "(git push -f origin 2> >(tee push.log ) )",
+    "git push -f origin main 2> >(tee push.log )", "git push -f origin 2> >(tee a ) >(tee b )", "cd ~/.ssh && ls 2> >(tee err.log ) | xargs rm -rf",
+  ]) await ask(c); // refspec-less or protected: the logging spelling does not change what is pushed
+  for (const c of [
+    "git push -f origin feat 2> >(tee push.log )", "git push -f origin feat 2> >(tee push.log)", "git push -f origin feat 2> >( tee x )", "git push -f origin feat >( tee x )",
+    "git push -f origin 2> >(tee push.log ) feat", "(git push -f origin feat 2> >(tee push.log ) )",
+    "git push -f origin feat 2> >(grep '(' main >&2)", // a quoted paren inside the body does not open another one
+  ]) await allowWould(c);
+  for (const c of ["git push origin feat 2> >(tee push.log )", "git push origin feat 2> >( tee push.log )"]) await allowClean(c);
 });
 
 test("controls: honest pushes with redirects, quoted operator words and process substitutions stay plain allows", async () => {

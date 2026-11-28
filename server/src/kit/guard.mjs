@@ -2631,12 +2631,8 @@ function nonRedirIndexes(args) {
 function nonRedirPositionals(args) {
   return nonRedirIndexes(args).map((i) => args[i]);
 }
-/** Operand indices for the push-word rule (Rule 1) and the feeder reach, read from each word's SOURCE text (`raws`, parallel to `args`):
- *  only an UNQUOTED redirect operator is one (`'>|'`, `'<<<'`, `2>'x)'`'s quoted part are ordinary words), parens inside quotes do not
- *  count, and a block-class reader never sees this (it would let a quoted decoy swallow a device operand). A redirect operator (`<` `>` `>>`
- *  `>|` `>&` `<&` `<<` `<<<` `<>`, optionally after a descriptor number or as `&>`/`&>>`) is dropped; a bare one also drops the word that is
- *  its target, an attached one (`2>log`, `&>/dev/null`, `>&2`) is the target itself. `>(cmd args)` / `<(cmd args)` is dropped through the
- *  word that closes its paren; an unbalanced one drops only its first word. */
+/** A redirect operator at the start of a word's source text: `<` `>` `>>` `>|` `>&` `<&` `<<` `<<-` `<<<` `<>`, optionally after a
+ *  descriptor number or as `&>`/`&>>`. */
 const REDIR_RE = /^(?:\d*|&)(?:<<<|<<-?|<>|>>|>\||>&|<&|>|<)/;
 /** Net paren depth a word's source text opens, outside quotes and escapes. */
 function parenDelta(raw) {
@@ -2653,7 +2649,7 @@ function parenDelta(raw) {
 }
 /** For every word index, the index of the word where a paren opened at that word is closed (itself when it never is): one pass over the
  *  running depth, the next word whose depth is back at or below the opener's (a monotonic stack), so an unbalanced `>(a >(a >(a ...`
- *  costs the same as a balanced one. */
+ *  costs the same as a balanced one. `raws` are the words' source text, so a quoted paren does not count. */
 function parenClosers(raws) {
   const n = raws.length;
   const depth = new Array(n + 1);
@@ -2668,15 +2664,26 @@ function parenClosers(raws) {
   }
   return end;
 }
-function operandIndexes(args, raws = args) {
+/** Operand indices for the push-word rule (Rule 1) and the feeder reach, read from each word's SOURCE text (`raws`, parallel to `args`;
+ *  the quote-blind `args` themselves when null): only an UNQUOTED redirect operator is one (`'>|'`, `'<<<'`, `2>'x)'`'s quoted part are
+ *  ordinary words), parens inside quotes do not count, and a block-class reader never sees this (it would let a quoted decoy swallow a
+ *  device operand). A redirect operator is dropped; a bare one also drops the word that is its target, an attached one (`2>log`,
+ *  `&>/dev/null`, `>&2`) is the target itself. `>(cmd args)` / `<(cmd args)` is dropped through the word that closes its paren (the
+ *  closing `)` may be a word of its own: pushView folds it into the word before it); an unbalanced one drops only its first word.
+ *  `hereStrings` keeps the content of a `<<<` as an operand (the feeder reach reads it: `cat <<< / | xargs rm -rf`): the next word for a
+ *  bare operator, the operator-prefixed word itself for an attached one. */
+export function operandIndexes(args, raws, hereStrings = false) { // exported for the CPU test (shrink-core.test.mjs I27/I36)
+  const src = raws ?? args;
   const out = [];
   let closers = null;
   for (let i = 0; i < args.length; i++) {
-    const m = REDIR_RE.exec(raws[i]);
+    const m = REDIR_RE.exec(src[i]);
     if (!m) { out.push(i); continue; }
-    let tok = raws[i].slice(m[0].length);
-    if (!tok) { i++; tok = raws[i] ?? ""; } // a bare operator's target is the next word
-    if (/^[<>]?\(/.test(tok)) i = (closers ??= parenClosers(raws))[i] ?? i;
+    const here = hereStrings && m[0].endsWith("<<<");
+    let tok = src[i].slice(m[0].length);
+    if (!tok) { i++; tok = src[i] ?? ""; if (here && i < args.length) out.push(i); } // a bare operator's target is the next word
+    else if (here) out.push(i);
+    if (/^[<>]?\(/.test(tok)) i = (closers ??= parenClosers(src))[i] ?? i;
   }
   return out;
 }
@@ -2767,7 +2774,7 @@ const KNOWN_PUSH_SHORT = "dfnpqruv46"; // f force, d delete, n dry-run, p prune,
  *  whether args[i] is written as a plain literal, and one word that is not makes the whole push `opaque` (Rule 1, see isLiteralWord); `raws`
  *  is the words' source text, so only an unquoted redirect operator drops a word (operandIndexes). */
 function gitPushFlags(args, lit, raws) {
-  const idx = operandIndexes(args, raws ?? args);
+  const idx = operandIndexes(args, raws);
   const argv = idx.map((i) => args[i]);
   const out = { force: null, forces: false, lease: false, leaseProtected: false, mirror: null, prune: null, delete: false, positionals: [], opaque: lit === null || idx.some((i) => !lit[i]) };
   const force = (spelling, known = true) => { out.force ??= spelling; if (known) out.forces = true; };
@@ -2858,10 +2865,12 @@ function isLiteralWord(raw) {
 const PUSH_ALIGN_SKIP = new Set(["(", ")", ";", "+"]);
 const RUNTIME_FEEDERS = new Set(["xargs", "parallel", "find"]);
 const isOddSep = (c) => c === 11 || c === 12 || c === 13; // bash does not split a word at VT, FF or CR; the tokenizer does
-/** The words of a git segment as the push and filter rules read them: `live`, the resolved argv (a tail of the segment's own tokens) cut at a
- *  real shell comment; `lit`, per live word, whether its SOURCE text is a plain literal (null when the argv cannot be matched to the segment's
- *  tokens: no word is then provable); `raws`, per live word, that SOURCE text (null with `lit`: redirects are then read from the unquoted
- *  words); `fed`, whether an xargs/parallel/find runs the command (items are appended to its argv at run time).
+/** The words of a git segment (or of a feeder stage, `feederReach`) as the push, filter and feeder rules read them: `live`, the resolved argv
+ *  (a tail of the segment's own tokens) cut at a real shell comment; `lit`, per live word, whether its SOURCE text is a plain literal (null
+ *  when the argv cannot be matched to the segment's tokens: no word is then provable); `raws`, per live word, its SOURCE text plus the
+ *  tokens resolveCommand dropped right after it (a closing `)` that is a word of its own, `find -exec`'s `;`), so a `>(cmd )` closes at
+ *  the word before its `)` (null with `lit`: redirects are then read from the unquoted words); `fed`, whether an xargs/parallel/find runs
+ *  the command (items are appended to its argv at run time).
  *  Only a literal unquoted `#` at the start of a word, after a blank, starts a comment: a `#` from a variable or substitution is escaped by the
  *  literal fold, and one after VT/FF/CR is inside a word. */
 function pushView(seg, args) {
@@ -2886,7 +2895,8 @@ function pushView(seg, args) {
     const st = w.ws[at[k]];
     const en = w.we[at[k]];
     const raw = s.slice(st, en);
-    raws[k] = raw;
+    const last = k + 1 < args.length ? at[k + 1] - 1 : w.t.length - 1; // the dropped tokens between this word and the next live one
+    raws[k] = last > at[k] ? s.slice(st, w.we[last]) : raw;
     lit[k] = !isOddSep(s.charCodeAt(st - 1)) && !isOddSep(s.charCodeAt(en)) && isLiteralWord(raw);
   }
   const fed = args.length > 0 && w.t.slice(0, at[0]).some((t) => RUNTIME_FEEDERS.has(base(t)));
@@ -2962,8 +2972,10 @@ function fedScriptForcePush(seg) {
 }
 /** The parsed push of a pushView whose argv starts at `push`. */
 const pushOf = (view) => gitPushFlags(view.live.slice(1), view.lit && view.lit.slice(1), view.raws && view.raws.slice(1));
+const HERE_STRING_PREFIX_RE = /^(?:\d*|&)<<</; // the operator of an attached here-string word (`<<</`)
 /** The root/home/system reach a pipeline stage proves for the `xargs rm` it feeds: any word of its argv that names such a path (`echo /`, `ls ~`,
- *  `ls -d ~/*`), `ls` with no operand reading its cwd, or a `find` root. A redirect is not an operand (`ls 2>/dev/null` still reads its cwd). */
+ *  `ls -d ~/*`), `ls` with no operand reading its cwd, or a `find` root. An output redirect or fd dup is not an operand (`ls 2>/dev/null`
+ *  still reads its cwd); the content of a here-string is (`cat <<< /`). */
 function feederReach(stage, home, cwds) {
   const [prog, args] = resolveCommand(stage);
   if (prog === null) return null;
@@ -2971,7 +2983,7 @@ function feederReach(stage, home, cwds) {
   let operands = args;
   if (args.some((a) => /[<>]/.test(a))) {
     const view = pushView(stage, args);
-    operands = operandIndexes(view.live, view.raws ?? view.live).map((i) => view.live[i]);
+    operands = operandIndexes(view.live, view.raws, true).map((i) => view.live[i].replace(HERE_STRING_PREFIX_RE, ""));
   }
   const named = [];
   for (const a of operands) {
