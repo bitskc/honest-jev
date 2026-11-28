@@ -734,7 +734,7 @@ test("I50: a here-string operator with no word after it names nothing and never 
   await allowClean("rm -rf <<<");
 });
 
-test("I50: the R1 here-string rule covers every program of PRINTS_STDIN_PROGS, including the ones added with F28", async () => {
+test("I50: the R1 here-string rule blocks the programs added with F28 and four older ones (cat, tr, base64, jq)", async () => {
   const added = ["tac", "grep", "egrep", "fgrep", "rg", "gsed", "mawk", "nawk", "zcat", "bat", "shuf", "pr", "sponge", "dd"];
   for (const prog of [...added, "cat", "tr", "base64", "jq"]) {
     const r = await block(`${prog} x <<< "$TOKEN"`);

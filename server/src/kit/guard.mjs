@@ -93,8 +93,8 @@ const SAFE_PATH_RES = [
 const AMBIGUOUS_SECRET_TOKENS = ["secret", "secrets", "token", "password", "passwd", "credential",
   "keyring", "keystore", "htpasswd", "vault", "apikey", "api_key"];
 const SECRET_VAR_RE = /\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?/g;
-// Programs that write their stdin (or a transformation of it) back to the transcript: a secret fed to one as a here-string is printed, and
-// a root or home fed to one as a here-string or `<(...)` body is what an `xargs rm` after it deletes (feederReach).
+// Programs that write their stdin (or a transformation of it) back to the transcript: a secret fed to one as a here-string is printed (the R1
+// here-string rule below). feederReach reads the opposite set, STDIN_IGNORERS, for the root or home a here-string or `<(...)` body hands on.
 const PRINTS_STDIN_PROGS = new Set(["cat", "tee", "tr", "base64", "xxd", "od", "hexdump", "sort", "uniq", "head", "tail", "cut", "sed", "awk", "gawk", "rev", "fold", "nl", "paste", "column", "less", "more", "strings", "fmt", "expand", "unexpand", "jq", "yq", "tac", "grep", "egrep", "fgrep", "rg", "gsed", "mawk", "nawk", "zcat", "bat", "shuf", "pr", "sponge", "dd"]);
 const HERE_STRING_RE = /<<<\s*([^;&|]*)/g; // the rest of the (already split) segment: over-reading can only add a match
 const INDIRECT_VAR_RE = /\$\{!([A-Za-z_][A-Za-z_0-9]*)\}/g;
@@ -3012,7 +3012,7 @@ function feederReach(stage, home, cwds) {
   if (args.some((a) => /[<>]/.test(a))) {
     const view = pushView(stage, args);
     // `xargs echo` resolves to `echo` but prints every item.
-    const reader = !STDIN_IGNORERS.has(prog) || ["xargs", "parallel"].includes(programOf(stage)[0]);
+    const reader = !STDIN_IGNORERS.has(prog) || ["xargs", "parallel"].includes(head);
     operands = operandIndexes(view.live, view.raws, reader).map((i) => contentOperand(view, i));
   }
   const named = [];
