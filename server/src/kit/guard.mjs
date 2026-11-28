@@ -2670,20 +2670,25 @@ function parenClosers(raws) {
  *  device operand). A redirect operator is dropped; a bare one also drops the word that is its target, an attached one (`2>log`,
  *  `&>/dev/null`, `>&2`) is the target itself. `>(cmd args)` / `<(cmd args)` is dropped through the word that closes its paren (the
  *  closing `)` may be a word of its own: pushView folds it into the word before it); an unbalanced one drops only its first word.
- *  `hereStrings` keeps the content of a `<<<` as an operand (the feeder reach reads it: `cat <<< / | xargs rm -rf`): the next word for a
- *  bare operator, the operator-prefixed word itself for an attached one. */
-export function operandIndexes(args, raws, hereStrings = false) { // exported for the CPU test (shrink-core.test.mjs I27/I36)
+ *  `content` is for a program that reads stdin or its file operands (the feeder reach of `cat`, `grep`, ...): what it is handed is an
+ *  operand, so a `<<<` keeps its content (`cat <<< / | xargs rm -rf`: the next word for a bare operator, the operator-prefixed word for an
+ *  attached one) and an input `<(cmd args)` keeps every word of its body (`cat <(echo / ) | xargs rm -rf`). */
+export function operandIndexes(args, raws, content = false) { // exported for the CPU test (shrink-core.test.mjs I27/I36)
   const src = raws ?? args;
   const out = [];
   let closers = null;
   for (let i = 0; i < args.length; i++) {
     const m = REDIR_RE.exec(src[i]);
     if (!m) { out.push(i); continue; }
-    const here = hereStrings && m[0].endsWith("<<<");
+    const here = content && m[0].endsWith("<<<");
     let tok = src[i].slice(m[0].length);
     if (!tok) { i++; tok = src[i] ?? ""; if (here && i < args.length) out.push(i); } // a bare operator's target is the next word
     else if (here) out.push(i);
-    if (/^[<>]?\(/.test(tok)) i = (closers ??= parenClosers(src))[i] ?? i;
+    if (/^[<>]?\(/.test(tok)) {
+      const end = (closers ??= parenClosers(src))[i] ?? i;
+      if (content && (tok.startsWith("<(") || (tok.startsWith("(") && /^\d*<$/.test(m[0])))) for (let k = i; k <= end; k++) out.push(k);
+      i = end;
+    }
   }
   return out;
 }
@@ -2972,10 +2977,23 @@ function fedScriptForcePush(seg) {
 }
 /** The parsed push of a pushView whose argv starts at `push`. */
 const pushOf = (view) => gitPushFlags(view.live.slice(1), view.lit && view.lit.slice(1), view.raws && view.raws.slice(1));
-const HERE_STRING_PREFIX_RE = /^(?:\d*|&)<<</; // the operator of an attached here-string word (`<<</`)
+// Feeders that print or transform what they are handed on stdin or as a file operand: a here-string or `<(...)` body is theirs to hand on.
+// `ls`, `echo`, `pwd` and the rest ignore stdin, so `ls <<< x` still lists its cwd.
+const STDIN_READERS = new Set(["cat", "tr", "sed", "grep", "head", "tail", "tee", "sort", "uniq", "cut", "awk"]);
+/** The text of an operand operandIndexes kept in content mode: the word without the redirect operator its source text starts with
+ *  (`<<</` -> `/`, `<(echo` -> `echo`) and without the unquoted `)` that close a process substitution at its end (`/)` -> `/`); a word whose
+ *  source starts with a quote has no operator to strip. */
+function contentOperand(view, i) {
+  const raw = (view.raws ?? view.live)[i];
+  const m = REDIR_RE.exec(raw);
+  let word = view.live[i];
+  if (m) word = word.slice(m[0].length + (word[m[0].length] === "(" ? 1 : 0));
+  for (let close = -parenDelta(raw); close > 0 && word.endsWith(")"); close--) word = word.slice(0, -1);
+  return word;
+}
 /** The root/home/system reach a pipeline stage proves for the `xargs rm` it feeds: any word of its argv that names such a path (`echo /`, `ls ~`,
  *  `ls -d ~/*`), `ls` with no operand reading its cwd, or a `find` root. An output redirect or fd dup is not an operand (`ls 2>/dev/null`
- *  still reads its cwd); the content of a here-string is (`cat <<< /`). */
+ *  still reads its cwd); for a stdin reader the content of a here-string or `<(...)` is (`cat <<< /`, `cat <(echo /)`). */
 function feederReach(stage, home, cwds) {
   const [prog, args] = resolveCommand(stage);
   if (prog === null) return null;
@@ -2983,7 +3001,7 @@ function feederReach(stage, home, cwds) {
   let operands = args;
   if (args.some((a) => /[<>]/.test(a))) {
     const view = pushView(stage, args);
-    operands = operandIndexes(view.live, view.raws, true).map((i) => view.live[i].replace(HERE_STRING_PREFIX_RE, ""));
+    operands = operandIndexes(view.live, view.raws, STDIN_READERS.has(prog)).map((i) => contentOperand(view, i));
   }
   const named = [];
   for (const a of operands) {
@@ -3471,6 +3489,7 @@ function rdRootOrHome(aIn, home, segments, cwd = "") {
   }
   return false;
 }
+const ATTACHED_HERE_RE = /^\d*<<<(?=.)/; // the operator of an attached here-string word, up to its content (`<<</`)
 function rdHit(seg, home, depth = 0, segments = [seg], cwd = "") {
   // The same resolveCommand walk every rule uses (keywords, wrappers, indirections, elevation): the
   // old rdCommand peeled its own subset and silently missed anything outside it (doas worked, stdbuf
@@ -3485,7 +3504,10 @@ function rdHit(seg, home, depth = 0, segments = [seg], cwd = "") {
     return null;
   }
   if (prog !== "rm") return null;
-  const args = argsRaw.map(rdUnquote);
+  // `xargs rm -rf <<< /` hands the here-string content to rm: the bare operator's next word is an operand already, so an attached one
+  // (`<<</`, `0<<<~`, `<<<'/'`) is read the same way. Only an unquoted operator counts: `'<<</'` is a file name.
+  const raws = argsRaw.some((a) => a.includes("<<<")) ? pushView(seg, argsRaw).raws : null;
+  const args = argsRaw.map((a, i) => rdUnquote(raws?.[i] !== undefined && ATTACHED_HERE_RE.test(raws[i]) ? a.replace(ATTACHED_HERE_RE, "") : a));
   const end = args.includes("--") ? args.indexOf("--") : args.length;
   const opts = args.slice(0, end).filter((a) => a.startsWith("-"));
   const operands = [...args.slice(0, end).filter((a) => !a.startsWith("-")), ...args.slice(end + 1)];

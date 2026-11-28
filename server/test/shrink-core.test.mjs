@@ -16,6 +16,11 @@ const allowWould = async (c) => { const r = await g(c); assert.equal(r.decision,
 const allowPlain = async (c) => { const r = await g(c); assert.equal(r.decision, "allow", `${c} -> ${r.decision} ${String(r.reason).slice(0, 80)}`); return r; };
 const allowClean = async (c) => { const r = await allowPlain(c); assert.equal(r.would_have, undefined, `${c} is a plain allow, not a converted ask`); return r; }; // nothing flagged it at all
 const block = async (c) => { const r = await g(c); assert.equal(r.decision, "block", `${c} -> ${r.decision} ${String(r.reason).slice(0, 80)}`); return r; };
+// A feeder row asserts its rule and reason, not only the decision: a guard that threw would also "ask" (internal-error), so a bare `ask` proves nothing.
+const FEEDER_REASON = /recursively deletes whatever is piped in/;
+const askFeeder = async (c) => { const r = await ask(c); assert.equal(r.rule, "R7-destructive", `${c} rule`); assert.match(r.reason, FEEDER_REASON, `${c} reason`); return r; };
+const allowWouldFeeder = async (c) => { const r = await allowWould(c); assert.equal(r.rule, "R7-destructive", `${c} rule`); assert.match(r.reason, FEEDER_REASON, `${c} reason`); return r; };
+const blockRoot = async (c) => { const r = await block(c); assert.equal(r.rule, "R7-root-delete", `${c} rule`); return r; };
 
 test("keep-ask: protected, unprovable and refspec-less force pushes keep the ask (D1-strict)", async () => {
   for (const c of [
@@ -597,13 +602,74 @@ test("F24/F26: an output redirect or fd dup is not an operand of a feeder, a her
     "cd ~/.ssh && ls 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls -A 2>&1 | xargs rm -rf", "cd ~ && ls -1 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls </dev/null | xargs rm -rf",
     "cd ~/.ssh && ls | xargs rm -rf", "cd ~ && ls -A | xargs rm -rf", "cd ~/.ssh && ls . | xargs rm -rf",
     "cd ~/.ssh && ls &>/dev/null | xargs rm -rf", "cd ~/.ssh && ls >/dev/null | xargs rm -rf", "echo / 2>&1 | xargs rm -rf",
-    // F26: the word after `<<<` is the stage's stdin content, bare or attached, in any program
+    // F26: the word after `<<<` is the stage's stdin content, bare or attached, for a program that reads stdin
     "cat <<< / | xargs rm -rf", "cat <<< ~ | xargs rm -rf", "tr x y <<< / | xargs rm -rf", "sed p <<< ~ | xargs rm -rf", "grep . <<< / | xargs rm -rf",
     "cat <<</ | xargs rm -rf", "cat 0<<< ~ | xargs rm -rf", "cat <<< '/' | xargs rm -rf", 'cat <<< "~" | xargs rm -rf', "cat 2>/dev/null <<< / | xargs rm -rf",
-  ]) await ask(c);
-  await block("cat <<< / | sudo xargs rm -rf");
-  await allowWould("cd /tmp/x && ls 2>/dev/null | xargs rm -rf"); // a non-home cwd still converts
-  for (const c of ["cat <<< x | xargs rm -rf", "cat 2>/dev/null <<< x | xargs rm -rf", "cd ~/.ssh && ls '>' x | xargs rm -rf"]) await allowWould(c); // content or operands that prove nothing convert
+    "cat 0<<</ | xargs rm -rf", "tr a b <<</ 2>/dev/null | xargs rm -rf", "cat <<<~ | xargs rm -rf", "cat <<<$HOME | xargs rm -rf", "cat a<<< / | xargs rm -rf",
+  ]) await askFeeder(c);
+  const sudo = await block("cat <<< / | sudo xargs rm -rf"); // decided by R5-sudo before the feeder is read; the here-string path is pinned by the rows above
+  assert.equal(sudo.rule, "R5-sudo");
+  await allowWouldFeeder("cd /tmp/x && ls 2>/dev/null | xargs rm -rf"); // a non-home cwd still converts
+  for (const c of [
+    "cat <<< x | xargs rm -rf", "cat 2>/dev/null <<< x | xargs rm -rf", "cd ~/.ssh && ls '>' x | xargs rm -rf",
+    "cat <<< | xargs rm -rf", // a here-string operator with no word after it names nothing
+  ]) await allowWouldFeeder(c); // content or operands that prove nothing convert
+});
+
+test("I38: a here-string is an operand only of a program that reads stdin; `ls` still lists its cwd", async () => {
+  for (const c of [
+    "cd ~ && ls <<< x | xargs rm -rf", "cd ~/.ssh && ls <<< x | xargs rm -rf", "cd ~ && ls -A <<<x | xargs rm -rf", "cd ~ && ls 0<<< x | xargs rm -rf",
+    "cd / && ls <<< x | xargs rm -rf", "cd ~ && ls <<< x 2>&1 | xargs rm -rf", "cd ~ && ls <<< / | xargs rm -rf",
+  ]) await askFeeder(c); // the operand-less default: ls reads `.`, here a proven home or root
+  for (const c of ["cd /tmp/x && ls <<< x | xargs rm -rf", "cd /tmp/x && ls <<< / | xargs rm -rf", "pwd <<< / | xargs rm -rf", "echo <<< / | xargs rm -rf", "echo <<</ | xargs rm -rf"]) await allowWouldFeeder(c); // stdin ignored, no operand proves a reach
+  for (const reader of ["cat", "tr a b", "sed p", "grep .", "head", "tail", "tee", "sort", "uniq", "cut -d: -f1", "awk 1"]) {
+    await askFeeder(`${reader} <<< / | xargs rm -rf`);
+    await askFeeder(`${reader} <<</ | xargs rm -rf`);
+    await allowWouldFeeder(`${reader} <<< x | xargs rm -rf`);
+  }
+});
+
+test("I39: the body of an input process substitution is an operand of a stdin reader, spaced or not", async () => {
+  for (const c of [
+    "cat <(echo /) | xargs rm -rf", "cat <(echo / ) | xargs rm -rf", "cat <(ls ~) | xargs rm -rf", "cat <(ls ~ ) | xargs rm -rf", "cat < <(echo /) | xargs rm -rf",
+    "cat < <(echo / ) | xargs rm -rf", "grep x <(echo /) | xargs rm -rf", "sort <(echo ~) | xargs rm -rf", "cat <(echo x ) <(echo / ) | xargs rm -rf",
+    "cat <<< x <(echo /) | xargs rm -rf",
+    "cd ~ && ls <(echo /) | xargs rm -rf", // ls reads its cwd, which is home
+  ]) await askFeeder(c);
+  for (const c of [
+    "cat <(echo x) | xargs rm -rf", "cat <(echo x ) | xargs rm -rf", "cat <(echo /tmp/x) | xargs rm -rf", "cd /tmp/x && ls <(echo /) | xargs rm -rf", "echo <(echo /) | xargs rm -rf",
+    "cat >(echo /) | xargs rm -rf", "cat >(tee /) | xargs rm -rf", // an output substitution hands nothing on
+  ]) await allowWouldFeeder(c);
+});
+
+test("I40: a quoted `<<</` is an ordinary word, never an operator whose prefix is stripped", async () => {
+  for (const c of ["echo '<<</' | xargs rm -rf", 'echo "<<<~" | xargs rm -rf', "echo '2<<<~' | xargs rm -rf", "cat '<<</' | xargs rm -rf", 'cat "<<<~" | xargs rm -rf']) await allowWouldFeeder(c);
+  for (const c of ["cat <<</ | xargs rm -rf", "cat 2<<<~ | xargs rm -rf"]) await askFeeder(c); // unquoted, the same words are the content
+});
+
+test("I43: an attached here-string on the rm an xargs runs is read like the bare one", async () => {
+  for (const c of [
+    "xargs rm -rf <<< /", "xargs rm -rf <<< ~", "xargs rm -rf <<</", "xargs rm -rf <<<~", "xargs rm -rf 0<<</", "xargs rm -rf <<<'/'", "xargs rm -rf <<<$HOME",
+    "xargs rm -rf -- <<</", "parallel rm -rf <<</", "xargs rm -rf <<<../..", "rm -rf <<</",
+  ]) await blockRoot(c);
+  for (const c of ["xargs rm -rf <<< x", "xargs rm -rf <<<x", "xargs rm -rf <<<tmp", "xargs rm -rf '<<</'", 'xargs rm -rf "<<<~"']) await allowWouldFeeder(c); // content that proves nothing; a quoted operator is a file name
+  await allowClean("rm -rf <<</tmp/x");
+});
+
+test("operandIndexes in content mode keeps a here-string's word and an input substitution's words", () => {
+  const here = ["cat", "<<<", "/"];
+  assert.deepEqual(operandIndexes(here, here), [0]);
+  assert.deepEqual(operandIndexes(here, here, true), [0, 2]); // a bare operator keeps the next word
+  const attached = ["cat", "<<</"];
+  assert.deepEqual(operandIndexes(attached, attached, true), [0, 1]); // an attached one is the word itself
+  const lone = ["cat", "<<<"];
+  assert.deepEqual(operandIndexes(lone, lone, true), [0]); // no word after the operator: nothing to keep, and no index past the argv
+  assert.deepEqual(operandIndexes(["cat", "<<<"], ["cat", "'<<<'"], true), [0, 1]); // a quoted operator is an ordinary word
+  const sub = ["cat", "<(echo", "/"];
+  const subRaws = ["cat", "<(echo", "/ )"];
+  assert.deepEqual(operandIndexes(sub, subRaws), [0]);
+  assert.deepEqual(operandIndexes(sub, subRaws, true), [0, 1, 2]);
+  assert.deepEqual(operandIndexes([">(echo", "/"], [">(echo", "/ )"], true), []); // an output substitution is dropped in every mode
 });
 
 test("F25: `$HOME` and `${HOME}` in a cd target name home like `~`", async () => {
@@ -653,7 +719,11 @@ test("I27/I36: the paren match is one pass, not a rescan per opener (operandInde
   t = cpuNow();
   assert.deepEqual(operandIndexes(mixed, mixed), []); // each `>(a` closes at the next word
   const closed = cpuNow() - t;
-  assert.ok(open < 300 && closed < 300, `${open.toFixed(0)} ms unclosed, ${closed.toFixed(0)} ms closed`); // measured a few ms; a per-opener rescan takes seconds
+  const inputs = Array.from({ length: 20000 }, () => "<(a");
+  t = cpuNow();
+  assert.equal(operandIndexes(inputs, inputs, true).length, 20000); // content mode keeps every unclosed input opener once
+  const kept = cpuNow() - t;
+  assert.ok(open < 300 && closed < 300 && kept < 300, `${open.toFixed(0)} ms unclosed, ${closed.toFixed(0)} ms closed, ${kept.toFixed(0)} ms content`); // measured a few ms; a per-opener rescan takes seconds
 });
 
 test("I32: a `)` that is a word of its own closes its process substitution, spaced or not", async () => {
@@ -666,6 +736,7 @@ test("I32: a `)` that is a word of its own closes its process substitution, spac
     "git push -f origin feat 2> >(tee push.log )", "git push -f origin feat 2> >(tee push.log)", "git push -f origin feat 2> >( tee x )", "git push -f origin feat >( tee x )",
     "git push -f origin 2> >(tee push.log ) feat", "(git push -f origin feat 2> >(tee push.log ) )",
     "git push -f origin feat 2> >(grep '(' main >&2)", // a quoted paren inside the body does not open another one
+    'git push -f origin feat 2> >(grep "(" main >&2)', "git push -f origin feat 2> >(grep \\( main >&2)", // nor a double-quoted or a backslashed one
   ]) await allowWould(c);
   for (const c of ["git push origin feat 2> >(tee push.log )", "git push origin feat 2> >( tee push.log )"]) await allowClean(c);
 });
