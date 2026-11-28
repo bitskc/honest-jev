@@ -93,8 +93,9 @@ const SAFE_PATH_RES = [
 const AMBIGUOUS_SECRET_TOKENS = ["secret", "secrets", "token", "password", "passwd", "credential",
   "keyring", "keystore", "htpasswd", "vault", "apikey", "api_key"];
 const SECRET_VAR_RE = /\$\{?([A-Za-z_][A-Za-z_0-9]*)\}?/g;
-// Programs that write their stdin (or a transformation of it) back to the transcript: a secret fed to one as a here-string is printed.
-const PRINTS_STDIN_PROGS = new Set(["cat", "tee", "tr", "base64", "xxd", "od", "hexdump", "sort", "uniq", "head", "tail", "cut", "sed", "awk", "gawk", "rev", "fold", "nl", "paste", "column", "less", "more", "strings", "fmt", "expand", "unexpand", "jq", "yq"]);
+// Programs that write their stdin (or a transformation of it) back to the transcript: a secret fed to one as a here-string is printed, and
+// a root or home fed to one as a here-string or `<(...)` body is what an `xargs rm` after it deletes (feederReach).
+const PRINTS_STDIN_PROGS = new Set(["cat", "tee", "tr", "base64", "xxd", "od", "hexdump", "sort", "uniq", "head", "tail", "cut", "sed", "awk", "gawk", "rev", "fold", "nl", "paste", "column", "less", "more", "strings", "fmt", "expand", "unexpand", "jq", "yq", "tac", "grep", "egrep", "fgrep", "rg", "gsed", "mawk", "nawk", "zcat", "bat", "shuf", "pr", "sponge", "dd"]);
 const HERE_STRING_RE = /<<<\s*([^;&|]*)/g; // the rest of the (already split) segment: over-reading can only add a match
 const INDIRECT_VAR_RE = /\$\{!([A-Za-z_][A-Za-z_0-9]*)\}/g;
 // Credential words must be whole `_`-separated components (TOKEN, PASSWORD, API_KEY), not substrings of a longer
@@ -2977,12 +2978,9 @@ function fedScriptForcePush(seg) {
 }
 /** The parsed push of a pushView whose argv starts at `push`. */
 const pushOf = (view) => gitPushFlags(view.live.slice(1), view.lit && view.lit.slice(1), view.raws && view.raws.slice(1));
-// Feeders that print or transform what they are handed on stdin or as a file operand: a here-string or `<(...)` body is theirs to hand on.
-// `ls`, `echo`, `pwd` and the rest ignore stdin, so `ls <<< x` still lists its cwd.
-const STDIN_READERS = new Set(["cat", "tr", "sed", "grep", "head", "tail", "tee", "sort", "uniq", "cut", "awk"]);
-/** The text of an operand operandIndexes kept in content mode: the word without the redirect operator its source text starts with
- *  (`<<</` -> `/`, `<(echo` -> `echo`) and without the unquoted `)` that close a process substitution at its end (`/)` -> `/`); a word whose
- *  source starts with a quote has no operator to strip. */
+/** The text of a word operandIndexes kept, whatever its mode (a feeder reads every kept index): the word without the redirect operator its
+ *  source text starts with (`<<</` -> `/`, `<(echo` -> `echo`) and without the unquoted `)` that close a process substitution at its end
+ *  (`/)` -> `/`); a word whose source starts with a quote has no operator to strip. */
 function contentOperand(view, i) {
   const raw = (view.raws ?? view.live)[i];
   const m = REDIR_RE.exec(raw);
@@ -3001,7 +2999,10 @@ function feederReach(stage, home, cwds) {
   let operands = args;
   if (args.some((a) => /[<>]/.test(a))) {
     const view = pushView(stage, args);
-    operands = operandIndexes(view.live, view.raws, STDIN_READERS.has(prog)).map((i) => contentOperand(view, i));
+    // A program that prints what it is handed hands on a here-string or `<(...)` body (`ls`, `echo`, `pwd` ignore stdin); `xargs echo`
+    // resolves to `echo` but prints every item.
+    const reader = PRINTS_STDIN_PROGS.has(prog) || ["xargs", "parallel"].includes(programOf(stage)[0]);
+    operands = operandIndexes(view.live, view.raws, reader).map((i) => contentOperand(view, i));
   }
   const named = [];
   for (const a of operands) {
@@ -3490,6 +3491,7 @@ function rdRootOrHome(aIn, home, segments, cwd = "") {
   return false;
 }
 const ATTACHED_HERE_RE = /^\d*<<<(?=.)/; // the operator of an attached here-string word, up to its content (`<<</`)
+const BARE_HERE_RE = /^\d*<<<$/; // a bare operator: the next word is the content
 function rdHit(seg, home, depth = 0, segments = [seg], cwd = "") {
   // The same resolveCommand walk every rule uses (keywords, wrappers, indirections, elevation): the
   // old rdCommand peeled its own subset and silently missed anything outside it (doas worked, stdbuf
@@ -3504,13 +3506,24 @@ function rdHit(seg, home, depth = 0, segments = [seg], cwd = "") {
     return null;
   }
   if (prog !== "rm") return null;
-  // `xargs rm -rf <<< /` hands the here-string content to rm: the bare operator's next word is an operand already, so an attached one
-  // (`<<</`, `0<<<~`, `<<<'/'`) is read the same way. Only an unquoted operator counts: `'<<</'` is a file name.
+  // `xargs rm -rf <<< /` hands the here-string content to rm: the content is an operand, bare (`<<< /`) or attached (`<<</`, `0<<<~`,
+  // `<<<'/'`); only an unquoted operator counts (`'<<</'` is a file name). The content is never argv, so it is never rm's `--` (`rm <<<--
+  // -rf ~` still has `-rf` as an option). An attached content is no option either; a bare one keeps the reading main gave it (`rm <<< -rf
+  // ~` blocks on main) as an option word, so that nothing that blocked stops blocking.
   const raws = argsRaw.some((a) => a.includes("<<<")) ? pushView(seg, argsRaw).raws : null;
-  const args = argsRaw.map((a, i) => rdUnquote(raws?.[i] !== undefined && ATTACHED_HERE_RE.test(raws[i]) ? a.replace(ATTACHED_HERE_RE, "") : a));
+  const args = [];
+  const attached = [];
+  const bare = [];
+  for (let i = 0; i < argsRaw.length; i++) {
+    const src = raws?.[i] ?? argsRaw[i];
+    if (BARE_HERE_RE.test(src)) {
+      if (i + 1 < argsRaw.length) bare.push(rdUnquote(argsRaw[++i]));
+    } else if (ATTACHED_HERE_RE.test(src)) attached.push(rdUnquote(argsRaw[i].replace(ATTACHED_HERE_RE, "")));
+    else args.push(rdUnquote(argsRaw[i]));
+  }
   const end = args.includes("--") ? args.indexOf("--") : args.length;
-  const opts = args.slice(0, end).filter((a) => a.startsWith("-"));
-  const operands = [...args.slice(0, end).filter((a) => !a.startsWith("-")), ...args.slice(end + 1)];
+  const opts = [...args.slice(0, end), ...bare].filter((a) => a.startsWith("-"));
+  const operands = [...args.slice(0, end), ...bare].filter((a) => !a.startsWith("-")).concat(attached, args.slice(end + 1));
   if (!opts.some((a) => a === "--recursive" || (!a.startsWith("--") && /r/i.test(a)))) return null;
   for (const a of operands) if (rdRootOrHome(a, home, segments, cwd)) return a;
   return null;

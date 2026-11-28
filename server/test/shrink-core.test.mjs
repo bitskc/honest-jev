@@ -597,7 +597,7 @@ test("I25: a quoted push-option value that looks like a redirect cannot hide the
   for (const c of ["git push -o '&>' -f origin main", "git push -o '>' -f origin main", "git push -o '<' -f origin main", "git push -o '>&' -f origin main", "git push -o '<<' -f origin main"]) await ask(c);
 });
 
-test("F24/F26: an output redirect or fd dup is not an operand of a feeder, a here-string's content is", async () => {
+test("F24/F26: an output redirect or fd dup is not an operand of a feeder; a stdin reader's here-string content is", async () => {
   for (const c of [
     "cd ~/.ssh && ls 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls -A 2>&1 | xargs rm -rf", "cd ~ && ls -1 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls </dev/null | xargs rm -rf",
     "cd ~/.ssh && ls | xargs rm -rf", "cd ~ && ls -A | xargs rm -rf", "cd ~/.ssh && ls . | xargs rm -rf",
@@ -654,6 +654,41 @@ test("I43: an attached here-string on the rm an xargs runs is read like the bare
   ]) await blockRoot(c);
   for (const c of ["xargs rm -rf <<< x", "xargs rm -rf <<<x", "xargs rm -rf <<<tmp", "xargs rm -rf '<<</'", 'xargs rm -rf "<<<~"']) await allowWouldFeeder(c); // content that proves nothing; a quoted operator is a file name
   await allowClean("rm -rf <<</tmp/x");
+});
+
+test("F27: here-string content is never rm's `--`: a flag after it still counts", async () => {
+  for (const c of [
+    "rm <<<-- -rf ~", "rm <<<-- -rf /", "rm -f <<<-- -r /*", "xargs rm <<<-- -rf ~", "find . | xargs rm <<<-- -rf ~",
+    "command rm <<<-- -rf ~", "env rm <<<-- -rf ~", "/bin/rm <<<-- -rf ~", "\\rm <<<-- -rf ~",
+    "rm 0<<<-- -rf ~", 'rm <<<"--" -rf ~', "rm <<<'--' -rf ~", "rm <<<-- --recursive ~", "rm <<<-- -rf $HOME", 'sh -c "rm <<<-- -rf ~"',
+    "rm <<< -- -rf ~", "rm 0<<< -- -rf ~", "rm <<< '--' -rf ~", "rm -rf <<<-- ~", "rm -rf <<< -- ~", "rm <<<-- -rf ~/", "xargs rm -rf <<<-- /",
+    "rm <<< -rf ~", // a bare content that looks like a flag keeps the reading main gave it
+  ]) await blockRoot(c);
+  for (const c of ["rm <<<-- -rf dist", "rm <<<-- -rf /tmp/x", "rm -f <<<-- -r ./build", "rm -rf <<<-- ./dist", "rm <<< x -r /tmp/x"]) await allowClean(c); // nothing proves a root
+  await allowClean("rm <<<-rf ~"); // an attached content is no option: no -r reaches rm (allow on main too)
+  await allowWouldFeeder("xargs rm <<<-- -rf /tmp/x");
+});
+
+test("I45: an attached here-string holding a variable is an rm operand, like the spaced form", async () => {
+  for (const c of ['xargs rm -rf <<<"$dirs"', "xargs -r rm -rf <<<$dirs", 'xargs rm -rf <<< "$dirs"', 'for f in build dist; do xargs rm -rf <<<"$f"; done']) await blockRoot(c);
+});
+
+test("F28: every program that prints its stdin hands a root or home here-string on to the xargs rm after it", async () => {
+  for (const reader of [
+    "tac", "rev", "nl", "fold", "fmt", "paste", "column", "expand", "shuf", "dd", "jq -r .", "gawk 1", "mawk 1", "nawk 1", "gsed p", "egrep .", "fgrep .", "rg .", "bat",
+    "less", "more", "pr", "sponge", "zcat", "xargs -n1 echo", "xargs echo", "parallel echo", "base64", "xxd", "/bin/cat", "command cat", "env cat", "nice cat",
+  ]) {
+    await askFeeder(`${reader} <<< / | xargs rm -rf`);
+    await askFeeder(`${reader} <<<~ | xargs rm -rf`);
+    await allowWouldFeeder(`${reader} <<< x | xargs rm -rf`);
+  }
+  for (const c of ["tac <(echo /) | xargs rm -rf", "nl <(echo /) | xargs rm -rf", "paste <(echo /) | xargs rm -rf"]) await askFeeder(c);
+  for (const c of ["wc <<< / | xargs rm -rf", "echo <<< / | xargs rm -rf", "pwd <<< / | xargs rm -rf", "printf <<< / | xargs rm -rf"]) await allowWouldFeeder(c); // stdin ignored or reduced to a count
+});
+
+test("I46: a trailing `)` of a process-substitution body is stripped once per opener; an output substitution hands nothing on", async () => {
+  for (const c of ["cat <(echo '/)') | xargs rm -rf", "cat <(echo \\/\\)) | xargs rm -rf", "cat > >(echo /) | xargs rm -rf", "cat 2> >(tee /) | xargs rm -rf"]) await allowWouldFeeder(c);
+  for (const c of ["cat <(cat <(echo /)) | xargs rm -rf", "cat <(echo /) <(echo x) | xargs rm -rf"]) await askFeeder(c);
 });
 
 test("operandIndexes in content mode keeps a here-string's word and an input substitution's words", () => {
