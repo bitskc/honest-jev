@@ -134,13 +134,18 @@ test("P2-1: brace expansion makes a braced word a real program: it is still flag
   for (const c of ["ca{t,t} token", "{cat,} token", "c{a,}t token", "/bin/ca{t,} token", "ca{t,t} credentials"]) {
     const r = await g(c);
     assert.equal(r.decision, "allow", `${c} -> ${r.decision}`);
+    assert.equal(r.would_have, "ask", `${c} would_have`);
   }
   for (const c of ["ca{t,t} .env", "ca{t,t} ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
 });
 
 test("P2-2: a quoted or escaped word is a program, never a function header: its operand still blocks or is flagged (a converted ask, allow)", async () => {
   for (const c of ["'./f()' .env", "./f\\(\\) .env", "\"./f()\" .env", "'f()' .env", "'f()' ~/.ssh/id_rsa"]) assert.equal((await g(c)).decision, "block", c);
-  for (const c of ["'./f()' token", "'f()' token", "./f\\(\\) token"]) assert.equal((await g(c)).decision, "allow", c);
+  for (const c of ["'./f()' token", "'f()' token", "./f\\(\\) token"]) {
+    const r = await g(c);
+    assert.equal(r.decision, "allow", c);
+    assert.equal(r.would_have, "ask", `${c} would_have`);
+  }
   // the same words bare are headers: nothing to read behind them
   assert.deepEqual(programOf("'f()' .env"), ["f()", [".env"]]);
   assert.deepEqual(programOf("f() ( cat .env )"), ["cat", [".env"]]);

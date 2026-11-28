@@ -372,18 +372,23 @@ test("a force that only appears inside an unquoted comment is not a force: the p
 // Rule 1: a git push word is provable only when its SOURCE text is a plain literal; Rule 2: a force-ish push an xargs/parallel/find runs
 // has refspecs appended at run time. Plus the keeps the first round's fixes left behind a spelling (find options, bare globs, feeders).
 
-test("Rule 1: a push word that is not written as a plain literal keeps the ask; plain and fully quoted literals stay provable", async () => {
-  // opaque: mixed quoting, a backslash, any `$`/backtick, an unquoted brace, glob or `#`, even without a force
+test("Rule 1: a push word bash may expand keeps the ask; every other spelling stays provable", async () => {
+  // opaque: a backslash, any `$`/backtick, an unquoted brace or glob, even without a force
   for (const c of [
-    'git push origin fea"ture"', 'git push origin "fea"ture', "git push origin feat\\ure", 'git push origin "a\\b"', 'git push origin "$B"', "git push origin '$B'", "git push origin $B",
+    "git push origin feat\\ure", 'git push origin "a\\b"', 'git push origin "$B"', "git push origin $B",
     "git push origin $(git branch --show-current)", "git push origin `git branch --show-current`", "git push origin {a,b}", "git push origin {x}", "git push origin feature*", "git push origin f?",
-    "git push origin main#x", "git push origin release/{1.0,2.0}", "git push -o $B origin feature", "git push origin $'feature'",
+    "git push origin release/{1.0,2.0}", "git push -o $B origin feature", "git push origin $'feature'", "git push origin 'a'\"$B\"", 'git push origin key="$B"', 'git push origin key="a\\b"', "git push origin key=a*b", "git push origin a{b", "git push origin {}x", "git push origin x{}",
   ]) await ask(c);
-  // provable: unquoted [A-Za-z0-9._/:+^~@=-], or one single- or double-quoted run with no $, backtick or backslash
+  // provable: every unquoted character is none of $ ` \ * ? [ { } ( ) < > & ; | or a blank (a bare `{}` is the xargs/find placeholder), a `#` is
+  // fine unless it starts the word, quoted parts are fine unless a double-quoted one holds $, backtick or backslash
   for (const c of [
-    "git push origin feature", "git push origin HEAD:refs/heads/x", "git push -u origin feature", "git push --set-upstream origin feature", "git push -o 'ci.skip' origin feature",
+    'git push origin fea"ture"', 'git push origin "fea"ture', "git push origin '$B'", "git push origin feature", "git push origin HEAD:refs/heads/x", "git push -u origin feature", "git push --set-upstream origin feature", "git push -o 'ci.skip' origin feature",
     'git push -o "ci.skip" origin feature', "git push origin 'release/{1.0,2.0}'", "git push origin 'v{1,2}'", "git push -o 'merge_request.description={\"a\":1,\"b\":2}' origin feature",
     "git push origin feature -o 'topic={a,b}'", "git push https://github.com/x/y.git feature", "git push git@github.com:x/y.git feature", "git push origin 'refs/tags/v1.0'",
+    // F16: words bash cannot expand
+    'git push -o merge_request.title="Fix login bug" origin feature', 'git push -o ci.variable="FOO=bar" origin feature', "git push --push-option='merge_request.title=Fix it' origin feature", 'git push --push-option="ci.skip" origin feature',
+    "git push origin HEAD:refs/for/main%topic=x,r=bob", "git push gerrit HEAD:refs/for/main%wip", "git push origin fix/#123-bug", "git push origin 'fix/#123-bug'", "git push origin feature/ünï", "git push origin main#x", "git push origin a#b#c",
+    "git push origin {}", "echo feature | xargs -I{} git push origin {}", "git push origin feature,bar%x",
   ]) await allowClean(c);
   await allowWould("git push '-f' origin feature");
   await allowWould("git push -f origin 'v{1,2}'");
@@ -427,18 +432,29 @@ test("F9/F10: the push-word checks are linear on 19 KB words (CPU time)", async 
 test("F11 / Rule 2: a force-ish push run by xargs, parallel or find -exec keeps the ask: refspecs are appended at run time", async () => {
   for (const c of [
     "echo main | xargs git push -f origin feature", "find . -name x -exec git push -f origin feature {} +", "find . -name x -exec git push -f origin feature {} \\;", "xargs -a refs.txt git push -f origin feature",
+    // F18: `{}` is a literal word (Rule 1), so these hold the ask through Rule 2's find arm alone
+    "find . -name x -exec git push -f origin feature '{}' +", 'find . -name x -exec git push -f origin feature "{}" +', "find . -execdir git push -f origin feature '{}' \\;", "find . -name x -exec git push --force-with-lease origin feature '{}' \\;",
     "echo main | parallel git push -f origin feature", "echo main | xargs git push --force-with-lease origin feature", "echo main | xargs git push origin +feature", "echo main | xargs -I{} git push -f origin {}",
     "echo main | xargs -n1 git push -f origin", "bash -c 'echo main | xargs git push -f origin feature'",
   ]) await ask(c);
   // not force-ish: nothing the fed items can turn into a rewrite of main
   await allowClean("echo main | xargs git push origin feature");
   await allowWould("echo feature | xargs -n1 echo; git push -f origin feature");
+  // the same through a script the feeder runs: the fed item is the refspec whatever the placeholder is called
+  for (const c of [
+    "echo main | xargs -I{} sh -c 'git push -f origin {}'", "echo main | xargs -I % sh -c 'git push -f origin %'", "echo main | xargs -I REF sh -c 'git push -f origin REF'", "echo main | xargs -n1 -I B bash -c 'git push -f origin B'",
+    "echo main | parallel -I BR sh -c 'git push --force-with-lease origin BR'", "find . -exec sh -c 'git push -f origin {}' \\;",
+  ]) await ask(c);
+  await allowClean("echo main | xargs -I{} sh -c 'git push origin {}'");
+  await allowWould("sh -c 'git push -f origin feature'");
 });
 
 test("F12 / I14: a bare glob under a proven home or credential cwd keeps the ask like `rm -rf ~/.ssh/*`; an unknown cwd keeps it like chmod -R", async () => {
   for (const c of [
     "cd ~/.ssh && rm -rf *", "cd ~/.ssh; rm -fr *", "cd ~/.ssh && rm -rf -- *", "cd ~/.aws && rm -rf .*", "cd ~/.gnupg && rm -rf *", "cd ~/Documents && rm -rf *", "cd ~/.ssh && rm -rf .[!.]*",
     "cd ~/.ssh && rm -rf ./*", "rm -rf ~/.ssh/*", "cd ~/.ssh && find . -exec rm -rf {} +",
+    // F20: every spelling of the dotfile glob CWD_GLOB_RE knows, not only `*`, `.*` and `.[!.]*`
+    "cd ~/.ssh && rm -rf .??*", "cd ~/.aws && rm -rf .[^.]*", "cd ~/.ssh && rm -rf ./.??*", "cd ~/.ssh && rm -rf .[!.]?*", "cd ~/Documents && rm -rf .??*", "cd ~/.gnupg && rm -rf ./.[^.]*", "cd ~/.ssh && rm -rf .?*",
     "cd $X && rm -rf *", 'cd "$WORKDIR" || exit 1; rm -rf *', "cd $X && rm -rf .", "cd - && rm -rf *", "cd $X && rm -rf ./*",
   ]) await ask(c);
   for (const c of ["cd /home/u/proj && rm -rf *", "cd /home/u/proj && rm -rf .*", "cd ~/proj && rm -rf *", "rm -rf *"]) await allowWould(c);
@@ -493,4 +509,66 @@ test("controls: the honest pushes stay plain allows and the proven keeps still a
     "git push -f origin '*'", "git push -f origin :", "echo 'git push -f origin main' | sh", "git push -f -o x origin", "git push origin '#x' -f main",
   ]) await ask(c);
   await allowWould("git push -f origin feature:");
+});
+
+// -- final review, round 3 (PR #120 at 509328b): F15 redirects, F16 literal words, F17 feeder cost, F18/F20 keeps ------------------------------
+
+test("F15: every redirect form and process substitution is dropped before Rule 1 reads a push's words", async () => {
+  for (const c of [
+    "git push -u origin feat &>/dev/null", "git push origin feat &> /tmp/push.log", "git push origin feat &>>log", "git push origin feat 2> >(tee e)", "git push origin feat >(tee e)", "git push --quiet origin feat &>/dev/null",
+    "git push origin feat >& log", "git push origin feat >&2", "git push origin feat >|log", "git push origin feat 3<>f", "git push origin feat < in", "git push origin feat <<< x", "git push origin feat <(echo x)",
+    "git push origin feat 2>&1", "git push origin feat >/dev/null 2>&1", "git push origin feat &>/dev/null &", "git push origin feat >>log", "git push origin feat 2> /dev/null",
+  ]) await allowClean(c);
+  for (const c of ["git push -f origin feature &>/dev/null", "git push -f origin feature 2> >(tee e)", "git push -f origin feature >& log"]) await allowWould(c);
+  for (const c of [
+    "git push -f origin main &>/dev/null", "git push -f origin main &> log", "git push -f origin main &>>log", "git push -f origin main 2> >(tee e)", "git push -f origin main >(tee e)", "git push -f origin main >& log",
+    "git push -f origin main <<< x", "git push origin feat $B &>/dev/null", "git push -f origin $B &>/dev/null",
+    // a `(` hidden in quotes inside a process substitution must not swallow the real operands after it
+    "git push >(echo '(') -f origin main", 'git push >(echo "(") -f origin main',
+  ]) await ask(c);
+});
+
+test("F16: words bash cannot expand are literal (exclusion, not inclusion): honest pushes with push options, Gerrit refs and `#` stay allows", async () => {
+  for (const c of [
+    'git push -o merge_request.title="Fix login bug" origin feature', 'git push -o ci.variable="FOO=bar" origin feature', "git push --push-option='merge_request.title=Fix it' origin feature", 'git push --push-option="ci.skip" origin feature',
+    "git push origin HEAD:refs/for/main%topic=x,r=bob", "git push gerrit HEAD:refs/for/main%wip", "git push origin fix/#123-bug", "git push origin feature/ünï", "echo feature | xargs -I{} git push origin {}",
+    'git push origin key="a b"', "git push origin 'a'\"b\"", "git push origin a'b'c",
+  ]) await allowClean(c);
+  // the same words in a force-ish push still resolve to their refspec
+  await allowWould('git push -f -o merge_request.title="Fix login bug" origin feature');
+  await allowWould("git push -f origin HEAD:refs/for/feature%topic=x,r=bob");
+  await ask('git push -f -o merge_request.title="Fix" origin main');
+  await ask("echo main | xargs -I{} git push -f origin {}");
+  await ask("echo main | xargs git push -f origin feature,bar");
+});
+
+test("F8 addendum: a `#` inside a word belongs to the word and never ends the statement", async () => {
+  for (const c of ["git push -f origin feat#x main", "git push -f origin a#b main", "git push origin fix/#123-bug -f main", "git push -f origin x#y#z main"]) await ask(c);
+  await allowWould("git push -f origin fix/#123-bug");
+});
+
+test("F17: the feeder scan costs only what the xargs/parallel stages need: 200 `bash -c 'cd …'` bodies stay linear (CPU time)", async () => {
+  const bodies = (n, mk) => Array.from({ length: n }, (_, i) => mk(i)).join("; ");
+  const cd = (i) => `bash -c 'cd /home/u/src/repo${i} && git status --short'`;
+  const cases = [
+    [bodies(200, cd) + "; find . -name '*.tmp' | xargs rm -f", allowPlain],
+    [bodies(200, cd) + "; echo done # xargs later", allowPlain],
+    [bodies(200, (i) => `sh -c 'cd ~/src/r${i} && git fetch -q'`) + "; ls | parallel echo", allowPlain],
+    [bodies(200, (i) => `bash -c 'cd /home/u/src/repo${i} && ls | xargs rm -rf'`), allowWould],
+    [bodies(200, cd) + "; " + bodies(200, (i) => `echo a${i} | xargs rm -rf`), allowWould],
+  ];
+  for (const [c, check] of cases) {
+    const t = cpuNow();
+    await check(c);
+    const ms = cpuNow() - t;
+    assert.ok(ms < 700, `${ms.toFixed(0)} ms CPU for ${c.slice(0, 40)}... (${c.length} chars)`); // measured ~60-250 ms; scanning every word against every cwd took 0.8-1.6 s
+  }
+});
+
+test("a feeder of any program proves its reach, in its own cwd: `find / -print | xargs rm -rf` asks, an unknown list converts", async () => {
+  for (const c of [
+    "find / -print | xargs rm -rf", "find / -print0 | xargs -0 rm -rf", "find ~ -name x | xargs rm -rf", "grep -rl x / | xargs rm -rf", "cd ~/.ssh && ls | xargs rm -rf", "cd ~/.ssh || cd /tmp/x; ls | xargs rm -rf",
+    "bash -c 'cd ~/.ssh && ls | xargs rm -rf'", "echo / | xargs rm -rf",
+  ]) await ask(c);
+  for (const c of ["cat list | xargs rm -rf", "git ls-files | xargs rm -rf", "cat ~/list | xargs rm -rf", "find build -name x | xargs rm -rf", "cd ~/.ssh; cd /tmp/x && ls | xargs rm -rf"]) await allowWould(c);
 });
