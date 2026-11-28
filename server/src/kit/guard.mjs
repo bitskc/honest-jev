@@ -2989,19 +2989,30 @@ function contentOperand(view, i) {
   for (let close = -parenDelta(raw); close > 0 && word.endsWith(")"); close--) word = word.slice(0, -1);
   return word;
 }
+/** Programs that never hand their stdin on: they print their own arguments, a fixed text or a count, so the content of a here-string or
+ *  `<(...)` after them proves nothing (`ls <<< x` still lists its cwd). Every other program is read as passing its stdin on (`cat`, `perl -pe`,
+ *  `python3 -c`, `zgrep`, `gzip -dc`, `pv`, `diff - /dev/null` ...), so a program missing here costs an extra ask, never a lost one. */
+const STDIN_IGNORERS = new Set(["ls", "echo", "printf", "pwd", "true", "false", "date", "seq", "yes", "wc", "id", "whoami", "hostname", "uname"]);
 /** The root/home/system reach a pipeline stage proves for the `xargs rm` it feeds: any word of its argv that names such a path (`echo /`, `ls ~`,
  *  `ls -d ~/*`), `ls` with no operand reading its cwd, or a `find` root. An output redirect or fd dup is not an operand (`ls 2>/dev/null`
- *  still reads its cwd); for a stdin reader the content of a here-string or `<(...)` is (`cat <<< /`, `cat <(echo /)`). */
+ *  still reads its cwd); for any program but a stdin ignorer the content of a here-string or `<(...)` is (`cat <<< /`, `cat <(echo /)`), and
+ *  any xargs/parallel stage makes that content its program's argv (`xargs echo <<< /`). */
 function feederReach(stage, home, cwds) {
+  // The roots of a `find` come first, from the stage before resolveCommand replaces it with the program its `-exec`/`-execdir`/`-ok` runs (that
+  // program's own argv, `{}`, names no root); they only end the scan when they prove a reach, so `find . -exec find ~ {} +` is still read.
+  const [head, headArgs] = programOf(stage);
+  if (head === "find") {
+    const why = findRootsReach(headArgs, home, cwds);
+    if (why) return why;
+  }
   const [prog, args] = resolveCommand(stage);
   if (prog === null) return null;
   if (prog === "find") return findRootsReach(args, home, cwds);
   let operands = args;
   if (args.some((a) => /[<>]/.test(a))) {
     const view = pushView(stage, args);
-    // A program that prints what it is handed hands on a here-string or `<(...)` body (`ls`, `echo`, `pwd` ignore stdin); `xargs echo`
-    // resolves to `echo` but prints every item.
-    const reader = PRINTS_STDIN_PROGS.has(prog) || ["xargs", "parallel"].includes(programOf(stage)[0]);
+    // `xargs echo` resolves to `echo` but prints every item.
+    const reader = !STDIN_IGNORERS.has(prog) || ["xargs", "parallel"].includes(programOf(stage)[0]);
     operands = operandIndexes(view.live, view.raws, reader).map((i) => contentOperand(view, i));
   }
   const named = [];
@@ -3509,7 +3520,8 @@ function rdHit(seg, home, depth = 0, segments = [seg], cwd = "") {
   // `xargs rm -rf <<< /` hands the here-string content to rm: the content is an operand, bare (`<<< /`) or attached (`<<</`, `0<<<~`,
   // `<<<'/'`); only an unquoted operator counts (`'<<</'` is a file name). The content is never argv, so it is never rm's `--` (`rm <<<--
   // -rf ~` still has `-rf` as an option). An attached content is no option either; a bare one keeps the reading main gave it (`rm <<< -rf
-  // ~` blocks on main) as an option word, so that nothing that blocked stops blocking.
+  // ~` blocks on main) as an option word, so that nothing that blocked stops blocking, but only before a real `--` (bash gives rm no `-r`
+  // in `rm -- <<< -rf ~`, and main read that content as an operand).
   const raws = argsRaw.some((a) => a.includes("<<<")) ? pushView(seg, argsRaw).raws : null;
   const args = [];
   const attached = [];
@@ -3517,7 +3529,7 @@ function rdHit(seg, home, depth = 0, segments = [seg], cwd = "") {
   for (let i = 0; i < argsRaw.length; i++) {
     const src = raws?.[i] ?? argsRaw[i];
     if (BARE_HERE_RE.test(src)) {
-      if (i + 1 < argsRaw.length) bare.push(rdUnquote(argsRaw[++i]));
+      if (i + 1 < argsRaw.length) (args.includes("--") ? attached : bare).push(rdUnquote(argsRaw[++i])); // after a real `--` a content is an operand only
     } else if (ATTACHED_HERE_RE.test(src)) attached.push(rdUnquote(argsRaw[i].replace(ATTACHED_HERE_RE, "")));
     else args.push(rdUnquote(argsRaw[i]));
   }

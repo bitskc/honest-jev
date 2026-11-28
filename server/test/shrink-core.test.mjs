@@ -597,12 +597,12 @@ test("I25: a quoted push-option value that looks like a redirect cannot hide the
   for (const c of ["git push -o '&>' -f origin main", "git push -o '>' -f origin main", "git push -o '<' -f origin main", "git push -o '>&' -f origin main", "git push -o '<<' -f origin main"]) await ask(c);
 });
 
-test("F24/F26: an output redirect or fd dup is not an operand of a feeder; a stdin reader's here-string content is", async () => {
+test("F24/F26: an output redirect or fd dup is not an operand of a feeder; the content of a here-string is, unless a stdin ignorer holds it", async () => {
   for (const c of [
     "cd ~/.ssh && ls 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls -A 2>&1 | xargs rm -rf", "cd ~ && ls -1 2>/dev/null | xargs rm -rf", "cd ~/.ssh && ls </dev/null | xargs rm -rf",
     "cd ~/.ssh && ls | xargs rm -rf", "cd ~ && ls -A | xargs rm -rf", "cd ~/.ssh && ls . | xargs rm -rf",
     "cd ~/.ssh && ls &>/dev/null | xargs rm -rf", "cd ~/.ssh && ls >/dev/null | xargs rm -rf", "echo / 2>&1 | xargs rm -rf",
-    // F26: the word after `<<<` is the stage's stdin content, bare or attached, for a program that reads stdin
+    // F26: the word after `<<<` is the stage's stdin content, bare or attached
     "cat <<< / | xargs rm -rf", "cat <<< ~ | xargs rm -rf", "tr x y <<< / | xargs rm -rf", "sed p <<< ~ | xargs rm -rf", "grep . <<< / | xargs rm -rf",
     "cat <<</ | xargs rm -rf", "cat 0<<< ~ | xargs rm -rf", "cat <<< '/' | xargs rm -rf", 'cat <<< "~" | xargs rm -rf', "cat 2>/dev/null <<< / | xargs rm -rf",
     "cat 0<<</ | xargs rm -rf", "tr a b <<</ 2>/dev/null | xargs rm -rf", "cat <<<~ | xargs rm -rf", "cat <<<$HOME | xargs rm -rf", "cat a<<< / | xargs rm -rf",
@@ -616,7 +616,7 @@ test("F24/F26: an output redirect or fd dup is not an operand of a feeder; a std
   ]) await allowWouldFeeder(c); // content or operands that prove nothing convert
 });
 
-test("I38: a here-string is an operand only of a program that reads stdin; `ls` still lists its cwd", async () => {
+test("I38: a here-string is an operand of every program but a stdin ignorer; `ls` still lists its cwd", async () => {
   for (const c of [
     "cd ~ && ls <<< x | xargs rm -rf", "cd ~/.ssh && ls <<< x | xargs rm -rf", "cd ~ && ls -A <<<x | xargs rm -rf", "cd ~ && ls 0<<< x | xargs rm -rf",
     "cd / && ls <<< x | xargs rm -rf", "cd ~ && ls <<< x 2>&1 | xargs rm -rf", "cd ~ && ls <<< / | xargs rm -rf",
@@ -629,7 +629,7 @@ test("I38: a here-string is an operand only of a program that reads stdin; `ls` 
   }
 });
 
-test("I39: the body of an input process substitution is an operand of a stdin reader, spaced or not", async () => {
+test("I39: the body of an input process substitution is an operand of every program but a stdin ignorer, spaced or not", async () => {
   for (const c of [
     "cat <(echo /) | xargs rm -rf", "cat <(echo / ) | xargs rm -rf", "cat <(ls ~) | xargs rm -rf", "cat <(ls ~ ) | xargs rm -rf", "cat < <(echo /) | xargs rm -rf",
     "cat < <(echo / ) | xargs rm -rf", "grep x <(echo /) | xargs rm -rf", "sort <(echo ~) | xargs rm -rf", "cat <(echo x ) <(echo / ) | xargs rm -rf",
@@ -673,7 +673,7 @@ test("I45: an attached here-string holding a variable is an rm operand, like the
   for (const c of ['xargs rm -rf <<<"$dirs"', "xargs -r rm -rf <<<$dirs", 'xargs rm -rf <<< "$dirs"', 'for f in build dist; do xargs rm -rf <<<"$f"; done']) await blockRoot(c);
 });
 
-test("F28: every program that prints its stdin hands a root or home here-string on to the xargs rm after it", async () => {
+test("F28/I52: every program that is not a stdin ignorer hands a root or home here-string on to the xargs rm after it", async () => {
   for (const reader of [
     "tac", "rev", "nl", "fold", "fmt", "paste", "column", "expand", "shuf", "dd", "jq -r .", "gawk 1", "mawk 1", "nawk 1", "gsed p", "egrep .", "fgrep .", "rg .", "bat",
     "less", "more", "pr", "sponge", "zcat", "xargs -n1 echo", "xargs echo", "parallel echo", "base64", "xxd", "/bin/cat", "command cat", "env cat", "nice cat",
@@ -684,6 +684,64 @@ test("F28: every program that prints its stdin hands a root or home here-string 
   }
   for (const c of ["tac <(echo /) | xargs rm -rf", "nl <(echo /) | xargs rm -rf", "paste <(echo /) | xargs rm -rf"]) await askFeeder(c);
   for (const c of ["wc <<< / | xargs rm -rf", "echo <<< / | xargs rm -rf", "pwd <<< / | xargs rm -rf", "printf <<< / | xargs rm -rf"]) await allowWouldFeeder(c); // stdin ignored or reduced to a count
+});
+
+test("I52: the feeder gate is inverted: any program outside the short stdin-ignorer set keeps the ask, a missing entry costs an ask, never a lost one", async () => {
+  for (const reader of [
+    "perl -pe 1", "python3 -c 'import sys'", "ruby -pe 1", "pv", "zgrep x", "gzip -dc", "gunzip -c", "bzcat", "xzcat", "zstdcat", "diff - /dev/null", "iconv -f utf8", "comm -12 -",
+    "envsubst", "split", "base32", "openssl base64", "uuencode x", "numfmt", "lolcat", "batcat", "git log", "somethingunknown", "./local-script",
+  ]) {
+    await askFeeder(`${reader} <<< / | xargs rm -rf`);
+    await askFeeder(`${reader} <<<~ | xargs rm -rf`);
+    await allowWouldFeeder(`${reader} <<< x | xargs rm -rf`);
+  }
+  for (const c of ["perl -pe 1 <(echo /) | xargs rm -rf", "pv <(echo ~) | xargs rm -rf", "diff - /dev/null <(echo /) | xargs rm -rf"]) await askFeeder(c);
+  // the stdin ignorers print their own arguments, a fixed text or a count; one row each so that dropping a member is a red test
+  for (const prog of ["echo", "printf", "pwd", "true", "false", "date", "seq", "yes", "wc", "id", "whoami", "hostname", "uname", "ls"]) {
+    await allowWouldFeeder(`cd /tmp/x && ${prog} <<< / | xargs rm -rf`);
+    await allowWouldFeeder(`cd /tmp/x && ${prog} <(echo /) | xargs rm -rf`);
+  }
+  // honest feeders with no here-string or substitution never reached the content branch
+  for (const c of ["ls | xargs rm -f", "git ls-files -z | xargs -0 rm -f", "git ls-files | xargs rm -f", "git diff --name-only | xargs rm -f", "grep -rl foo . | xargs rm -f", "cat files.txt | xargs rm -f", "git ls-files -z 2>/dev/null | xargs -0 rm -f", "sort -u list.txt | xargs rm -f", "grep -v foo <(git ls-files) | xargs rm -f"]) await allowClean(c);
+});
+
+test("F29: the roots of a `find` feeder are read even when it has -exec, -execdir or -ok", async () => {
+  for (const c of [
+    "find / -exec echo {} + | xargs rm -rf", "find ~ -exec echo {} \\; | xargs rm -rf", "find / -type d -exec printf '%s\\n' {} + | xargs rm -rf",
+    "find ~ -print -exec true \\; | xargs -0 rm -rf", "find ~ -maxdepth 1 -execdir echo {} + | xargs rm -rf", "find ~ -name '*.pyc' -exec echo {} + | xargs rm -rf",
+    "find ~ -ok echo {} \\; | xargs rm -rf", "cd ~ && find . -exec echo {} + | xargs rm -rf", "find /usr -exec ls {} \\; | xargs rm -rf",
+    "find ~ -exec grep -l x {} + | xargs rm -rf", "nice find ~ -exec echo {} + | xargs rm -rf", "env find ~ -exec echo {} + | xargs rm -rf",
+    "command find / -exec echo {} + | xargs rm -rf", "find / -exec echo {} + | parallel rm -rf", "find ~ -exec echo {} + | tac | xargs rm -rf",
+    "find ~ -exec cat {} \\; | xargs rm -rf", "find ~ -exec ls {} \\; | xargs rm -rf",
+    // a find whose own roots prove nothing still reads the program it runs: `find ~` inside the -exec
+    "find . -exec find ~ {} + | xargs rm -rf", "find . -exec find ~ {} \\; | xargs rm -rf", "find . -execdir find ~ {} + | xargs rm -rf", "find . -exec ls ~ {} + | xargs rm -rf",
+    "find ~ -name '*.pyc' | xargs rm -rf", "find / -print | xargs rm -rf", "cd ~ && find . | xargs rm -rf",
+  ]) await askFeeder(c);
+  for (const c of [
+    "find ~/proj -name x -exec echo {} + | xargs rm -rf", "find ./build -exec echo {} + | xargs rm -rf", "find . -exec echo {} + | xargs rm -rf",
+    "find /tmp/x -exec echo {} + | xargs rm -rf", "find . -exec find ./a {} + | xargs rm -rf",
+  ]) await allowWouldFeeder(c); // roots inside the project
+});
+
+test("I48: after rm's real `--` a bare here-string content is never an option; before it it still is", async () => {
+  for (const c of ["rm -- <<< -rf ~", "rm -- ~ <<< -rf", "rm -- <<< --recursive ~", "xargs rm -- <<< -rf ~", "rm -i -- <<< -r ~", "rm -- 0<<< -rf ~"]) await allowWould(c); // bash gives rm no -r
+  for (const c of ['rm -f -- "$f" <<< -r', "rm -f -- $f <<< -r"]) await allowClean(c);
+  for (const c of ["rm <<< -rf ~", "rm <<< -rf -- ~", "rm -rf -- <<< ~", "rm -rf ~ -- <<< x"]) await blockRoot(c);
+});
+
+test("I50: a here-string operator with no word after it names nothing and never throws", async () => {
+  for (const c of ["rm -rf ~ <<<", "rm -rf / 0<<<", "xargs rm -rf ~ <<<", "rm -r ~ 2<<<"]) await blockRoot(c); // the bound `i + 1 < argv.length`
+  await allowClean("rm -rf <<<");
+});
+
+test("I50: the R1 here-string rule covers every program of PRINTS_STDIN_PROGS, including the ones added with F28", async () => {
+  const added = ["tac", "grep", "egrep", "fgrep", "rg", "gsed", "mawk", "nawk", "zcat", "bat", "shuf", "pr", "sponge", "dd"];
+  for (const prog of [...added, "cat", "tr", "base64", "jq"]) {
+    const r = await block(`${prog} x <<< "$TOKEN"`);
+    assert.equal(r.rule, "R1-secret-exposure", `${prog} rule`);
+  }
+  await block('tac <<< "$DB_PASS"');
+  for (const c of ['grep -q x <<< "$TOKEN"', 'grep foo <<< "$HOME"', 'rg x <<< "$PWD"']) await allowPlain(c);
 });
 
 test("I46: a trailing `)` of a process-substitution body is stripped once per opener; an output substitution hands nothing on", async () => {

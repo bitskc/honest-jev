@@ -1623,3 +1623,4 @@
 {"id":"g1594","expected":"ask","why":"cleanup of PR 110: ps eww prints every process environment.","input":{"command":"set -a; . ./.env; set +a; ps eww","cwd":"/home/u/proj","home":"/home/u"}}
 {"id":"g1595","expected":"block","why":"final review of PR 120 (F27): a here-string is never argv, so `<<<--` is not rm's end-of-options marker; the `-rf` after it still deletes home.","input":{"command":"rm <<<-- -rf ~"}}
 {"id":"g1596","expected":"block","why":"final review of PR 120 (F27): the same through xargs, where the here-string hands the content to rm.","input":{"command":"find . | xargs rm <<<-- -rf ~"}}
+{"id":"g1597","expected":"ask","why":"gstack review of PR 120 (F29): a find rooted at home feeds xargs rm; the -exec only echoes the names, so the feeder still hands the whole home tree to rm -rf.","input":{"command":"find ~ -exec echo {} + | xargs rm -rf"}}
