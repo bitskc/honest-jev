@@ -127,14 +127,20 @@ const WORDS_MEMO_MIN = 512;
 const wordsMemo = new Map();
 export function words(segment) { return wordsQ(segment).t; }
 /** words() plus `q`: the Set of token indices that carried a quote or backslash in the source (null when none did). A quoted word
- *  is never a function header: `'./f()' .env` runs a program named `./f()`, it does not define a function. */
+ *  is never a function header: `'./f()' .env` runs a program named `./f()`, it does not define a function.
+ *  `s`, `ws`, `we`: the source text and each token's [start, end) offsets in it, so a caller can read a word as it was written
+ *  (`$X`, `'a b'`, `a{b,c}`) and not only as unquoted. `ws`/`we` are shared with the memo: read-only. */
 export function wordsQ(segment) {
   if (segment && segment.length >= WORDS_MEMO_MIN) {
     const hit = wordsMemo.get(segment);
-    if (hit) return { t: hit.t.slice(), q: hit.q && new Set(hit.q) };
+    if (hit) return { t: hit.t.slice(), q: hit.q && new Set(hit.q), s: segment, ws: hit.ws, we: hit.we };
   }
   const out = [];
   const qi = [];
+  const ws = [];
+  const we = [];
+  let wstart = 0;
+  let pos = 0; // the offset the walk is at: a word ends here when flushed
   let wq = false; // the word being read carries a quote or a backslash
   let buf = "";
   let quote = null;
@@ -148,11 +154,14 @@ export function wordsQ(segment) {
   let casePat = false; // inside a `(pattern)` right after `in`
   let paramDepth = 0; // open `${` parameter expansions: whitespace and `#` inside one are part of its word (`x=${y%% #*} rm -rf ~`)
   const lastClose = segment ? segment.lastIndexOf("}") : -1; // a `${` opens a group only if some `}` follows it
-  const flush = () => { if (inWord) { if (wq) qi.push(out.length); out.push(buf); buf = ""; inWord = false; wq = false; } };
+  const flush = () => { if (inWord) { if (wq) qi.push(out.length); out.push(buf); ws.push(wstart); we.push(pos); buf = ""; inWord = false; wq = false; } wstart = pos; };
+  const mark = (m) => { out.push(m); ws.push(pos); we.push(pos + 1); };
   const s = segment || "";
   const n = s.length;
   for (let i = 0; i < n; i++) {
     const ch = s[i];
+    pos = i;
+    if (!inWord) wstart = i;
     if (quote) {
       if (ch === quote) { quote = null; ansiC = false; continue; }
       if (ansiC && ch === "\\" && i + 1 < n) {
@@ -199,12 +208,12 @@ export function wordsQ(segment) {
       // interpreter call such as `console.log(process.env.HOME)` inside a `node -e` payload): it stays in the word.
       // `name()(cmd)`: the `(` right after a complete `name()` head opens the function's subshell body, a grouping paren of its own
       // (kept glued it would pull the body's closing `)` onto its last word: `.env)` is not `.env`).
-      if (substDepth === 0 && inWord && FUNC_HEAD_WORD_RE.test(buf)) { flush(); out.push("("); continue; }
+      if (substDepth === 0 && inWord && FUNC_HEAD_WORD_RE.test(buf)) { flush(); mark("("); continue; }
       if (substDepth > 0 || (inWord && !PAREN_KEYWORDS.has(buf))) {
         substDepth++; buf += ch; inWord = true; continue;
       }
       if (!inWord && out[out.length - 1] === "in") { casePat = true; buf += ch; inWord = true; continue; }
-      flush(); out.push("(");
+      flush(); mark("(");
       continue;
     }
     if (ch === ")") {
@@ -216,18 +225,19 @@ export function wordsQ(segment) {
       const label = inWord && (out[out.length - 1] === "in" ||
         (out.length === 0 && /^\s*\S/.test(s.slice(i + 1)) && !/^\s*(?:\d*[<>]|#|\)|&)/.test(s.slice(i + 1))));
       if (label) { buf += ch; continue; }
-      flush(); out.push(")");
+      flush(); mark(")");
       continue;
     }
     buf += ch; inWord = true;
   }
+  pos = n;
   flush();
   const q = qi.length ? new Set(qi) : null;
   if (s.length >= WORDS_MEMO_MIN) {
     if (wordsMemo.size >= 32) wordsMemo.clear();
-    wordsMemo.set(s, { t: out, q });
+    wordsMemo.set(s, { t: out, q, ws, we });
   }
-  return { t: out.slice(), q: q && new Set(q) }; // callers may keep or edit the arrays: hand out copies of the memoized ones
+  return { t: out.slice(), q: q && new Set(q), s, ws, we }; // callers may keep or edit the arrays: hand out copies of the memoized ones
 }
 
 /** Decode one ANSI-C escape at s[0]==="\\" inside a $'...' run: \xNN and the common one-char escapes.
@@ -589,7 +599,7 @@ function foldSubst(text) {
   for (let pass = 0; pass < 8; pass++) {
     const next = cur.replace(FOLD_SUBST_RE, (m, a, b) => {
       const v = unquoteNoSplit(a ?? b);
-      return LITERAL_VALUE_RE.test(v) ? v : m;
+      return LITERAL_VALUE_RE.test(v) ? foldedText(v) : m;
     });
     if (next === cur) return cur;
     cur = next;
@@ -597,10 +607,14 @@ function foldSubst(text) {
   return cur;
 }
 
+/** A folded value goes back into the command text as written, so a `#` that would start a word in it is escaped: bash never starts a
+ *  comment at an expansion's result, and a bare `#x` word in the folded text would read as one (the words after it cut off). */
+const foldedText = (v) => (v.includes("#") ? v.replace(/(^|\s)#/g, "$1\\#") : v);
+
 /** `$name` / `${name}` replaced by its recorded literal; single-quoted runs are never expanded. */
 function foldVars(text, vars) {
   return text.split(/('[^']*')/).map((piece, idx) => (idx % 2 === 1 ? piece
-    : piece.replace(FOLD_VAR_RE, (m, a, b) => (vars.has(a ?? b) ? vars.get(a ?? b) : m)))).join("");
+    : piece.replace(FOLD_VAR_RE, (m, a, b) => (vars.has(a ?? b) ? foldedText(vars.get(a ?? b)) : m)))).join("");
 }
 
 function foldText(text, vars) {
@@ -1520,9 +1534,13 @@ function dirOperands(args) {
   return out;
 }
 
-/** The directory a literal `cd`/`pushd` operand names, from `cwd`; null when the text cannot say. */
+/** A `cd`/`pushd` operand that names home through the variable: `$HOME` or `${HOME}`, alone or before a `/`. */
+const HOME_VAR_RE = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
+/** The directory a `cd`/`pushd` operand names, from `cwd`; null when the text cannot say. The operand's own words are already unquoted, so
+ *  `"$HOME/.ssh"` names home like `~` does, as `$HOME` and `${HOME}` do. */
 function resolveDirOperand(op, cwd, homeRoot) {
   if (op === "") return cwd; // `cd ""` stays put
+  if (HOME_VAR_RE.test(op)) op = "~" + op.replace(HOME_VAR_RE, "");
   if (/[$`*?[\]{}\\]/.test(op) || op === "-" || /^~[^/]/.test(op)) return null;
   let p = op;
   if (p === "~" || p.startsWith("~/")) p = homeRoot + p.slice(1);

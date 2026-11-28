@@ -95,6 +95,17 @@ test("internal-error (#178): the decision carries a content-free note, decided_b
   assert.equal(ok.fail_reason, undefined);
   assert.deepEqual(ok.notes, []);
 });
+test("internal-error: a converted ask (allow + would_have) turns into a plain internal-error ask when another rule throws; would_have and the internal converted mark do not survive", async () => {
+  const clean = await run("git reset --hard HEAD~1");
+  assert.equal(clean.decision, "allow");
+  assert.equal(clean.would_have, "ask"); // control: with no failure the converted ask is allow + would_have
+  const r = await withThrowingRule("R10-general-risk", () => run("git reset --hard HEAD~1"));
+  assert.equal(r.decision, "ask");
+  assert.equal(r.rule, "internal-error");
+  assert.equal(r.fail_reason, "rule_error");
+  assert.equal(r.would_have, undefined);
+  assert.equal(r.converted, undefined);
+});
 const corpus = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "evals", "guard.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.input && (typeof r.input.command === "string" || typeof r.input.file_path === "string"));
 test("internal-error (#178): no rule throws on any corpus row, in either context, or on any of its wrapped variants", async () => {
   assert.ok(corpus.length > 900);

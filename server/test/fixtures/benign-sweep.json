@@ -391,7 +391,7 @@
  },
  {
   "command": "git clean -fdx",
-  "decision": "ask",
+  "decision": "allow",
   "rule": "R7-destructive"
  },
  {
@@ -461,7 +461,7 @@
  },
  {
   "command": "grep -r password src/ --include=*.ts",
-  "decision": "ask",
+  "decision": "allow",
   "rule": "R1-secret-exposure"
  },
  {

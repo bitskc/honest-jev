@@ -7,7 +7,7 @@ const noJev = { ask: null, jevAvailable: false };
 const g = (command) => guardCommand({ command, cwd: "/home/u/proj", home: "/home/u", tool: "Bash" }, noJev);
 const expectAll = async (cmds, want) => { for (const c of cmds) { const r = await g(c); assert.equal(r.decision, want, `${c} -> ${r.decision} ${r.rule ?? ""}`); } };
 
-test("CLIs whose job is printing a stored secret ask (R1)", async () => {
+test("CLIs whose job is printing a stored secret no longer ask (owner shrink; store reads still block)", async () => {
   await expectAll([
     "pass show github", "pass github/token", "gopass show -o db/prod", "vault kv get secret/app", "vault kv get -field=token kv/app", "vault read secret/x",
     "aws secretsmanager get-secret-value --secret-id prod/db", "aws --profile p secretsmanager get-secret-value --secret-id x",
@@ -16,7 +16,7 @@ test("CLIs whose job is printing a stored secret ask (R1)", async () => {
     "security dump-keychain -d", "gpg --export-secret-keys -a", "gpg --armor --export-secret-key me", "printf 'protocol=https\\nhost=github.com\\n' | git credential fill",
     "op item get Login --reveal", "bw get password github", "lpass show github", "doppler secrets", "doppler secrets download --no-file",
     "kubectl get secret app -o yaml", "kubectl get secrets -o json", "env VAULT_ADDR=x vault kv get k/v",
-  ], "ask");
+  ], "allow");
 });
 test("listing, writing, clipboard-only and capture-into-a-variable forms stay allowed", async () => {
   await expectAll([

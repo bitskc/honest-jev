@@ -38,12 +38,15 @@ test("#133: the cwd the operand resolves against is the moved one, so a target t
   }
 });
 
-test("#133: after a non-literal cd the cwd is unknown, and a dot/glob operand asks again (no block -> allow)", async () => {
+test("#133: after a non-literal cd the cwd is unknown, and a dot/glob operand asks again (never blocks)", async () => {
   for (const c of ["cd $X && chmod -R 777 .", "cd - && chmod -R 777 *", "cd \"$(mktemp -d)\" && chmod -R 755 .", "cd ${DIR} && chown -R u ./*",
-    "pushd && chmod -R 777 .", "popd && chmod -R 777 .", "cd $X && rm -rf *"]) {
-    const r = await g(c);
-    assert.equal(r.decision, "ask", c);
-    assert.equal(r.rule, "R7-destructive", c);
+    "pushd && chmod -R 777 .", "popd && chmod -R 777 ."]) {
+    assert.equal((await g(c)).decision, "ask", c);
+  }
+  for (const c of ["cd $X && rm -rf *", "cd \"$WORKDIR\" || exit 1; rm -rf *", "cd - && rm -rf ."]) {
+    const whole = await g(c);
+    assert.equal(whole.decision, "ask", c);
+    assert.equal(whole.rule, "R7-destructive", c);
   }
   // no hook cwd at all is the same unknown start
   assert.equal((await g("chmod -R 777 .", "")).decision, "ask");
@@ -57,7 +60,7 @@ test("#133: rm and recursive grep read the same effective cwd as chmod", async (
   assert.equal(rm.rule, "R7-root-delete");
   assert.equal((await g("cd /tmp/x && rm -rf ../..")).decision, "block"); // /tmp/x/../.. is /
   assert.equal((await g("cd /tmp/x && rm -rf build")).decision, "allow");
-  assert.equal((await g("cd /home && grep -rn TOKEN u")).decision, "ask"); // /home/u is home
+  assert.equal((await g("cd /home && grep -rn TOKEN u")).decision, "allow"); // /home/u is home
 });
 
 test("trackCwds: literal cd/pushd/popd apply in sequence, a failed-able cd keeps the start as a candidate", () => {
